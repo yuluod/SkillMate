@@ -1,0 +1,31 @@
+[package]
+name = "skillmate"
+version = "1.0.0"
+description = "AI Coding Assistant Skill Manager"
+authors = ["SkillMate"]
+license = "AGPL-3.0-or-later"
+edition = "2021"
+
+[lib]
+name = "skillmate_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["devtools"] }
+tauri-plugin-shell = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "5"
+chrono = "0.4"
+rusqlite = { version = "0.31", features = ["bundled"] }
+toml = "0.8"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

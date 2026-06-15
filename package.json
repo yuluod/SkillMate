@@ -1,0 +1,37 @@
+{
+  "name": "skillmate",
+  "version": "1.0.0",
+  "description": "AI Coding Assistant Skill Manager",
+  "license": "AGPL-3.0-or-later",
+  "packageManager": "pnpm@11.6.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "11.6.0",
+      "onFail": "ignore"
+    }
+  },
+  "scripts": {
+    "tauri": "tauri",
+    "frontend:dev": "vite --host --port 1420",
+    "frontend:build": "vite build",
+    "frontend:test": "node --test src/lib/*.test.mjs",
+    "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test": "pnpm frontend:test && pnpm rust:test",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^5.4.11"
+  }
+}
