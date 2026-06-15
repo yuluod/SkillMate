@@ -1,13 +1,5 @@
 # SkillMate
 
-[![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
-![Tauri](https://img.shields.io/badge/Tauri-2.x-24C8DB?logo=tauri&logoColor=white)
-![Rust](https://img.shields.io/badge/Rust-2021-000000?logo=rust&logoColor=white)
-![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=0b1020)
-![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22-5FA04E?logo=nodedotjs&logoColor=white)
-![pnpm](https://img.shields.io/badge/pnpm-11.6-F69220?logo=pnpm&logoColor=white)
-[![Release](https://github.com/yuluod/SkillMate/actions/workflows/release.yml/badge.svg)](https://github.com/yuluod/SkillMate/actions/workflows/release.yml)
-
 SkillMate 是一个跨平台桌面应用，用来盘点、安装、组织和更新本机的目录型 **AI 助手 Skills**。
 
 它关注的是可以落到本地目录的 Skill，而不是整包 IDE 扩展、插件市场或通用包管理器。目标是让不同助手下的 Skills 更容易查看、迁移、备份和复用。
@@ -58,7 +50,9 @@ Git 来源支持普通仓库地址、GitHub shorthand、GitHub tree URL，以及
 - `legacy_pip`
 - `local`
 
-当前只有 Git 来源支持一键更新。`legacy_npm` 和 `legacy_pip` 只作为历史来源 / 外部环境来源探测，不作为安装入口，也不会在 SkillMate 内执行全局 npm/PyPI 升级。
+更新视图会展示来源类型、远端来源、当前版本引用、最新可用引用、落后提交数、同步状态和最近检查时间。当前只有 Git 来源支持一键更新，通常需要状态为可更新且系统判定 `can_sync = true`。
+
+`local` 来源仅做可用性检测与展示，不参与自动更新。`legacy_npm` 和 `legacy_pip` 只作为历史来源 / 外部环境来源探测，不作为安装入口，也不会在 SkillMate 内执行全局 npm/PyPI 升级。
 
 ### 组织与迁移
 
@@ -79,99 +73,3 @@ Git 来源支持普通仓库地址、GitHub shorthand、GitHub tree URL，以及
 - 应用本体自动更新
 
 这些能力后续是否加入，取决于目录型 Skill 管理闭环是否足够稳定。
-
-## 快速开始
-
-### 前置要求
-
-- Rust stable
-- Node.js 22+
-- pnpm
-- Tauri 所需系统依赖，参考 [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)
-
-### 开发
-
-```bash
-pnpm install
-pnpm dev
-```
-
-`pnpm dev` 会自动执行：
-
-- 启动 Vite 开发服务器（`http://localhost:1420`）
-- 启动 Tauri 开发进程并连接该前端地址
-
-### 构建
-
-```bash
-pnpm build
-```
-
-本地构建遵循 `src-tauri/tauri.conf.json` 中的默认 bundle 配置。跨平台安装包由 GitHub Release workflow 生成。
-
-### 发布构建
-
-GitHub Release 构建通过 `.github/workflows/release.yml` 执行，会为 macOS、Windows 和 Linux 生成安装包。
-
-推荐发布流程：
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-workflow 会创建草稿 Release，并上传：
-
-- macOS: `dmg`
-- Windows: `nsis`
-- Linux: `deb`、`rpm`
-
-也可以在 GitHub Actions 页面手动运行 Release workflow，并填写要发布的 tag。
-
-## 技术栈
-
-- Tauri 2.x
-- Rust + SQLite
-- Vite + React
-
-## 常用脚本
-
-- `pnpm dev`
-- `pnpm build`
-- `pnpm test`
-- `pnpm frontend:dev`
-- `pnpm frontend:build`
-- `pnpm frontend:test`
-- `pnpm rust:test`
-
-## 更新系统说明
-
-Skill 更新系统会根据来源进行探测与状态判断。它用于更新已安装的 Skill，不是应用本体自动更新器。
-
-### 已展示的关键信息
-
-- 来源类型
-- 远端来源
-- 当前版本引用
-- 最新可用引用
-- 落后提交数
-- 同步状态
-- 最近检查时间
-
-### 一键更新出现条件
-
-通常需要同时满足：
-
-- 来源类型支持自动处理
-- 当前状态为可更新
-- 系统判定 `can_sync = true`
-
-### 已知限制
-
-- `local` 来源仅做可用性检测与展示，不参与自动更新
-- `legacy_npm/legacy_pip` 的版本探测依赖本机环境与网络可用性，结果只作提示
-- 不同 Skill 的元数据完整度可能不同，个别字段可能为空
-
-## 许可证
-
-AGPL-3.0-or-later。详见 [LICENSE](LICENSE)。
