@@ -302,6 +302,8 @@ export function buildValidationSummary(report) {
 
 export function buildSkillCardView(skill) {
   const structure = normalizeSkillStructure(skill);
+  const isSymlink = skill?.source_type === "symlink";
+  const isManaged = Boolean(skill?.managed_by_app);
   return {
     title: skill?.manifest_title || skill?.name || "",
     description: buildSkillDescription(skill),
@@ -311,6 +313,8 @@ export function buildSkillCardView(skill) {
     sourceLabel: skill?.source || "未托管",
     canSync: Boolean(skill?.can_sync),
     hasUpdate: Boolean(skill?.has_update),
+    canDelete: isManaged && !isSymlink,
+    canUnlink: isManaged && isSymlink,
   };
 }
 

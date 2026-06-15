@@ -5,7 +5,7 @@ use crate::skill_structure::{analyze_skill_structure, read_skill_preview};
 use crate::{AIAssistant, Skill};
 use rusqlite::Connection;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct ManagedSkill {
@@ -30,6 +30,9 @@ pub fn scan_all_assistants(db: &Connection) -> Vec<AIAssistant> {
                             .map(|n| n.to_string_lossy().to_string())
                             .unwrap_or_default();
                         if nm == STATE_FILE_NAME {
+                            continue;
+                        }
+                        if !should_scan_skill_entry(&ep, &nm) {
                             continue;
                         }
                         let managed = ManagedSkill {
@@ -158,5 +161,70 @@ fn build_skill(db: &Connection, managed: &ManagedSkill) -> Skill {
         structure_warnings: structure.structure_warnings,
         manifest_title: structure.manifest_title,
         manifest_description: structure.manifest_description,
+    }
+}
+
+fn should_scan_skill_entry(path: &Path, name: &str) -> bool {
+    if name.starts_with('.') {
+        return false;
+    }
+    if path.is_dir() {
+        return !is_empty_dir(path);
+    }
+    path.is_file()
+}
+
+fn is_empty_dir(path: &Path) -> bool {
+    fs::read_dir(path)
+        .map(|mut entries| entries.next().is_none())
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "skillmate-inventory-test-{}-{}",
+            name,
+            crate::app_core::now_ms()
+        ))
+    }
+
+    #[test]
+    fn scan_filter_skips_hidden_system_container() {
+        let root = test_dir("system-container");
+        let system = root.join(".system");
+        fs::create_dir_all(system.join("skill-installer")).unwrap();
+        fs::write(system.join(".codex-system-skills.marker"), "system").unwrap();
+        fs::write(system.join("skill-installer").join("SKILL.md"), "# Skill").unwrap();
+
+        assert!(!should_scan_skill_entry(&system, ".system"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scan_filter_skips_empty_runtime_directory() {
+        let root = test_dir("runtime");
+        let runtime = root.join("codex-primary-runtime");
+        fs::create_dir_all(&runtime).unwrap();
+
+        assert!(!should_scan_skill_entry(&runtime, "codex-primary-runtime"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scan_filter_keeps_regular_skill_directory() {
+        let root = test_dir("regular");
+        let skill = root.join("diagnose");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), "# Diagnose").unwrap();
+
+        assert!(should_scan_skill_entry(&skill, "diagnose"));
+
+        let _ = fs::remove_dir_all(root);
     }
 }

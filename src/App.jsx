@@ -853,11 +853,11 @@ function App() {
                         <button className="btn btn-ghost btn-sm" onClick={() => openTagEditor(s)} title="编辑标签"><Icon name="tag" size={16} /></button>
                         <button className="btn btn-ghost btn-sm" onClick={() => openDir(s.path)} title="打开文件夹"><Icon name="folder" size={16} /></button>
                         <button className="btn btn-ghost btn-sm" onClick={() => openPreview(s.path)} title="预览说明"><Icon name="preview" size={16} /></button>
-                        {s.source_type === "symlink" ? (
+                        {skillCard.canUnlink ? (
                           <button className="btn btn-ghost btn-sm danger" onClick={() => unlinkSymlink(s.path, s.name)} title="解除软连接"><Icon name="x" size={16} /></button>
-                        ) : (
+                        ) : skillCard.canDelete ? (
                           <button className="btn btn-ghost btn-sm danger" onClick={() => remove(s.path, s.name)} title="删除"><Icon name="trash" size={16} /></button>
-                        )}
+                        ) : null}
                       </div>
                     </div>
                   )})}

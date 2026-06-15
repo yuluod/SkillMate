@@ -498,6 +498,8 @@ test("Skill 卡片视图应当优先使用 manifest 标题和说明", () => {
     buildSkillCardView({
       name: "fallback",
       source: "Git",
+      source_type: "git",
+      managed_by_app: true,
       has_update: true,
       can_sync: true,
       structure_status: "partial",
@@ -515,6 +517,41 @@ test("Skill 卡片视图应当优先使用 manifest 标题和说明", () => {
       sourceLabel: "Git",
       canSync: true,
       hasUpdate: true,
+      canDelete: true,
+      canUnlink: false,
+    }
+  );
+});
+
+test("Skill 卡片动作只应暴露受管删除或软连接解除", () => {
+  assert.deepEqual(
+    {
+      unmanaged: buildSkillCardView({
+        name: "manual",
+        source_type: "local",
+        managed_by_app: false,
+      }).canDelete,
+      managed: buildSkillCardView({
+        name: "managed",
+        source_type: "git",
+        managed_by_app: true,
+      }).canDelete,
+      symlinkDelete: buildSkillCardView({
+        name: "linked",
+        source_type: "symlink",
+        managed_by_app: true,
+      }).canDelete,
+      symlinkUnlink: buildSkillCardView({
+        name: "linked",
+        source_type: "symlink",
+        managed_by_app: true,
+      }).canUnlink,
+    },
+    {
+      unmanaged: false,
+      managed: true,
+      symlinkDelete: false,
+      symlinkUnlink: true,
     }
   );
 });
