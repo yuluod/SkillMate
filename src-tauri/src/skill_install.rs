@@ -939,10 +939,74 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn test_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("skillmate-install-test-{}-{}", name, now_ms()))
+    }
+
+    fn is_windows_symlink_permission_error(error: &std::io::Error) -> bool {
+        cfg!(windows)
+            && (error.kind() == std::io::ErrorKind::PermissionDenied
+                || error.raw_os_error() == Some(1314))
+    }
+
+    #[cfg(unix)]
+    fn create_file_symlink(source: &Path, target: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(source, target)
+    }
+
+    #[cfg(windows)]
+    fn create_file_symlink(source: &Path, target: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(source, target)
+    }
+
+    #[cfg(unix)]
+    fn create_dir_symlink_for_test(source: &Path, target: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(source, target)
+    }
+
+    #[cfg(windows)]
+    fn create_dir_symlink_for_test(source: &Path, target: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_dir(source, target)
+    }
+
+    fn create_file_symlink_or_skip(source: &Path, target: &Path) -> bool {
+        match create_file_symlink(source, target) {
+            Ok(()) => true,
+            Err(error) if is_windows_symlink_permission_error(&error) => {
+                eprintln!("跳过 symlink 单测：当前 Windows 环境不允许创建符号链接：{error}");
+                false
+            }
+            Err(error) => panic!("创建测试符号链接失败: {error}"),
+        }
+    }
+
+    fn dir_symlink_supported_or_skip(source: &Path, target: &Path) -> bool {
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        match create_dir_symlink_for_test(source, target) {
+            Ok(()) => {
+                remove_test_dir_symlink(target);
+                true
+            }
+            Err(error) if is_windows_symlink_permission_error(&error) => {
+                eprintln!("跳过 symlink 单测：当前 Windows 环境不允许创建目录符号链接：{error}");
+                false
+            }
+            Err(error) => panic!("创建测试目录符号链接失败: {error}"),
+        }
+    }
+
+    #[cfg(unix)]
+    fn remove_test_dir_symlink(path: &Path) {
+        let _ = fs::remove_file(path);
+    }
+
+    #[cfg(windows)]
+    fn remove_test_dir_symlink(path: &Path) {
+        let _ = fs::remove_dir(path);
     }
 
     #[test]
@@ -1059,10 +1123,10 @@ mod tests {
         fs::write(src.join("SKILL.md"), "skill").unwrap();
         fs::write(&outside, "outside").unwrap();
 
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&outside, src.join("outside-link")).unwrap();
-        #[cfg(windows)]
-        std::os::windows::fs::symlink_file(&outside, src.join("outside-link")).unwrap();
+        if !create_file_symlink_or_skip(&outside, &src.join("outside-link")) {
+            let _ = fs::remove_dir_all(root);
+            return;
+        }
 
         copy_dir_recursive(&src, &dst).unwrap();
 
@@ -1149,6 +1213,10 @@ mod tests {
         let target_root = root.join("project/.codex/skills");
         fs::create_dir_all(&source).unwrap();
         fs::write(source.join("SKILL.md"), "# Writer\n\n说明").unwrap();
+        if !dir_symlink_supported_or_skip(&source, &target_root.join("__probe")) {
+            let _ = fs::remove_dir_all(root);
+            return;
+        }
 
         let preview = preview_local_symlink_install(&source, &target_root, "writer");
         assert!(preview.can_apply);

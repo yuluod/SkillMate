@@ -461,6 +461,33 @@ mod tests {
         std::fs::write(path, content).unwrap();
     }
 
+    fn is_windows_symlink_permission_error(error: &std::io::Error) -> bool {
+        cfg!(windows)
+            && (error.kind() == std::io::ErrorKind::PermissionDenied
+                || error.raw_os_error() == Some(1314))
+    }
+
+    #[cfg(unix)]
+    fn create_file_symlink(source: &Path, target: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(source, target)
+    }
+
+    #[cfg(windows)]
+    fn create_file_symlink(source: &Path, target: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(source, target)
+    }
+
+    fn create_file_symlink_or_skip(source: &Path, target: &Path) -> bool {
+        match create_file_symlink(source, target) {
+            Ok(()) => true,
+            Err(error) if is_windows_symlink_permission_error(&error) => {
+                eprintln!("跳过 symlink 单测：当前 Windows 环境不允许创建符号链接：{error}");
+                false
+            }
+            Err(error) => panic!("创建测试符号链接失败: {error}"),
+        }
+    }
+
     #[test]
     fn truncate_text_keeps_utf8_boundary() {
         assert_eq!(truncate_text("技能说明", 5), "技...\n(截断)");
@@ -599,10 +626,13 @@ mod tests {
         write_text(&base.join("SKILL.md"), "# Skill\n\n说明内容。");
         write_text(&outside, "secret");
 
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&outside, base.join("secret-link")).unwrap();
-        #[cfg(windows)]
-        std::os::windows::fs::symlink_file(&outside, base.join("secret-link")).unwrap();
+        if !create_file_symlink_or_skip(&outside, &base.join("secret-link")) {
+            std::fs::remove_dir_all(base).ok();
+            if let Some(parent) = outside.parent() {
+                std::fs::remove_dir_all(parent).ok();
+            }
+            return;
+        }
 
         let report = validate_skill_structure(&base);
 

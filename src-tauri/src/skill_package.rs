@@ -142,8 +142,15 @@ fn relative_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .ok()
         .filter(|relative| !relative.as_os_str().is_empty())
-        .map(|relative| relative.to_string_lossy().to_string())
+        .map(normalized_relative_path)
         .unwrap_or_else(|| ".".to_string())
+}
+
+fn normalized_relative_path(path: &Path) -> String {
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn has_entry_document(path: &Path) -> bool {
