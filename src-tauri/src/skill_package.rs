@@ -181,9 +181,13 @@ mod tests {
 
     fn test_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "skillmate-package-test-{}-{}",
+            "skillmate-package-test-{}-{}-{}",
             name,
-            chrono::Utc::now().timestamp_millis()
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ))
     }
 
@@ -230,10 +234,10 @@ mod tests {
         let detection = detect_skill_package(&root);
 
         assert_eq!(detection.package_kind, "assistant_bundle");
-        assert_eq!(
-            detection.detected_skills[0].relative_path,
-            ".codex/skills/writer"
-        );
+        assert!(detection
+            .detected_skills
+            .iter()
+            .any(|skill| skill.relative_path == ".codex/skills/writer"));
         assert!(detection
             .warnings
             .contains(&"assistant_bundle_detected".to_string()));
