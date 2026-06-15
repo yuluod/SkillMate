@@ -8,9 +8,9 @@
 ![pnpm](https://img.shields.io/badge/pnpm-11.6-F69220?logo=pnpm&logoColor=white)
 [![Release](https://github.com/yuluod/SkillMate/actions/workflows/release.yml/badge.svg)](https://github.com/yuluod/SkillMate/actions/workflows/release.yml)
 
-一个跨平台桌面应用程序，用来统一管理目录型 **AI 助手 Skills**。
+SkillMate 是一个跨平台桌面应用，用来盘点、安装、组织和更新本机的目录型 **AI 助手 Skills**。
 
-当前版本刻意收窄了边界：只处理有明确本地 Skill 目录的助手，不再把整包 IDE 扩展和 Skill 混为同一种对象。
+它关注的是可以落到本地目录的 Skill，而不是整包 IDE 扩展、插件市场或通用包管理器。目标是让不同助手下的 Skills 更容易查看、迁移、备份和复用。
 
 ## 当前支持的 AI 助手
 
@@ -19,88 +19,75 @@
 - OpenClaw
 - Gemini CLI
 
-## 当前核心能力
+## 核心能力
 
-### 1. 统一盘点
+### Skill 盘点
 
 - 扫描受支持助手的本地 Skill 目录
-- 展示名称、路径、来源、README 预览和更新状态
-- 用标签对 Skill 做筛选和组织
+- 展示名称、路径、来源、入口文档预览和更新状态
+- 识别 `SKILL.md` / `skill.md`、README 和 `references/`、`scripts/`、`assets/` 资源目录
+- 用 `完整` / `部分` / `非标准` 标记 Skill 结构状态
+- 从 `SKILL.md` frontmatter 中轻量读取标题、说明、标签和兼容信息
 
-### 2. 安装到目标助手
+### 安装 Skill
 
-当前版本只支持两类安装来源：
+安装入口接受 Git 仓库和本地目录：
 
 - Git 仓库
 - 本地目录
 
-Git 仓库安装支持普通仓库地址，也支持通过 `#ref:path` 指定分支 / 标签 / 提交和仓库子目录，例如：
+Git 来源支持普通仓库地址、GitHub shorthand、GitHub tree URL，以及通过 `#ref:path` 指定分支 / 标签 / 提交和仓库子目录：
 
 - `https://github.com/example/skills.git`
+- `example/skills`
 - `https://github.com/example/skills.git#main:skills/writer`
 - `https://github.com/example/skills/tree/main/skills/writer`
 
-Git 来源可以先执行结构预览；预览会临时克隆仓库并识别 `SKILL.md`、README 和资源目录。安装仓库子目录时，SkillMate 会只复制该子目录内容；这类安装会保留来源信息，后续可通过重新拉取该子目录完成一键更新。
+安装前会先生成结构预览和写入计划。Git 来源的预览会临时克隆仓库；安装仓库子目录时，SkillMate 只复制目标子目录，并保留来源信息，后续可通过重新拉取该子目录更新。
 
-安装输入会先经过本地规则识别，不需要模型 API。规则能识别本地目录、Git URL、GitHub `owner/repo` 简写、GitHub tree URL、`repo#ref:path` 和暂未支持的压缩包链接；规则无法判断的自然语言或复杂 README 说明会标记为“可用模型辅助识别”，但当前不会自动调用模型。
+本地目录默认复制到目标助手目录。对于本地目录来源，也可以选择“链接到项目”，把 Skill 软连接到具体项目下的助手目录，例如 `.codex/skills` 或 `.claude/skills`。
 
-安装时必须明确选择目标助手，SkillMate 会把内容真正落到对应助手的受管目录。
+安装输入会先经过本地规则识别，不需要模型 API。规则无法判断的自然语言或复杂说明会标记为“可用模型辅助识别”，但当前版本不会自动调用模型。
 
-### 3. 更新视图
+### 更新视图
 
-更新页会统一展示每个 Skill 的来源和同步状态，当前支持的来源识别类型为：
+更新页会展示每个 Skill 的来源和同步状态，包括：
 
 - `git`
 - `legacy_npm`
 - `legacy_pip`
 - `local`
 
-其中自动更新只针对：
+当前只有 Git 来源支持一键更新。`legacy_npm` 和 `legacy_pip` 只作为历史来源 / 外部环境来源探测，不作为安装入口，也不会在 SkillMate 内执行全局 npm/PyPI 升级。
 
-- Git 仓库
+### 组织与迁移
 
-`legacy_npm` 和 `legacy_pip` 只作为历史来源 / 外部环境来源探测，不作为当前安装入口，也不会在 SkillMate 内执行全局 npm/PyPI 升级。
+- 标签：为 Skill 添加标签并筛选
+- 场景：保存一组 Skill 路径，查看缺失状态，回填编辑器或复制路径
+- 导入 / 导出：导出标签、场景和受管 Skill 清单，导入前可预览变更
+- Git 备份：把受支持助手目录快照到本地 Git 仓库，并可推送到远端
+- SkillMate manifest：导出 / 预览 / 应用 `skillmate.toml`
+- Skill Set Profile：保存一组当前 Skill 来源组合，支持预览、应用和回滚
 
-### 4. 场景管理
+## 当前边界
 
-- 可以把多个 Skill 路径保存成场景
-- 可以查看场景中每个 Skill 的存在状态
-- 可以把场景回填到编辑器继续修改
-- 可以复制场景中的路径列表
-
-### 5. Git 备份
-
-- 保存本地备份仓库路径、远端地址和分支
-- 同步时会把受管助手目录快照到备份仓库
-- 配置了远端时会自动推送
-- 未配置远端时也可以只做本地快照提交
-
-### 6. 组织数据导入 / 导出
-
-- 可以把当前标签、场景和受管 Skill 清单导出为 JSON 文件
-- 可以从导出的 JSON 文件重新导回标签和场景
-- 导入前可以先预览新增、覆盖和清空摘要
-- 导入时支持“合并”和“替换现有组织数据”两种模式
-- 导入 / 导出不会直接覆盖本地 Skill 文件内容
-
-## 当前不做的事情
-
-为了保持产品边界清晰，当前版本暂时不做：
+为了保持语义清晰，当前版本暂不做：
 
 - VSCode / Cursor / Windsurf / Zed 整包扩展管理
-- npm / PyPI 作为安装入口
+- npm / PyPI 安装入口
 - 市场搜索
+- 应用本体自动更新
 
-这些能力后续是否恢复，要等目录型 Skill 闭环足够稳定之后再评估。
+这些能力后续是否加入，取决于目录型 Skill 管理闭环是否足够稳定。
 
 ## 快速开始
 
 ### 前置要求
 
-- Rust
+- Rust stable
 - Node.js 22+
-- Tauri 2.x
 - pnpm
+- Tauri 所需系统依赖，参考 [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)
 
 ### 开发
 
@@ -120,9 +107,11 @@ pnpm dev
 pnpm build
 ```
 
+本地构建遵循 `src-tauri/tauri.conf.json` 中的默认 bundle 配置。跨平台安装包由 GitHub Release workflow 生成。
+
 ### 发布构建
 
-GitHub Release 构建通过 `.github/workflows/release.yml` 执行，当前会为 macOS、Windows 和 Linux 生成安装包。
+GitHub Release 构建通过 `.github/workflows/release.yml` 执行，会为 macOS、Windows 和 Linux 生成安装包。
 
 推荐发布流程：
 
@@ -145,14 +134,19 @@ workflow 会创建草稿 Release，并上传：
 - Rust + SQLite
 - Vite + React
 
-## 前端脚本
+## 常用脚本
 
+- `pnpm dev`
+- `pnpm build`
+- `pnpm test`
 - `pnpm frontend:dev`
 - `pnpm frontend:build`
+- `pnpm frontend:test`
+- `pnpm rust:test`
 
 ## 更新系统说明
 
-更新系统会根据 Skill 的来源进行探测与状态判断。
+Skill 更新系统会根据来源进行探测与状态判断。它用于更新已安装的 Skill，不是应用本体自动更新器。
 
 ### 已展示的关键信息
 
