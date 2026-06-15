@@ -128,12 +128,30 @@ jobs:
       - name: Run Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
-  build-macos:
-    name: Build macOS
-    runs-on: macos-latest
+  prepare-release:
+    name: Prepare release
+    runs-on: ubuntu-22.04
     needs:
       - frontend-test
       - rust-test-macos
+      - rust-test-windows
+      - rust-test-linux
+
+    steps:
+      - name: Remove stale release for this tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          release_id="$(gh api "repos/${{ github.repository }}/releases/tags/${TAG_NAME}" --jq ".id" 2>/dev/null || true)"
+          if [ -n "${release_id}" ]; then
+            gh api --method DELETE "repos/${{ github.repository }}/releases/${release_id}"
+          fi
+
+  build-macos:
+    name: Build macOS
+    runs-on: macos-latest
+    needs: prepare-release
 
     steps:
       - name: Checkout
@@ -172,17 +190,24 @@ jobs:
         with:
           tagName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           releaseName: "SkillMate ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
-          releaseBody: "安装包见下方 Assets。"
+          releaseBody: |
+            ## 安装包
+
+            请从下方 Assets 下载对应系统安装包。
+
+            - macOS: `.dmg`
+            - Windows: `_setup.exe`
+            - Linux: `.deb` 或 `.rpm`
+
           releaseDraft: true
           prerelease: false
+          generateReleaseNotes: true
           args: "--bundles dmg"
 
   build-windows:
     name: Build Windows
     runs-on: windows-latest
-    needs:
-      - frontend-test
-      - rust-test-windows
+    needs: prepare-release
 
     steps:
       - name: Checkout
@@ -221,17 +246,24 @@ jobs:
         with:
           tagName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           releaseName: "SkillMate ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
-          releaseBody: "安装包见下方 Assets。"
+          releaseBody: |
+            ## 安装包
+
+            请从下方 Assets 下载对应系统安装包。
+
+            - macOS: `.dmg`
+            - Windows: `_setup.exe`
+            - Linux: `.deb` 或 `.rpm`
+
           releaseDraft: true
           prerelease: false
+          generateReleaseNotes: true
           args: "--bundles nsis"
 
   build-linux:
     name: Build Linux
     runs-on: ubuntu-22.04
-    needs:
-      - frontend-test
-      - rust-test-linux
+    needs: prepare-release
 
     steps:
       - name: Checkout
@@ -282,7 +314,40 @@ jobs:
         with:
           tagName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           releaseName: "SkillMate ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
-          releaseBody: "安装包见下方 Assets。"
+          releaseBody: |
+            ## 安装包
+
+            请从下方 Assets 下载对应系统安装包。
+
+            - macOS: `.dmg`
+            - Windows: `_setup.exe`
+            - Linux: `.deb` 或 `.rpm`
+
           releaseDraft: true
           prerelease: false
+          generateReleaseNotes: true
           args: "--bundles deb,rpm"
+
+  publish-release:
+    name: Publish release
+    runs-on: ubuntu-22.04
+    needs:
+      - build-macos
+      - build-windows
+      - build-linux
+
+    steps:
+      - name: Publish completed release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          release_id="$(gh api "repos/${{ github.repository }}/releases/tags/${TAG_NAME}" --jq ".id")"
+          cat > release-payload.json <<'JSON'
+          {
+            "draft": false,
+            "prerelease": false,
+            "make_latest": "true"
+          }
+          JSON
+          gh api --method PATCH "repos/${{ github.repository }}/releases/${release_id}" --input release-payload.json
