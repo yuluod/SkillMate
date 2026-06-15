@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "SkillMate",
-  "version": "1.0.0",
-  "identifier": "com.skillmate.app",
+  "version": "0.0.1",
+  "identifier": "io.github.yuluod.skillmate",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",

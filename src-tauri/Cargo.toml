@@ -1,6 +1,6 @@
 [package]
 name = "skillmate"
-version = "1.0.0"
+version = "0.0.1"
 description = "AI Coding Assistant Skill Manager"
 authors = ["SkillMate"]
 license = "AGPL-3.0-or-later"
