@@ -54,6 +54,18 @@ Git 来源支持普通仓库地址、GitHub shorthand、GitHub tree URL，以及
 
 `local` 来源仅做可用性检测与展示，不参与自动更新。`legacy_npm` 和 `legacy_pip` 只作为历史来源 / 外部环境来源探测，不作为安装入口，也不会在 SkillMate 内执行全局 npm/PyPI 升级。
 
+### 应用更新
+
+设置页提供应用更新入口，可以检查 GitHub Releases 上的最新版本，并通过 Tauri updater 校验签名后安装更新。
+
+当前发布包覆盖：
+
+- macOS Apple Silicon
+- Windows x64
+- Linux x64
+
+Intel Mac 暂不作为 v0.x 发布目标。
+
 ### 组织与迁移
 
 - 标签：为 Skill 添加标签并筛选
@@ -70,6 +82,5 @@ Git 来源支持普通仓库地址、GitHub shorthand、GitHub tree URL，以及
 - VSCode / Cursor / Windsurf / Zed 整包扩展管理
 - npm / PyPI 安装入口
 - 市场搜索
-- 应用本体自动更新
 
 这些能力后续是否加入，取决于目录型 Skill 管理闭环是否足够稳定。

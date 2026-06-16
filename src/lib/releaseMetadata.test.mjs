@@ -38,7 +38,7 @@ test("发布元数据版本必须保持一致", () => {
   const tauriConfig = readJson("src-tauri/tauri.conf.json");
   const cargoVersion = readCargoPackageVersion();
 
-  assert.equal(packageJson.version, "0.0.2");
+  assert.equal(packageJson.version, "0.0.3");
   assert.equal(tauriConfig.version, packageJson.version);
   assert.equal(cargoVersion, packageJson.version);
 });
@@ -72,6 +72,9 @@ test("Release workflow 必须发布 updater metadata", () => {
 
   assert.match(workflow, /TAURI_SIGNING_PRIVATE_KEY/);
   assert.match(workflow, /缺少 updater 签名密钥/);
+  assert.match(workflow, /macOS Apple Silicon/);
+  assert.match(workflow, /Intel Mac 暂不作为 v0\.x 发布目标/);
+  assert.match(workflow, /args: "--bundles app,dmg"/);
   assert.equal((workflow.match(/includeUpdaterJson: true/g) || []).length, 3);
   assert.equal((workflow.match(/updaterJsonPreferNsis: true/g) || []).length, 3);
 });

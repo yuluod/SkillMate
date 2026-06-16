@@ -174,9 +174,11 @@ jobs:
 
           请从下方 Assets 下载对应系统安装包。
 
-          - macOS: `.dmg`
+          - macOS Apple Silicon: `_aarch64.dmg`
           - Windows: `_setup.exe`
           - Linux: `.deb` 或 `.rpm`
+
+          当前 macOS 发布包面向 Apple Silicon；Intel Mac 暂不作为 v0.x 发布目标。
           EOF
 
           release_id="$(
@@ -238,7 +240,7 @@ jobs:
           tagName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
-          args: "--bundles dmg"
+          args: "--bundles app,dmg"
 
   build-windows:
     name: Build Windows
