@@ -10,8 +10,12 @@ function readJson(relativePath) {
   return JSON.parse(readFileSync(resolve(repoRoot, relativePath), "utf8"));
 }
 
+function readText(relativePath) {
+  return readFileSync(resolve(repoRoot, relativePath), "utf8");
+}
+
 function readCargoPackageVersion() {
-  const cargoToml = readFileSync(resolve(repoRoot, "src-tauri/Cargo.toml"), "utf8");
+  const cargoToml = readText("src-tauri/Cargo.toml");
   const lines = cargoToml.split(/\r?\n/);
   const packageStart = lines.findIndex((line) => line.trim() === "[package]");
   assert.notEqual(packageStart, -1, "Cargo.toml 必须包含 [package] 区块");
@@ -44,4 +48,30 @@ test("Tauri bundle identifier 不应使用 .app 结尾", () => {
 
   assert.equal(tauriConfig.identifier, "io.github.yuluod.skillmate");
   assert.ok(!tauriConfig.identifier.endsWith(".app"));
+});
+
+test("Tauri updater 配置必须生成签名更新包", () => {
+  const tauriConfig = readJson("src-tauri/tauri.conf.json");
+  const capabilities = readJson("src-tauri/capabilities/default.json");
+
+  assert.equal(tauriConfig.bundle.createUpdaterArtifacts, true);
+  assert.match(
+    tauriConfig.plugins.updater.pubkey,
+    /^dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6/
+  );
+  assert.deepEqual(tauriConfig.plugins.updater.endpoints, [
+    "https://github.com/yuluod/SkillMate/releases/latest/download/latest.json",
+  ]);
+  assert.equal(tauriConfig.plugins.updater.windows.installMode, "passive");
+  assert.ok(capabilities.permissions.includes("updater:default"));
+  assert.ok(capabilities.permissions.includes("process:default"));
+});
+
+test("Release workflow 必须发布 updater metadata", () => {
+  const workflow = readText(".github/workflows/release.yml");
+
+  assert.match(workflow, /TAURI_SIGNING_PRIVATE_KEY/);
+  assert.match(workflow, /缺少 updater 签名密钥/);
+  assert.equal((workflow.match(/includeUpdaterJson: true/g) || []).length, 3);
+  assert.equal((workflow.match(/updaterJsonPreferNsis: true/g) || []).length, 3);
 });
