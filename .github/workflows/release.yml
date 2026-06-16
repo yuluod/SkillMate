@@ -238,8 +238,6 @@ jobs:
         with:
           releaseId: ${{ needs.prepare-release.outputs.release_id }}
           tagName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-          includeUpdaterJson: true
-          updaterJsonPreferNsis: true
           args: "--bundles app,dmg"
 
   build-windows:
@@ -286,8 +284,6 @@ jobs:
         with:
           releaseId: ${{ needs.prepare-release.outputs.release_id }}
           tagName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-          includeUpdaterJson: true
-          updaterJsonPreferNsis: true
           args: "--bundles nsis"
 
   build-linux:
@@ -346,8 +342,6 @@ jobs:
         with:
           releaseId: ${{ needs.prepare-release.outputs.release_id }}
           tagName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-          includeUpdaterJson: true
-          updaterJsonPreferNsis: true
           args: "--bundles deb,rpm"
 
   publish-release:
@@ -360,6 +354,93 @@ jobs:
       - build-linux
 
     steps:
+      - name: Generate updater metadata
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
+          TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh api "repos/${REPOSITORY}/releases/${RELEASE_ID}" > release.json
+          node <<'NODE'
+          const fs = require("fs");
+          const { execFileSync } = require("child_process");
+
+          const release = JSON.parse(fs.readFileSync("release.json", "utf8"));
+          const repo = process.env.REPOSITORY;
+          const tagName = process.env.TAG_NAME;
+          const version = tagName.replace(/^v/, "");
+          const assets = new Map(release.assets.map((asset) => [asset.name, asset]));
+
+          function requireAsset(name) {
+            const asset = assets.get(name);
+            if (!asset) {
+              throw new Error(`缺少 release asset: ${name}`);
+            }
+            return asset;
+          }
+
+          function signatureFor(assetName) {
+            const sigAsset = requireAsset(`${assetName}.sig`);
+            const signature = execFileSync("gh", [
+              "api",
+              `repos/${repo}/releases/assets/${sigAsset.id}`,
+              "-H",
+              "Accept: application/octet-stream",
+            ]).toString("utf8").trim();
+            if (!signature) {
+              throw new Error(`updater 签名为空: ${assetName}.sig`);
+            }
+            return signature;
+          }
+
+          function entry(assetName) {
+            const asset = requireAsset(assetName);
+            return {
+              signature: signatureFor(assetName),
+              url: asset.browser_download_url,
+            };
+          }
+
+          const macApp = entry("SkillMate_aarch64.app.tar.gz");
+          const windowsNsis = entry(`SkillMate_${version}_x64-setup.exe`);
+          const linuxDeb = entry(`SkillMate_${version}_amd64.deb`);
+          const linuxRpm = entry(`SkillMate-${version}-1.x86_64.rpm`);
+          const platforms = {
+            "darwin-aarch64": macApp,
+            "darwin-aarch64-app": macApp,
+            "linux-x86_64": linuxDeb,
+            "linux-x86_64-deb": linuxDeb,
+            "linux-x86_64-rpm": linuxRpm,
+            "windows-x86_64": windowsNsis,
+            "windows-x86_64-nsis": windowsNsis,
+          };
+          const requiredPlatforms = [
+            "darwin-aarch64",
+            "darwin-aarch64-app",
+            "windows-x86_64",
+            "windows-x86_64-nsis",
+            "linux-x86_64",
+            "linux-x86_64-deb",
+            "linux-x86_64-rpm",
+          ];
+          const missing = requiredPlatforms.filter((platform) => !platforms[platform]);
+          if (missing.length > 0) {
+            throw new Error(`latest.json 缺少平台: ${missing.join(", ")}`);
+          }
+
+          fs.writeFileSync(
+            "latest.json",
+            `${JSON.stringify({
+              version,
+              notes: release.body || "",
+              pub_date: new Date().toISOString(),
+              platforms,
+            }, null, 2)}\n`
+          );
+          NODE
+          gh release upload "${TAG_NAME}" latest.json --clobber --repo "${REPOSITORY}"
+
       - name: Publish completed release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

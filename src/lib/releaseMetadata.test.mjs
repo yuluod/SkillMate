@@ -53,8 +53,13 @@ test("Tauri bundle identifier 不应使用 .app 结尾", () => {
 test("Tauri updater 配置必须生成签名更新包", () => {
   const tauriConfig = readJson("src-tauri/tauri.conf.json");
   const capabilities = readJson("src-tauri/capabilities/default.json");
+  const security = tauriConfig.app.security;
 
   assert.equal(tauriConfig.bundle.createUpdaterArtifacts, true);
+  assert.doesNotMatch(security.csp, /unsafe-eval/);
+  assert.doesNotMatch(security.csp, /localhost:1420/);
+  assert.match(security.devCsp, /unsafe-eval/);
+  assert.match(security.devCsp, /localhost:1420/);
   assert.match(
     tauriConfig.plugins.updater.pubkey,
     /^dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6/
@@ -75,6 +80,25 @@ test("Release workflow 必须发布 updater metadata", () => {
   assert.match(workflow, /macOS Apple Silicon/);
   assert.match(workflow, /Intel Mac 暂不作为 v0\.x 发布目标/);
   assert.match(workflow, /args: "--bundles app,dmg"/);
-  assert.equal((workflow.match(/includeUpdaterJson: true/g) || []).length, 3);
-  assert.equal((workflow.match(/updaterJsonPreferNsis: true/g) || []).length, 3);
+  assert.equal((workflow.match(/includeUpdaterJson: true/g) || []).length, 0);
+  assert.equal((workflow.match(/updaterJsonPreferNsis: true/g) || []).length, 0);
+  assert.match(workflow, /Generate updater metadata/);
+  assert.match(workflow, /SkillMate_aarch64\.app\.tar\.gz/);
+  assert.match(workflow, /SkillMate_\$\{version\}_x64-setup\.exe/);
+  assert.match(workflow, /SkillMate_\$\{version\}_amd64\.deb/);
+  assert.match(workflow, /SkillMate-\$\{version\}-1\.x86_64\.rpm/);
+  assert.match(workflow, /\.toString\("utf8"\)\.trim\(\)/);
+  assert.doesNotMatch(workflow, /\.toString\("base64"\)/);
+  assert.match(workflow, /updater 签名为空/);
+  for (const platform of [
+    "darwin-aarch64",
+    "darwin-aarch64-app",
+    "windows-x86_64",
+    "windows-x86_64-nsis",
+    "linux-x86_64",
+    "linux-x86_64-deb",
+    "linux-x86_64-rpm",
+  ]) {
+    assert.match(workflow, new RegExp(`"${platform}"`));
+  }
 });
