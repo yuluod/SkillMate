@@ -1,5 +1,12 @@
 import React, { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import Icon from "./components/Icon.jsx";
+import {
+  ConfirmModal,
+  InstallModal,
+  PreviewModal,
+  TagEditorModal,
+} from "./components/SkillMateModals.jsx";
 import claudeLogo from "./assets/brands/claude.svg";
 import codexLogo from "./assets/brands/codex-openai.svg";
 import openclawLogo from "./assets/brands/openclaw.svg";
@@ -13,21 +20,14 @@ import {
   buildAppUpdateView,
   buildImportPreviewSummary,
   buildGitBackupPayload,
-  buildValidationSummary,
   buildSkillCardView,
   buildScenarioManifestPreviewSummary,
   buildSkillMateManifestPreviewSummary,
   buildSkillProfilePreviewSummary,
-  buildProjectTargetPreviewSummary,
-  buildInstallPreviewSummary,
-  buildStructureWarningSummary,
   filterSkillsByScenario,
   formatScenarioCopyText,
-  getStructureStatusLabel,
-  getStructureStatusTone,
   normalizeScenarioSkillPaths,
   resolveScenarioSkills,
-  SUPPORTED_INSTALL_SOURCES,
 } from "./lib/skillmate.mjs";
 import { useAppUpdateFlow, useImportExportFlow, useInstallFlow, useUpdateFlow } from "./lib/skillmateFlows.js";
 
@@ -121,38 +121,6 @@ const AiAvatar = React.memo(function AiAvatar({ name, size = 36 }) {
         <span style={{ fontSize: Math.max(10, size * 0.34), fontWeight: 700 }}>{name.slice(0, 1)}</span>
       )}
     </div>
-  );
-});
-
-const Icon = React.memo(function Icon({ name, size = 18 }) {
-  const paths = {
-    refresh: <><path d="M21 12a9 9 0 1 1-2.64-6.36" /><path d="M21 4v5h-5" /></>,
-    plus: <><path d="M12 5v14" /><path d="M5 12h14" /></>,
-    skills: <><rect x="4" y="5" width="16" height="14" rx="2" /><path d="M8 9h8" /><path d="M8 13h5" /></>,
-    assistants: <><circle cx="12" cy="8" r="3" /><path d="M5 19a7 7 0 0 1 14 0" /></>,
-    scenarios: <><path d="M3 7h7l2 2h9v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></>,
-    updates: <><path d="M21 12a9 9 0 1 1-2.64-6.36" /><path d="M21 3v6h-6" /></>,
-    settings: <><circle cx="12" cy="12" r="3" /><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" /></>,
-    folder: <><path d="M3 7h7l2 2h9v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></>,
-    preview: <><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z" /><circle cx="12" cy="12" r="2.5" /></>,
-    trash: <><path d="M4 7h16" /><path d="M9 7V5h6v2" /><path d="M7 7l1 12h8l1-12" /></>,
-    check: <><path d="M20 6L9 17l-5-5" /></>,
-    lock: <><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></>,
-    sun: <><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" /></>,
-    moon: <><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 1 0 9.8 9.8z" /></>,
-    monitor: <><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /></>,
-    search: <><circle cx="11" cy="11" r="7" /><path d="M21 21l-4.35-4.35" /></>,
-    tag: <><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" /><circle cx="7" cy="7" r="1" /></>,
-    x: <><path d="M18 6L6 18M6 6l12 12" /></>,
-    upload: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></>,
-    clock: <><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></>,
-    box: <><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" /><polyline points="3.27 6.96 12 12.01 20.73 6.96" /><line x1="12" y1="22.08" x2="12" y2="12" /></>,
-    sparkles: <><path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z" /><path d="M5 19l.5 1.5L7 21l-1.5.5L5 23l-.5-1.5L3 21l1.5-.5L5 19z" /><path d="M19 13l.5 1.5L21 15l-1.5.5L19 17l-.5-1.5L17 15l1.5-.5L19 13z" /></>
-  };
-  return (
-    <svg className="icon" style={{ width: size, height: size }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      {paths[name]}
-    </svg>
   );
 });
 
@@ -284,6 +252,9 @@ function App() {
   const [sysTheme, setSysTheme] = useState(getSystemTheme);
   const searchRef = useRef(null);
   const searchTimerRef = useRef(null);
+  const toastTimerRef = useRef(null);
+  const mountedRef = useRef(false);
+  const loadRequestRef = useRef(0);
 
   const resolved = theme === "system" ? sysTheme : theme;
 
@@ -307,9 +278,16 @@ function App() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  // Cleanup debounce timer on unmount
+  // 初始加载需要在 StrictMode 下保持幂等，并避免卸载后继续写状态。
   useEffect(() => {
-    return () => clearTimeout(searchTimerRef.current);
+    mountedRef.current = true;
+    loadData({ resetUpdates: false });
+    return () => {
+      mountedRef.current = false;
+      loadRequestRef.current += 1;
+      clearTimeout(searchTimerRef.current);
+      clearTimeout(toastTimerRef.current);
+    };
   }, []);
 
   // Custom confirm dialog helper
@@ -317,7 +295,6 @@ function App() {
     setConfirmState({ open: true, title, message, onConfirm });
   }
 
-  useEffect(() => { loadData(); }, []);
   useEffect(() => {
     const m = window.matchMedia("(prefers-color-scheme: dark)");
     const handler = () => setSysTheme(m.matches ? "dark" : "light");
@@ -337,25 +314,42 @@ function App() {
   }
 
   function showToast(msg, type = "") {
+    clearTimeout(toastTimerRef.current);
     setToastState({ show: true, msg, type });
-    setTimeout(() => setToastState(t => ({ ...t, show: false })), 3000);
+    toastTimerRef.current = setTimeout(() => {
+      if (mountedRef.current) {
+        setToastState(t => ({ ...t, show: false }));
+      }
+    }, 3000);
   }
 
-  async function loadData() {
+  async function loadData(options = {}) {
+    const resetUpdates = options?.resetUpdates ?? true;
+    const requestId = ++loadRequestRef.current;
     setLoading(true);
     try {
       const [assistants, tags, scenarios, git] = await Promise.all([
         invoke("get_all_assistants"), invoke("get_all_tags"),
         invoke("get_scenarios"), invoke("get_git_backup")
       ]);
+      if (!mountedRef.current || requestId !== loadRequestRef.current) return;
       setData({ assistants, tags, scenarios, git });
       setTags(tags);
-      resetUpdateState();
+      if (resetUpdates) resetUpdateState();
       setGitRepoPath(git.repo_path || "");
       setGitRemoteUrl(git.remote_url || "");
       setGitBranch(git.branch || "main");
-    } catch (e) { showToast(`加载失败: ${e}`, "error"); }
-    finally { setLoading(false); setInit(false); }
+    } catch (e) {
+      if (mountedRef.current && requestId === loadRequestRef.current) {
+        showToast(`加载失败: ${e}`, "error");
+      }
+    }
+    finally {
+      if (mountedRef.current && requestId === loadRequestRef.current) {
+        setLoading(false);
+        setInit(false);
+      }
+    }
   }
 
   const selectedTags = tags.filter(t => t.selected).map(t => t.id);
@@ -579,8 +573,8 @@ function App() {
     confirmAction("删除确认", `确定要删除「${name}」吗？此操作不可恢复。`, async () => {
       setLoading(true);
       try {
-        const r = await invoke("delete_skill", { path });
-        showToast(String(r).includes("已删除") ? "已删除" : "删除失败", String(r).includes("已删除") ? "success" : "error");
+        await invoke("delete_skill", { path });
+        showToast("已删除", "success");
         await loadData();
       } catch (e) { showToast(`删除失败: ${e}`, "error"); }
       finally { setLoading(false); }
@@ -1146,8 +1140,8 @@ function App() {
                         <span>{importMode === "replace" ? "将先清空再恢复组织数据" : "仅写入导入文件中的组织数据"}</span>
                       </div>
                       <ul className="import-preview-list">
-                        {buildImportPreviewSummary(importPreview).map((line) => (
-                          <li key={line}>{line}</li>
+                        {buildImportPreviewSummary(importPreview).map((line, index) => (
+                          <li key={`${line}-${index}`}>{line}</li>
                         ))}
                       </ul>
                     </div>
@@ -1170,8 +1164,8 @@ function App() {
                         <span>{scenarioManifestMode === "replace" ? "将先清空现有场景" : "仅写入 manifest 中的场景"}</span>
                       </div>
                       <ul className="import-preview-list">
-                        {buildScenarioManifestPreviewSummary(scenarioManifestPreview).map((line) => (
-                          <li key={line}>{line}</li>
+                        {buildScenarioManifestPreviewSummary(scenarioManifestPreview).map((line, index) => (
+                          <li key={`${line}-${index}`}>{line}</li>
                         ))}
                       </ul>
                     </div>
@@ -1203,8 +1197,8 @@ function App() {
                         <span>{skillMateManifestPreview.can_apply ? "可应用" : "存在冲突"}</span>
                       </div>
                       <ul className="import-preview-list">
-                        {buildSkillMateManifestPreviewSummary(skillMateManifestPreview).map((line) => (
-                          <li key={line}>{line}</li>
+                        {buildSkillMateManifestPreviewSummary(skillMateManifestPreview).map((line, index) => (
+                          <li key={`${line}-${index}`}>{line}</li>
                         ))}
                       </ul>
                     </div>
@@ -1258,8 +1252,8 @@ function App() {
                         <span>{skillProfilePreview.manifest_preview?.can_apply && !skillProfilePreview.profile_issues?.length ? "可应用" : "存在问题"}</span>
                       </div>
                       <ul className="import-preview-list">
-                        {buildSkillProfilePreviewSummary(skillProfilePreview).map((line) => (
-                          <li key={line}>{line}</li>
+                        {buildSkillProfilePreviewSummary(skillProfilePreview).map((line, index) => (
+                          <li key={`${line}-${index}`}>{line}</li>
                         ))}
                       </ul>
                     </div>
@@ -1282,191 +1276,64 @@ function App() {
       </div>
 
       {installOpen && (
-        <div className="modal-overlay" onClick={() => setInstallOpen(false)}>
-          <div className="modal install-modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-head"><h3><Icon name="plus" size={18} />安装 Skill</h3><button className="modal-x" onClick={() => setInstallOpen(false)}><Icon name="x" size={20} /></button></div>
-            <div className="form">
-              <label>Skill 来源</label>
-              <input value={pkg} onChange={e => setPkg(e.target.value)} placeholder="Git URL、owner/repo、GitHub tree URL 或本地目录" />
-            </div>
-            {installDetectionView && (
-              <div className={`install-compact ${installDetectionView.tone}`}>
-                <span>{installDetectionView.sourceLabel}</span>
-                <strong>{installDetectionView.summary}</strong>
-                {installDetectionView.warningSummary && <p>{installDetectionView.warningSummary}</p>}
-              </div>
-            )}
-            <div className="install-target">
-              <div className="form">
-                <label>安装到</label>
-                <select value={installAssistant} onChange={e => setInstallAssistant(e.target.value)}>
-                  {data.assistants.map((assistant) => (
-                    <option key={assistant.name} value={assistant.name}>{assistant.name}</option>
-                  ))}
-                </select>
-              </div>
-              {showProjectLinkOption && (
-                <label className="install-switch">
-                  <input type="checkbox" checked={installMode === "symlink"} onChange={e => setInstallMode(e.target.checked ? "symlink" : "copy")} />
-                  <span>链接到项目</span>
-                </label>
-              )}
-            </div>
-            {showProjectLinkOption && installMode === "symlink" && (
-              <div className="install-project">
-                <div className="form">
-                  <label>项目路径</label>
-                  <input value={projectPath} onChange={e => setProjectPath(e.target.value)} placeholder="/path/to/project" />
-                </div>
-                {previewingProjectTargets && <div className="git-meta">正在识别项目目标目录...</div>}
-                {projectTargetPreview.length > 0 && (
-                  <ul className="import-preview-list">
-                    {buildProjectTargetPreviewSummary(projectTargetPreview).map((line) => (
-                      <li key={line}>{line}</li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )}
-            {(showInstallAdvancedOptions || installAdvancedOpen) && (
-              <div className="install-advanced">
-                <div className="form">
-                  <label>来源类型</label>
-                  <select value={src} onChange={e => setSrc(e.target.value)}>
-                    {SUPPORTED_INSTALL_SOURCES.map((source) => (
-                      <option key={source} value={source}>{source === "git" ? "Git 仓库" : "本地目录"}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            )}
-            {installStructurePreview && (
-              <div className={`structure-preview install-preview-card ${installPreviewView?.tone || (installStructurePreview.can_install === false ? "error" : getStructureStatusTone(installStructurePreview.structure_status))}`}>
-                <div className="structure-preview-head">
-                  <span>安装计划</span>
-                  <strong>{installPreviewView?.canApply && installPreviewCurrent ? "可安装" : "需要检查"}</strong>
-                </div>
-                <ul className="install-summary-list">
-                  {buildInstallPreviewSummary(installStructurePreview).slice(0, 4).map((line) => (
-                    <li key={line}>{line}</li>
-                  ))}
-                </ul>
-                {!installPreviewCurrent && <p>输入已变化，请重新检查结构。</p>}
-              </div>
-            )}
-            <button className="btn btn-primary full install-primary" onClick={runInstallPrimaryAction} disabled={installPrimaryAction.disabled || loading}>
-              <Icon name={installPrimaryAction.icon} size={16} />{installPrimaryAction.label}
-            </button>
-            <div className="install-secondary-actions">
-              <button className="btn btn-ghost btn-sm" onClick={() => setInstallDetailsOpen(!installDetailsOpen)}>
-                <Icon name="preview" size={14} />{installDetailsOpen ? "收起执行信息" : "查看执行信息"}
-              </button>
-              <button className="btn btn-ghost btn-sm" onClick={() => setInstallAdvancedOpen(!installAdvancedOpen)}>
-                <Icon name="settings" size={14} />{installAdvancedOpen ? "收起高级选项" : "高级选项"}
-              </button>
-            </div>
-            {installDetailsOpen && (
-              <div className="install-details">
-                <div className="form"><label>执行方式</label><div className="cmd">{cmd}</div></div>
-                {installStructurePreview && (
-                  <>
-                    <p>{buildStructureWarningSummary(installStructurePreview)}</p>
-                    {installPreviewView?.packageWarnings && <p>{installPreviewView.packageWarnings}</p>}
-                    {installPreviewView?.needsModel && <p>本地规则置信度不足，可后续启用模型辅助识别。</p>}
-                    {installPreviewView?.skills?.length > 0 && (
-                      <ul className="import-preview-list">
-                        {installPreviewView.skills.map((skill) => (
-                          <li key={skill.relative_path}>{skill.relative_path} · {getStructureStatusLabel(skill.structure_status)}</li>
-                        ))}
-                      </ul>
-                    )}
-                    {installPreviewView?.actions?.length > 0 && (
-                      <ul className="import-preview-list">
-                        {installPreviewView.actions.map((action) => (
-                          <li key={`${action.action}-${action.target}`}>{action.label}：{action.source} → {action.target}</li>
-                        ))}
-                      </ul>
-                    )}
-                    {installPreviewView?.conflicts?.length > 0 && (
-                      <ul className="import-preview-list danger">
-                        {installPreviewView.conflicts.map((conflict) => (
-                          <li key={`${conflict.reason}-${conflict.target}`}>{conflict.target}：{conflict.reason}</li>
-                        ))}
-                      </ul>
-                    )}
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
+        <InstallModal
+          pkg={pkg}
+          setPkg={setPkg}
+          installDetectionView={installDetectionView}
+          installAssistant={installAssistant}
+          setInstallAssistant={setInstallAssistant}
+          assistants={data.assistants}
+          showProjectLinkOption={showProjectLinkOption}
+          installMode={installMode}
+          setInstallMode={setInstallMode}
+          projectPath={projectPath}
+          setProjectPath={setProjectPath}
+          previewingProjectTargets={previewingProjectTargets}
+          projectTargetPreview={projectTargetPreview}
+          showInstallAdvancedOptions={showInstallAdvancedOptions}
+          installAdvancedOpen={installAdvancedOpen}
+          setInstallAdvancedOpen={setInstallAdvancedOpen}
+          src={src}
+          setSrc={setSrc}
+          installStructurePreview={installStructurePreview}
+          installPreviewView={installPreviewView}
+          installPreviewCurrent={installPreviewCurrent}
+          runInstallPrimaryAction={runInstallPrimaryAction}
+          installPrimaryAction={installPrimaryAction}
+          loading={loading}
+          installDetailsOpen={installDetailsOpen}
+          setInstallDetailsOpen={setInstallDetailsOpen}
+          cmd={cmd}
+          onClose={() => setInstallOpen(false)}
+        />
       )}
 
       {previewOpen && (
-        <div className="modal-overlay" onClick={() => setPreviewOpen(false)}>
-          <div className="modal large" onClick={e => e.stopPropagation()}>
-            <div className="modal-head"><h3>{preview.title}</h3><button className="modal-x" onClick={() => setPreviewOpen(false)}><Icon name="x" size={20} /></button></div>
-            {preview.validation && (
-              <div className="import-preview" style={{ marginBottom: 14 }}>
-                <div className="import-preview-head">
-                  <strong>结构验证</strong>
-                  <span>{getStructureStatusLabel(preview.validation.structure_status)}</span>
-                </div>
-                <ul className="import-preview-list">
-                  {buildValidationSummary(preview.validation).map((check) => (
-                    <li key={check.code}>{check.code}：{check.label} · {check.message}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            <pre className="readme">{preview.content}</pre>
-          </div>
-        </div>
+        <PreviewModal preview={preview} onClose={() => setPreviewOpen(false)} />
       )}
 
       {tagEditor.open && (
-        <div className="modal-overlay" onClick={() => setTagEditor({ open: false, skill: null, selected: [] })}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-head">
-              <h3>编辑标签</h3>
-              <button className="modal-x" onClick={() => setTagEditor({ open: false, skill: null, selected: [] })}><Icon name="x" size={20} /></button>
-            </div>
-            <p style={{ color: "var(--text2)", fontSize: "0.9rem", marginBottom: 16 }}>{tagEditor.skill?.name}</p>
-            <div className="tag-list">
-              {tags.map((tag) => (
-                <button
-                  key={tag.id}
-                  className={`tag-chip ${tagEditor.selected.includes(tag.id) ? "active" : ""}`}
-                  style={{ "--c": tag.color }}
-                  onClick={() => toggleSkillTag(tag.id)}
-                >
-                  <span className="tag-dot" />
-                  {tag.name}
-                </button>
-              ))}
-              {tags.length === 0 && <p className="empty-hint">请先在设置页创建标签</p>}
-            </div>
-            <div className="card-actions" style={{ justifyContent: "flex-end", marginTop: 20 }}>
-              <button className="btn btn-secondary btn-sm" onClick={() => setTagEditor({ open: false, skill: null, selected: [] })}>取消</button>
-              <button className="btn btn-primary btn-sm" onClick={saveSkillTags}>保存</button>
-            </div>
-          </div>
-        </div>
+        <TagEditorModal
+          tagEditor={tagEditor}
+          tags={tags}
+          toggleSkillTag={toggleSkillTag}
+          saveSkillTags={saveSkillTags}
+          onClose={() => setTagEditor({ open: false, skill: null, selected: [] })}
+        />
       )}
 
       <div className={`toast ${toastState.show ? "show" : ""} ${toastState.type}`}>{toastState.msg}</div>
 
       {confirmState.open && (
-        <div className="modal-overlay" onClick={() => setConfirmState(s => ({ ...s, open: false }))}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-head"><h3>{confirmState.title}</h3><button className="modal-x" onClick={() => setConfirmState(s => ({ ...s, open: false }))}><Icon name="x" size={20} /></button></div>
-            <p style={{ color: "var(--text2)", fontSize: "0.9rem", marginBottom: 20 }}>{confirmState.message}</p>
-            <div className="card-actions" style={{ justifyContent: "flex-end" }}>
-              <button className="btn btn-secondary btn-sm" onClick={() => setConfirmState(s => ({ ...s, open: false }))}>取消</button>
-              <button className="btn btn-danger btn-sm" onClick={() => { const cb = confirmState.onConfirm; setConfirmState({ open: false, title: "", message: "", onConfirm: null }); cb?.(); }}>确认删除</button>
-            </div>
-          </div>
-        </div>
+        <ConfirmModal
+          confirmState={confirmState}
+          onClose={() => setConfirmState({ open: false, title: "", message: "", onConfirm: null })}
+          onConfirm={() => {
+            const cb = confirmState.onConfirm;
+            setConfirmState({ open: false, title: "", message: "", onConfirm: null });
+            cb?.();
+          }}
+        />
       )}
     </div>
   );

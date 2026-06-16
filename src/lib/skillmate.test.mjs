@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   SUPPORTED_INSTALL_SOURCES,
@@ -42,6 +43,14 @@ import {
   shouldShowProjectLinkOption,
 } from "./skillmate.mjs";
 
+function readAppSource() {
+  return readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
+}
+
+function readModalShellSource() {
+  return readFileSync(new URL("../components/ModalShell.jsx", import.meta.url), "utf8");
+}
+
 test("应用更新状态视图应当映射按钮能力和版本信息", () => {
   assert.deepEqual(
     buildAppUpdateView({
@@ -76,6 +85,21 @@ test("应用更新进度应当优先展示百分比", () => {
   assert.equal(buildAppUpdateProgressText({ downloaded: 2048, contentLength: 0 }), "2 KB");
   assert.equal(getAppUpdateStatusLabel("ready_to_restart"), "等待重启");
   assert.equal(getAppUpdateStatusTone("error"), "error");
+});
+
+test("App 可靠性回归点应当避免脆弱写法", () => {
+  const source = readAppSource();
+  const modalShell = readModalShellSource();
+
+  assert.doesNotMatch(source, /key=\{line\}/);
+  assert.doesNotMatch(source, /includes\("已删除"\)/);
+  assert.match(source, /toastTimerRef/);
+  assert.match(source, /loadRequestRef/);
+  assert.match(source, /SkillMateModals\.jsx/);
+  assert.match(modalShell, /function ModalShell/);
+  assert.match(modalShell, /role="dialog"/);
+  assert.match(modalShell, /aria-modal="true"/);
+  assert.match(modalShell, /event\.key === "Escape"/);
 });
 
 test("安装来源只保留 Git 仓库和本地目录", () => {
