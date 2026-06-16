@@ -1,4 +1,4 @@
-use crate::app_core::expand_path;
+use crate::app_core::{expand_path, run_command_with_timeout};
 use crate::managed_state::mark_managed_skill;
 pub use crate::skill_install_source::{
     detect_install_source_rules, install_target_name, is_git_install_source,
@@ -10,8 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
-use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InstallResult {
@@ -895,40 +894,6 @@ fn format_git_error(out: &Output) -> String {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     } else {
         stderr
-    }
-}
-
-fn run_command_with_timeout(
-    cmd: &str,
-    args: &[&str],
-    current_dir: Option<&Path>,
-    timeout: Duration,
-    envs: &[(&str, &str)],
-) -> Result<Output, String> {
-    let mut command = Command::new(cmd);
-    command
-        .args(args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    if let Some(dir) = current_dir {
-        command.current_dir(dir);
-    }
-    for (key, value) in envs {
-        command.env(key, value);
-    }
-
-    let mut child = command.spawn().map_err(|e| e.to_string())?;
-    let start = Instant::now();
-    loop {
-        match child.try_wait().map_err(|e| e.to_string())? {
-            Some(_) => return child.wait_with_output().map_err(|e| e.to_string()),
-            None if start.elapsed() >= timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("命令执行超时（{} 秒）", timeout.as_secs()));
-            }
-            None => sleep(Duration::from_millis(100)),
-        }
     }
 }
 

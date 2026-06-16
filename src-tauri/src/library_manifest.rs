@@ -44,11 +44,11 @@ pub fn build_library_export(
     for assistant in assistants {
         for skill in assistant.skills {
             skills.push(LibrarySkillRecord {
-                name: skill.name,
-                path: skill.path,
+                name: skill.inventory.name,
+                path: skill.inventory.path,
                 assistant: assistant.name.clone(),
-                source_type: skill.source_type,
-                tags: skill.tags,
+                source_type: skill.inventory.source_type,
+                tags: skill.inventory.tags,
             });
         }
     }

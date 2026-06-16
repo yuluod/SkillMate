@@ -39,12 +39,12 @@ use skill_origin::{
     load_origin_meta, probe_skill_state, save_installed_git_meta as save_git_origin_meta,
     sync_info_json, update_skill_from_upstream,
 };
-use skill_package::{detect_skill_package, PackageDetection};
+use skill_package::PackageDetection;
 use skill_profile::{
     read_skill_profiles, rollback_active_profile, set_active_profile, upsert_skill_profile,
     validate_skill_profile, SkillSetProfileDiff, SkillSetProfilePreview, SkillSetProfileStore,
 };
-use skill_structure::{analyze_skill_structure, read_skill_preview, SkillStructureInfo};
+use skill_structure::{read_skill_preview, SkillStructureInfo};
 use skill_structure::{validate_skill_structure, SkillValidationReport};
 use skillmate_manifest::{
     preview_skillmate_manifest, read_skillmate_manifest, write_skillmate_manifest,
@@ -53,31 +53,47 @@ use skillmate_manifest::{
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{LockResult, Mutex, MutexGuard};
 use std::time::Duration;
 
 static SYNC_LOCK: Mutex<()> = Mutex::new(());
+const BACKUP_ROOT_MARKER: &str = ".skillmate-backup-root";
 
-fn get_db_path() -> PathBuf {
+struct AppState {
+    db: Mutex<Connection>,
+}
+
+fn map_sync_lock<T>(lock: LockResult<T>) -> Result<T, String> {
+    lock.map_err(|_| "同步锁已中毒，请重启应用后重试".to_string())
+}
+
+fn acquire_sync_lock() -> Result<MutexGuard<'static, ()>, String> {
+    map_sync_lock(SYNC_LOCK.lock())
+}
+
+fn get_db_path() -> Result<PathBuf, String> {
     let dir = dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("skillmate");
-    fs::create_dir_all(&dir).ok();
-    dir.join("data.db")
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("data.db"))
 }
 
-fn get_db() -> Connection {
-    let db = Connection::open(get_db_path()).unwrap();
-    db.execute("CREATE TABLE IF NOT EXISTS tags (id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL)", []).ok();
-    db.execute("CREATE TABLE IF NOT EXISTS scenarios (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT, skill_ids TEXT, created_at TEXT)", []).ok();
-    db.execute(
-        "CREATE TABLE IF NOT EXISTS skill_tags (skill_path TEXT PRIMARY KEY, tags TEXT)",
-        [],
-    )
-    .ok();
-    db.execute("CREATE TABLE IF NOT EXISTS git_backup (id INTEGER PRIMARY KEY, enabled INTEGER, remote_url TEXT, repo_path TEXT, branch TEXT, last_sync TEXT)", []).ok();
-    db.execute(
-        "CREATE TABLE IF NOT EXISTS skill_origin_meta (
+fn create_db_connection() -> Result<Connection, String> {
+    let db = Connection::open(get_db_path()?).map_err(|e| e.to_string())?;
+    db.busy_timeout(Duration::from_secs(5))
+        .map_err(|e| e.to_string())?;
+    migrate_db(&db)?;
+    Ok(db)
+}
+
+fn migrate_db(db: &Connection) -> Result<(), String> {
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS tags (id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS scenarios (id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT, skill_ids TEXT, created_at TEXT);
+        CREATE TABLE IF NOT EXISTS skill_tags (skill_path TEXT PRIMARY KEY, tags TEXT);
+        CREATE TABLE IF NOT EXISTS git_backup (id INTEGER PRIMARY KEY, enabled INTEGER, remote_url TEXT, repo_path TEXT, branch TEXT, last_sync TEXT);
+        CREATE TABLE IF NOT EXISTS skill_origin_meta (
             skill_path TEXT PRIMARY KEY,
             origin_kind TEXT NOT NULL DEFAULT 'unknown',
             origin_locator TEXT NOT NULL DEFAULT '',
@@ -91,35 +107,43 @@ fn get_db() -> Connection {
             last_probe_at INTEGER,
             last_sync_at INTEGER,
             managed_by_app INTEGER NOT NULL DEFAULT 0
-        )",
-        [],
+        );",
     )
-    .ok();
+    .map_err(|e| e.to_string())?;
     let count: i32 = db
         .query_row("SELECT COUNT(*) FROM tags", [], |r| r.get(0))
-        .unwrap_or(0);
+        .map_err(|e| e.to_string())?;
     if count == 0 {
         db.execute(
             "INSERT INTO tags (id, name, color) VALUES ('1', '前端', '#6366f1')",
             [],
         )
-        .ok();
+        .map_err(|e| e.to_string())?;
         db.execute(
             "INSERT INTO tags (id, name, color) VALUES ('2', '后端', '#10b981')",
             [],
         )
-        .ok();
+        .map_err(|e| e.to_string())?;
         db.execute(
             "INSERT INTO tags (id, name, color) VALUES ('3', 'AI', '#f59e0b')",
             [],
         )
-        .ok();
+        .map_err(|e| e.to_string())?;
     }
-    db
+    Ok(())
+}
+
+fn lock_app_db<'a>(
+    state: &'a tauri::State<'_, AppState>,
+) -> Result<MutexGuard<'a, Connection>, String> {
+    state
+        .db
+        .lock()
+        .map_err(|_| "数据库连接已中毒，请重启应用后重试".to_string())
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Skill {
+pub struct SkillInventoryFields {
     pub id: String,
     pub name: String,
     pub path: String,
@@ -132,10 +156,14 @@ pub struct Skill {
     pub description: String,
     pub readme: String,
     pub version: String,
-    pub upstream_url: String,
-    pub has_update: bool,
     pub compatible_with: Vec<String>,
     pub usage_count: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SkillOriginFields {
+    pub upstream_url: String,
+    pub has_update: bool,
     pub origin_kind: String,
     pub origin_locator: String,
     pub resolved_locator: String,
@@ -150,11 +178,25 @@ pub struct Skill {
     pub managed_by_app: bool,
     pub can_sync: bool,
     pub symlink_source: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SkillStructureFields {
     pub structure_status: String,
     pub structure_features: Vec<String>,
     pub structure_warnings: Vec<String>,
     pub manifest_title: Option<String>,
     pub manifest_description: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Skill {
+    #[serde(flatten)]
+    pub inventory: SkillInventoryFields,
+    #[serde(flatten)]
+    pub origin: SkillOriginFields,
+    #[serde(flatten)]
+    pub structure: SkillStructureFields,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -182,19 +224,6 @@ pub struct GitBackup {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ModelAssistRequest {
-    pub input: String,
-    pub local_detection: PackageDetection,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ModelAssistResult {
-    pub suggested_kind: String,
-    pub confidence: f32,
-    pub explanation: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ProjectSkillTargetPreview {
     pub assistant: String,
     pub target_path: String,
@@ -213,23 +242,36 @@ pub struct AIAssistant {
 }
 
 #[tauri::command]
-fn export_library(path: String) -> Result<String, String> {
-    let export = build_library_export(get_all_tags(), get_scenarios(), get_all_assistants());
+fn export_library(state: tauri::State<'_, AppState>, path: String) -> Result<String, String> {
+    let db = lock_app_db(&state)?;
+    let export = build_library_export(
+        get_all_tags_from_db(&db)?,
+        get_scenarios_from_db(&db)?,
+        scan_all_assistants(&db),
+    );
     write_library_export(path, &export)
 }
 
 #[tauri::command]
-fn preview_import_library(path: String, mode: Option<String>) -> Result<ImportPreview, String> {
+fn preview_import_library(
+    state: tauri::State<'_, AppState>,
+    path: String,
+    mode: Option<String>,
+) -> Result<ImportPreview, String> {
     let export = read_library_export(path)?;
-    let db = get_db();
+    let db = lock_app_db(&state)?;
     let replace_existing = matches!(mode.as_deref(), Some("replace"));
     preview_imported_library(&db, &export, replace_existing)
 }
 
 #[tauri::command]
-fn import_library(path: String, mode: Option<String>) -> Result<String, String> {
+fn import_library(
+    state: tauri::State<'_, AppState>,
+    path: String,
+    mode: Option<String>,
+) -> Result<String, String> {
     let export = read_library_export(path)?;
-    let db = get_db();
+    let db = lock_app_db(&state)?;
     let replace_existing = matches!(mode.as_deref(), Some("replace"));
     let (tag_count, scenario_count) = merge_imported_library(&db, export, replace_existing)?;
     Ok(format!(
@@ -245,18 +287,23 @@ fn import_library(path: String, mode: Option<String>) -> Result<String, String> 
 }
 
 #[tauri::command]
-fn export_scenario_manifest(path: String) -> Result<String, String> {
-    let manifest = build_scenario_manifest(get_scenarios());
+fn export_scenario_manifest(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<String, String> {
+    let db = lock_app_db(&state)?;
+    let manifest = build_scenario_manifest(get_scenarios_from_db(&db)?);
     write_scenario_manifest(path, &manifest)
 }
 
 #[tauri::command]
 fn preview_import_scenario_manifest(
+    state: tauri::State<'_, AppState>,
     path: String,
     mode: Option<String>,
 ) -> Result<ScenarioManifestPreview, String> {
     let manifest = read_scenario_manifest(path)?;
-    let db = get_db();
+    let db = lock_app_db(&state)?;
     let replace_existing = matches!(mode.as_deref(), Some("replace"));
     preview_scenario_manifest(
         &db,
@@ -267,9 +314,13 @@ fn preview_import_scenario_manifest(
 }
 
 #[tauri::command]
-fn import_scenario_manifest(path: String, mode: Option<String>) -> Result<String, String> {
+fn import_scenario_manifest(
+    state: tauri::State<'_, AppState>,
+    path: String,
+    mode: Option<String>,
+) -> Result<String, String> {
     let manifest = read_scenario_manifest(path)?;
-    let db = get_db();
+    let db = lock_app_db(&state)?;
     let replace_existing = matches!(mode.as_deref(), Some("replace"));
     let scenario_count = merge_scenario_manifest(&db, manifest, replace_existing)?;
     Ok(format!(
@@ -284,38 +335,42 @@ fn import_scenario_manifest(path: String, mode: Option<String>) -> Result<String
 }
 
 #[tauri::command]
-fn export_skillmate_manifest(path: String) -> Result<String, String> {
-    let manifest = build_current_skillmate_manifest();
+fn export_skillmate_manifest(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<String, String> {
+    let db = lock_app_db(&state)?;
+    let manifest = build_current_skillmate_manifest(&db);
     write_skillmate_manifest(expand_path(path.trim()), &manifest)
 }
 
-fn build_current_skillmate_manifest() -> SkillMateManifest {
-    let assistants = get_all_assistants();
+fn build_current_skillmate_manifest(db: &Connection) -> SkillMateManifest {
+    let assistants = scan_all_assistants(db);
     let skills = assistants
         .into_iter()
         .flat_map(|assistant| {
             assistant.skills.into_iter().map(move |skill| {
-                let source_kind = if skill.origin_kind == "git" {
+                let source_kind = if skill.origin.origin_kind == "git" {
                     "git".to_string()
                 } else {
                     "local".to_string()
                 };
-                let source = if let Some(symlink_source) = skill.symlink_source.clone() {
+                let source = if let Some(symlink_source) = skill.origin.symlink_source.clone() {
                     symlink_source
-                } else if skill.origin_kind == "git" {
-                    if !skill.origin_locator.trim().is_empty() {
-                        skill.origin_locator
+                } else if skill.origin.origin_kind == "git" {
+                    if !skill.origin.origin_locator.trim().is_empty() {
+                        skill.origin.origin_locator
                     } else {
-                        skill.resolved_locator
+                        skill.origin.resolved_locator
                     }
                 } else {
-                    skill.path.clone()
+                    skill.inventory.path.clone()
                 };
                 SkillMateManifestSkill {
                     assistant: assistant.name.clone(),
                     source,
                     source_kind,
-                    target_name: Some(skill.name),
+                    target_name: Some(skill.inventory.name),
                 }
             })
         })
@@ -330,7 +385,10 @@ fn preview_apply_skillmate_manifest(path: String) -> Result<SkillMateManifestPre
 }
 
 #[tauri::command]
-fn apply_skillmate_manifest(path: String) -> Result<String, String> {
+fn apply_skillmate_manifest(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<String, String> {
     let manifest = read_skillmate_manifest(expand_path(path.trim()))?;
     let preview = preview_skillmate_manifest(&manifest)?;
     if !preview.can_apply {
@@ -339,9 +397,10 @@ fn apply_skillmate_manifest(path: String) -> Result<String, String> {
             preview.conflicts.len()
         ));
     }
+    let db = lock_app_db(&state)?;
     let mut installed = 0usize;
     for skill in manifest.skills {
-        apply_manifest_skill(skill)?;
+        apply_manifest_skill(&db, skill)?;
         installed += 1;
     }
     Ok(format!("已应用 {} 条 Skill manifest 记录", installed))
@@ -354,15 +413,28 @@ fn get_skill_profiles() -> SkillSetProfileStore {
 
 #[tauri::command]
 fn save_current_skill_profile(
+    state: tauri::State<'_, AppState>,
     name: String,
     description: String,
 ) -> Result<SkillSetProfileStore, String> {
-    let manifest = build_current_skillmate_manifest();
+    let db = lock_app_db(&state)?;
+    let manifest = build_current_skillmate_manifest(&db);
     upsert_skill_profile(&name, &description, manifest.skills)
 }
 
 #[tauri::command]
-fn preview_apply_skill_profile(profile_id: String) -> Result<SkillSetProfilePreview, String> {
+fn preview_apply_skill_profile(
+    state: tauri::State<'_, AppState>,
+    profile_id: String,
+) -> Result<SkillSetProfilePreview, String> {
+    let db = lock_app_db(&state)?;
+    preview_apply_skill_profile_with_db(&db, profile_id)
+}
+
+fn preview_apply_skill_profile_with_db(
+    db: &Connection,
+    profile_id: String,
+) -> Result<SkillSetProfilePreview, String> {
     let store = read_skill_profiles();
     let profile = store
         .profiles
@@ -371,7 +443,7 @@ fn preview_apply_skill_profile(profile_id: String) -> Result<SkillSetProfilePrev
         .cloned()
         .ok_or_else(|| "Profile 不存在".to_string())?;
     let profile_issues = validate_skill_profile(&profile, &store.profiles);
-    let current = build_current_skillmate_manifest();
+    let current = build_current_skillmate_manifest(db);
     let manifest = SkillMateManifest {
         version: 1,
         skills: profile.skills.clone(),
@@ -387,8 +459,16 @@ fn preview_apply_skill_profile(profile_id: String) -> Result<SkillSetProfilePrev
 }
 
 #[tauri::command]
-fn apply_skill_profile(profile_id: String) -> Result<String, String> {
-    let preview = preview_apply_skill_profile(profile_id.clone())?;
+fn apply_skill_profile(
+    state: tauri::State<'_, AppState>,
+    profile_id: String,
+) -> Result<String, String> {
+    let db = lock_app_db(&state)?;
+    apply_skill_profile_with_db(&db, profile_id)
+}
+
+fn apply_skill_profile_with_db(db: &Connection, profile_id: String) -> Result<String, String> {
+    let preview = preview_apply_skill_profile_with_db(db, profile_id.clone())?;
     if !preview.profile_issues.is_empty() {
         return Err("Profile 格式存在问题，请先处理预览".to_string());
     }
@@ -400,7 +480,7 @@ fn apply_skill_profile(profile_id: String) -> Result<String, String> {
     }
     let mut installed = 0usize;
     for skill in preview.profile.skills {
-        apply_manifest_skill(skill)?;
+        apply_manifest_skill(db, skill)?;
         installed += 1;
     }
     set_active_profile(&profile_id)?;
@@ -408,9 +488,10 @@ fn apply_skill_profile(profile_id: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn rollback_skill_profile() -> Result<String, String> {
+fn rollback_skill_profile(state: tauri::State<'_, AppState>) -> Result<String, String> {
     let previous_profile_id = rollback_active_profile()?;
-    apply_skill_profile(previous_profile_id)
+    let db = lock_app_db(&state)?;
+    apply_skill_profile_with_db(&db, previous_profile_id)
 }
 
 fn build_profile_diff(
@@ -463,7 +544,7 @@ fn manifest_skill_key(skill: &SkillMateManifestSkill) -> String {
     )
 }
 
-fn apply_manifest_skill(skill: SkillMateManifestSkill) -> Result<(), String> {
+fn apply_manifest_skill(db: &Connection, skill: SkillMateManifestSkill) -> Result<(), String> {
     let target_root = assistant_root_by_name(&skill.assistant)?;
     fs::create_dir_all(&target_root).map_err(|e| e.to_string())?;
     let fallback_name = match skill.target_name.as_deref() {
@@ -478,10 +559,7 @@ fn apply_manifest_skill(skill: SkillMateManifestSkill) -> Result<(), String> {
                 &target_root,
                 &fallback_name,
                 &skill.assistant,
-                |target_path, spec, outcome| {
-                    let db = get_db();
-                    save_git_origin_meta(&db, target_path, spec, outcome)
-                },
+                |target_path, spec, outcome| save_git_origin_meta(db, target_path, spec, outcome),
             )?;
         }
         "local" => {
@@ -576,12 +654,31 @@ fn configure_git_remote(repo: &Path, remote_url: &str) -> Result<(), String> {
     }
 }
 
-fn snapshot_assistants(repo: &Path) -> Result<(), String> {
+fn prepare_backup_snapshot_root(repo: &Path) -> Result<PathBuf, String> {
     let snapshot_root = repo.join("assistants");
+    let marker = snapshot_root.join(BACKUP_ROOT_MARKER);
     if snapshot_root.exists() {
+        if !snapshot_root.is_dir() {
+            return Err("备份仓库中的 assistants 路径已存在但不是目录".to_string());
+        }
+        if !marker.exists() {
+            return Err(
+                "备份仓库中的 assistants 目录不是 SkillMate 管理目录，已拒绝覆盖".to_string(),
+            );
+        }
         fs::remove_dir_all(&snapshot_root).map_err(|e| e.to_string())?;
     }
     fs::create_dir_all(&snapshot_root).map_err(|e| e.to_string())?;
+    fs::write(
+        snapshot_root.join(BACKUP_ROOT_MARKER),
+        "Managed by SkillMate. This directory may be replaced during backup sync.\n",
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(snapshot_root)
+}
+
+fn snapshot_assistants(repo: &Path) -> Result<(), String> {
+    let snapshot_root = prepare_backup_snapshot_root(repo)?;
 
     let mut manifest = Vec::new();
     for assistant in app_core::assistant_definitions() {
@@ -617,58 +714,53 @@ fn snapshot_assistants(repo: &Path) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_all_assistants() -> Vec<AIAssistant> {
-    let db = get_db();
-    scan_all_assistants(&db)
+fn get_all_assistants(state: tauri::State<'_, AppState>) -> Result<Vec<AIAssistant>, String> {
+    let db = lock_app_db(&state)?;
+    Ok(scan_all_assistants(&db))
 }
 
 #[tauri::command]
-fn get_ai_list() -> Vec<serde_json::Value> {
-    app_core::assistant_definitions().iter().map(|assistant| {
-        let expanded = expand_path(assistant.path);
-        serde_json::json!({ "name": assistant.name, "path": expanded.to_string_lossy(), "aiType": assistant.ai_type, "icon": assistant.icon, "exists": expanded.exists() })
-    }).collect()
+fn get_all_tags(state: tauri::State<'_, AppState>) -> Result<Vec<Tag>, String> {
+    let db = lock_app_db(&state)?;
+    get_all_tags_from_db(&db)
 }
 
-#[tauri::command]
-fn get_all_tags() -> Vec<Tag> {
-    let db = get_db();
-    let mut stmt = db.prepare("SELECT id, name, color FROM tags").unwrap();
-    stmt.query_map([], |row| {
+fn get_all_tags_from_db(db: &Connection) -> Result<Vec<Tag>, String> {
+    let mut stmt = db
+        .prepare("SELECT id, name, color FROM tags")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |row| {
         Ok(Tag {
             id: row.get(0)?,
             name: row.get(1)?,
             color: row.get(2)?,
         })
-    })
-    .unwrap()
-    .filter_map(|r| r.ok())
-    .collect()
+    });
+    let tags = rows
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(tags)
 }
 
 #[tauri::command]
-fn add_tag(name: String, color: String) -> Tag {
-    let db = get_db();
+fn add_tag(state: tauri::State<'_, AppState>, name: String, color: String) -> Result<Tag, String> {
+    let db = lock_app_db(&state)?;
     let id = generate_id();
     db.execute(
         "INSERT INTO tags (id, name, color) VALUES (?, ?, ?)",
         params![id, name, color],
     )
-    .ok();
-    Tag { id, name, color }
+    .map_err(|e| e.to_string())?;
+    Ok(Tag { id, name, color })
 }
-
 #[tauri::command]
-fn delete_tag(tag_id: String) -> Result<String, String> {
-    let db = get_db();
-    db.execute("DELETE FROM tags WHERE id = ?", params![tag_id])
-        .map_err(|e| e.to_string())?;
-    Ok("已删除".to_string())
-}
-
-#[tauri::command]
-fn update_skill_tags(skill_path: String, tags: Vec<String>) -> Result<String, String> {
-    let db = get_db();
+fn update_skill_tags(
+    state: tauri::State<'_, AppState>,
+    skill_path: String,
+    tags: Vec<String>,
+) -> Result<String, String> {
+    let db = lock_app_db(&state)?;
     let tags_str = tags.join(",");
     db.execute(
         "INSERT OR REPLACE INTO skill_tags (skill_path, tags) VALUES (?, ?)",
@@ -679,12 +771,16 @@ fn update_skill_tags(skill_path: String, tags: Vec<String>) -> Result<String, St
 }
 
 #[tauri::command]
-fn get_scenarios() -> Vec<Scenario> {
-    let db = get_db();
+fn get_scenarios(state: tauri::State<'_, AppState>) -> Result<Vec<Scenario>, String> {
+    let db = lock_app_db(&state)?;
+    get_scenarios_from_db(&db)
+}
+
+fn get_scenarios_from_db(db: &Connection) -> Result<Vec<Scenario>, String> {
     let mut stmt = db
         .prepare("SELECT id, name, description, skill_ids, created_at FROM scenarios")
-        .unwrap();
-    stmt.query_map([], |row| {
+        .map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |row| {
         let skill_ids_str: String = row.get(3)?;
         let skill_ids: Vec<String> = if skill_ids_str.is_empty() {
             vec![]
@@ -698,39 +794,53 @@ fn get_scenarios() -> Vec<Scenario> {
             skill_ids,
             created_at: row.get(4)?,
         })
-    })
-    .unwrap()
-    .filter_map(|r| r.ok())
-    .collect()
+    });
+    let scenarios = rows
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(scenarios)
 }
 
 #[tauri::command]
-fn create_scenario(name: String, description: String, skill_ids: Vec<String>) -> Scenario {
-    let db = get_db();
+fn create_scenario(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    description: String,
+    skill_ids: Vec<String>,
+) -> Result<Scenario, String> {
+    let db = lock_app_db(&state)?;
     let id = generate_id();
     let created_at = chrono::Local::now().format("%Y-%m-%d").to_string();
     let skill_ids_str = skill_ids.join(",");
-    db.execute("INSERT INTO scenarios (id, name, description, skill_ids, created_at) VALUES (?, ?, ?, ?, ?)", params![id, name, description, skill_ids_str, created_at]).ok();
-    Scenario {
+    db.execute("INSERT INTO scenarios (id, name, description, skill_ids, created_at) VALUES (?, ?, ?, ?, ?)", params![id, name, description, skill_ids_str, created_at]).map_err(|e| e.to_string())?;
+    Ok(Scenario {
         id,
         name,
         description,
         skill_ids,
         created_at,
-    }
+    })
 }
 
 #[tauri::command]
-fn delete_scenario(scenario_id: String) -> Result<String, String> {
-    let db = get_db();
+fn delete_scenario(
+    state: tauri::State<'_, AppState>,
+    scenario_id: String,
+) -> Result<String, String> {
+    let db = lock_app_db(&state)?;
     db.execute("DELETE FROM scenarios WHERE id = ?", params![scenario_id])
         .map_err(|e| e.to_string())?;
     Ok("已删除".to_string())
 }
 
 #[tauri::command]
-fn get_git_backup() -> GitBackup {
-    let db = get_db();
+fn get_git_backup(state: tauri::State<'_, AppState>) -> Result<GitBackup, String> {
+    let db = lock_app_db(&state)?;
+    Ok(get_git_backup_from_db(&db))
+}
+
+fn get_git_backup_from_db(db: &Connection) -> GitBackup {
     let result = db.query_row(
         "SELECT enabled, remote_url, repo_path, branch, last_sync FROM git_backup WHERE id = 1",
         [],
@@ -758,6 +868,7 @@ fn get_git_backup() -> GitBackup {
 
 #[tauri::command]
 fn setup_git_backup(
+    state: tauri::State<'_, AppState>,
     repo_path: String,
     remote_url: String,
     branch: String,
@@ -766,7 +877,7 @@ fn setup_git_backup(
     if repo.to_string_lossy().trim().is_empty() {
         return Err("仓库路径不能为空".to_string());
     }
-    let db = get_db();
+    let db = lock_app_db(&state)?;
     db.execute(
         "INSERT OR REPLACE INTO git_backup (id, enabled, remote_url, repo_path, branch, last_sync) VALUES (1, 1, ?, ?, ?, COALESCE((SELECT last_sync FROM git_backup WHERE id = 1), ''))",
         params![
@@ -779,9 +890,9 @@ fn setup_git_backup(
 }
 
 #[tauri::command]
-fn sync_to_git(message: String) -> Result<String, String> {
-    let _guard = SYNC_LOCK.lock().unwrap();
-    let db = get_db();
+fn sync_to_git(state: tauri::State<'_, AppState>, message: String) -> Result<String, String> {
+    let _guard = acquire_sync_lock()?;
+    let db = lock_app_db(&state)?;
     let git: GitBackup = match db.query_row(
         "SELECT enabled, remote_url, repo_path, branch, last_sync FROM git_backup WHERE id = 1",
         [],
@@ -934,7 +1045,8 @@ async fn preview_install_skill(
 }
 
 #[tauri::command]
-async fn install_skill(
+fn install_skill(
+    state: tauri::State<'_, AppState>,
     package: String,
     source: String,
     assistant_name: String,
@@ -955,6 +1067,10 @@ async fn install_skill(
         Err(err) => return install_result(false, err, "", None),
     };
     let target_path = target_root.join(&skill_name);
+    let db = match lock_app_db(&state) {
+        Ok(db) => db,
+        Err(err) => return install_result(false, err, "", None),
+    };
 
     if mode == "symlink" {
         if source != "local" {
@@ -988,10 +1104,7 @@ async fn install_skill(
                 &target_root,
                 &skill_name,
                 &assistant_name,
-                |target_path, spec, outcome| {
-                    let db = get_db();
-                    save_git_origin_meta(&db, target_path, spec, outcome)
-                },
+                |target_path, spec, outcome| save_git_origin_meta(&db, target_path, spec, outcome),
             ) {
                 Ok(outcome) => install_result(
                     true,
@@ -1068,7 +1181,7 @@ fn install_preview_error(
 }
 
 #[tauri::command]
-fn delete_skill(path: String) -> Result<String, String> {
+fn delete_skill(state: tauri::State<'_, AppState>, path: String) -> Result<String, String> {
     let p = PathBuf::from(&path);
     if !p.exists() {
         return Err("路径不存在".to_string());
@@ -1076,7 +1189,7 @@ fn delete_skill(path: String) -> Result<String, String> {
     if !app_core::is_managed_skill_path(&p, &managed_skill_roots()) {
         return Err("不允许删除".to_string());
     }
-    let db = get_db();
+    let db = lock_app_db(&state)?;
     let db_managed = load_origin_meta(&db, &p.to_string_lossy())
         .map(|meta| meta.managed_by_app)
         .unwrap_or(false);
@@ -1121,18 +1234,8 @@ fn get_skill_readme(path: String) -> String {
 }
 
 #[tauri::command]
-fn inspect_skill_structure(path: String) -> SkillStructureInfo {
-    analyze_skill_structure(&expand_path(path.trim()))
-}
-
-#[tauri::command]
 fn inspect_skill_validation(path: String) -> SkillValidationReport {
     validate_skill_structure(&expand_path(path.trim()))
-}
-
-#[tauri::command]
-fn detect_skill_package_path(path: String) -> PackageDetection {
-    detect_skill_package(&expand_path(path.trim()))
 }
 
 #[tauri::command]
@@ -1172,14 +1275,34 @@ fn preview_project_skill_targets(
 }
 
 #[tauri::command]
-fn preview_model_assist(request: ModelAssistRequest) -> Result<ModelAssistResult, String> {
-    let _ = request;
-    Err("模型辅助尚未配置，当前仅使用本地规则识别".to_string())
-}
-
-#[tauri::command]
-fn check_update(path: String, force: Option<bool>) -> serde_json::Value {
-    let db = get_db();
+fn check_update(
+    state: tauri::State<'_, AppState>,
+    path: String,
+    force: Option<bool>,
+) -> serde_json::Value {
+    let db = match lock_app_db(&state) {
+        Ok(db) => db,
+        Err(err) => {
+            return serde_json::json!({
+                "originKind": "unknown",
+                "originLocator": "",
+                "resolvedLocator": "",
+                "trackingRef": "",
+                "installedRef": "",
+                "latestRef": "",
+                "syncState": "failed",
+                "message": format!("检查失败: {}", err),
+                "lagCount": 0,
+                "lastProbeAt": now_ms(),
+                "lastSyncAt": null,
+                "managedByApp": false,
+                "canSync": false,
+                "hasUpdate": false,
+                "behindCount": 0,
+                "remoteUrl": ""
+            })
+        }
+    };
     match probe_skill_state(&db, &PathBuf::from(&path), force.unwrap_or(false)) {
         Ok(info) => sync_info_json(&info),
         Err(err) => serde_json::json!({
@@ -1204,72 +1327,84 @@ fn check_update(path: String, force: Option<bool>) -> serde_json::Value {
 }
 
 #[tauri::command]
-fn update_from_upstream(path: String) -> Result<String, String> {
-    let _guard = SYNC_LOCK.lock().unwrap();
-    let db = get_db();
+fn update_from_upstream(state: tauri::State<'_, AppState>, path: String) -> Result<String, String> {
+    let _guard = acquire_sync_lock()?;
+    let db = lock_app_db(&state)?;
     let p = PathBuf::from(&path);
     update_skill_from_upstream(&db, &p)
 }
 
 #[tauri::command]
-fn open_folder(path: String) {
-    #[cfg(target_os = "windows")]
-    {
-        Command::new("explorer").arg(&path).spawn().ok();
-    }
-    #[cfg(target_os = "macos")]
-    {
-        Command::new("open").arg(&path).spawn().ok();
-    }
-    #[cfg(target_os = "linux")]
-    {
-        Command::new("xdg-open").arg(&path).spawn().ok();
-    }
-}
-
-#[tauri::command]
-fn open_url(url: String) -> Result<(), String> {
-    let url = url.trim();
-    let lower = url.to_ascii_lowercase();
-    if url.is_empty()
-        || url.contains(['\n', '\r', '\0'])
-        || !(lower.starts_with("https://") || lower.starts_with("http://"))
-    {
-        return Err("只允许打开 http/https URL".to_string());
+fn open_folder(path: String) -> Result<(), String> {
+    let target = expand_path(path.trim());
+    if !is_openable_managed_folder(&target) {
+        return Err("只允许打开受管助手 Skills 目录".to_string());
     }
     #[cfg(target_os = "windows")]
     {
-        Command::new("cmd")
-            .args(["/C", "start", "", url])
+        Command::new("explorer")
+            .arg(&target)
             .spawn()
             .map_err(|e| e.to_string())?;
     }
     #[cfg(target_os = "macos")]
     {
         Command::new("open")
-            .arg(url)
+            .arg(&target)
             .spawn()
             .map_err(|e| e.to_string())?;
     }
     #[cfg(target_os = "linux")]
     {
         Command::new("xdg-open")
-            .arg(url)
+            .arg(&target)
             .spawn()
             .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
-#[tauri::command]
-fn search_marketplace(_query: String) -> Vec<serde_json::Value> {
-    Vec::new()
+fn is_openable_managed_folder(path: &Path) -> bool {
+    is_openable_managed_folder_with_roots(path, &managed_skill_roots())
+}
+
+fn is_openable_managed_folder_with_roots(path: &Path, roots: &[PathBuf]) -> bool {
+    roots
+        .iter()
+        .any(|root| is_same_or_child_path(path, root) || is_recorded_managed_state_path(path, root))
+}
+
+fn is_same_or_child_path(path: &Path, root: &Path) -> bool {
+    let Ok(canonical_path) = path.canonicalize() else {
+        return false;
+    };
+    let Ok(canonical_root) = root.canonicalize() else {
+        return false;
+    };
+    canonical_path == canonical_root || canonical_path.starts_with(canonical_root)
+}
+
+fn is_recorded_managed_state_path(path: &Path, root: &Path) -> bool {
+    let requested = path.to_string_lossy().to_string();
+    managed_state::read_managed_state(root)
+        .managed_skills
+        .into_iter()
+        .any(|entry| {
+            if entry.path == requested {
+                return true;
+            }
+            PathBuf::from(entry.path)
+                .parent()
+                .map(|parent| parent == path)
+                .unwrap_or(false)
+        })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let _ = get_db();
+    let db = create_db_connection().expect("failed to initialize SkillMate database");
     tauri::Builder::default()
+        .manage(AppState { db: Mutex::new(db) })
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
@@ -1277,10 +1412,8 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_all_assistants,
-            get_ai_list,
             get_all_tags,
             add_tag,
-            delete_tag,
             update_skill_tags,
             get_scenarios,
             create_scenario,
@@ -1293,12 +1426,9 @@ pub fn run() {
             delete_skill,
             unlink_symlink_skill,
             get_skill_readme,
-            inspect_skill_structure,
             inspect_skill_validation,
-            detect_skill_package_path,
             detect_install_source,
             preview_project_skill_targets,
-            preview_model_assist,
             check_update,
             update_from_upstream,
             export_library,
@@ -1315,9 +1445,7 @@ pub fn run() {
             preview_apply_skill_profile,
             apply_skill_profile,
             rollback_skill_profile,
-            open_folder,
-            open_url,
-            search_marketplace
+            open_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1394,6 +1522,93 @@ mod tests {
     }
 
     #[test]
+    fn backup_snapshot_root_creates_managed_marker_on_first_run() {
+        let base = test_dir("backup-first-run");
+        let repo = base.join("repo");
+
+        let snapshot_root = prepare_backup_snapshot_root(&repo).unwrap();
+
+        assert_eq!(snapshot_root, repo.join("assistants"));
+        assert!(snapshot_root.join(BACKUP_ROOT_MARKER).exists());
+
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn backup_snapshot_root_replaces_only_managed_directory() {
+        let base = test_dir("backup-managed-replace");
+        let repo = base.join("repo");
+        let snapshot_root = repo.join("assistants");
+        std::fs::create_dir_all(&snapshot_root).unwrap();
+        std::fs::write(snapshot_root.join(BACKUP_ROOT_MARKER), "managed").unwrap();
+        std::fs::write(snapshot_root.join("old-file"), "old").unwrap();
+
+        prepare_backup_snapshot_root(&repo).unwrap();
+
+        assert!(snapshot_root.join(BACKUP_ROOT_MARKER).exists());
+        assert!(!snapshot_root.join("old-file").exists());
+
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn backup_snapshot_root_rejects_unmanaged_existing_directory() {
+        let base = test_dir("backup-unmanaged-reject");
+        let repo = base.join("repo");
+        let snapshot_root = repo.join("assistants");
+        std::fs::create_dir_all(&snapshot_root).unwrap();
+        std::fs::write(snapshot_root.join("user-file"), "keep").unwrap();
+
+        let err = prepare_backup_snapshot_root(&repo).unwrap_err();
+
+        assert_eq!(
+            err,
+            "备份仓库中的 assistants 目录不是 SkillMate 管理目录，已拒绝覆盖"
+        );
+        assert!(snapshot_root.join("user-file").exists());
+
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn openable_managed_folder_allows_roots_and_children_only() {
+        let base = test_dir("openable-managed-folder");
+        let root = base.join("skills");
+        let skill = root.join("skill-a");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+
+        assert!(is_openable_managed_folder_with_roots(
+            &root,
+            &[root.clone()]
+        ));
+        assert!(is_openable_managed_folder_with_roots(
+            &skill,
+            &[root.clone()]
+        ));
+        assert!(!is_openable_managed_folder_with_roots(
+            &outside,
+            &[root.clone()]
+        ));
+
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn poisoned_sync_lock_maps_to_recoverable_error() {
+        let lock = Mutex::new(());
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = lock.lock().unwrap();
+            panic!("poison test lock");
+        });
+
+        let err = map_sync_lock(lock.lock()).unwrap_err();
+
+        assert_eq!(err, "同步锁已中毒，请重启应用后重试");
+    }
+
+    #[test]
     fn build_library_export_flattens_skills() {
         let export = build_library_export(
             vec![Tag {
@@ -1415,41 +1630,47 @@ mod tests {
                 icon: "📝".into(),
                 exists: true,
                 skills: vec![Skill {
-                    id: "/tmp/a".into(),
-                    name: "skill-a".into(),
-                    path: "/tmp/a".into(),
-                    skill_type: "skill-folder".into(),
-                    source: "GitHub".into(),
-                    source_type: "git".into(),
-                    size: "1 KB".into(),
-                    modified: "".into(),
-                    tags: vec!["1".into()],
-                    description: "".into(),
-                    readme: "".into(),
-                    version: "1.0.0".into(),
-                    upstream_url: "".into(),
-                    has_update: false,
-                    compatible_with: vec!["Codex".into()],
-                    usage_count: 0,
-                    origin_kind: "git".into(),
-                    origin_locator: "".into(),
-                    resolved_locator: "".into(),
-                    tracking_ref: "".into(),
-                    installed_ref: "".into(),
-                    latest_ref: "".into(),
-                    sync_state: "current".into(),
-                    sync_message: "".into(),
-                    lag_count: 0,
-                    last_probe_at: None,
-                    last_sync_at: None,
-                    managed_by_app: false,
-                    can_sync: false,
-                    symlink_source: None,
-                    structure_status: "complete".into(),
-                    structure_features: vec!["skill_md".into()],
-                    structure_warnings: vec![],
-                    manifest_title: Some("skill-a".into()),
-                    manifest_description: Some("desc".into()),
+                    inventory: SkillInventoryFields {
+                        id: "/tmp/a".into(),
+                        name: "skill-a".into(),
+                        path: "/tmp/a".into(),
+                        skill_type: "skill-folder".into(),
+                        source: "GitHub".into(),
+                        source_type: "git".into(),
+                        size: "1 KB".into(),
+                        modified: "".into(),
+                        tags: vec!["1".into()],
+                        description: "".into(),
+                        readme: "".into(),
+                        version: "1.0.0".into(),
+                        compatible_with: vec!["Codex".into()],
+                        usage_count: 0,
+                    },
+                    origin: SkillOriginFields {
+                        upstream_url: "".into(),
+                        has_update: false,
+                        origin_kind: "git".into(),
+                        origin_locator: "".into(),
+                        resolved_locator: "".into(),
+                        tracking_ref: "".into(),
+                        installed_ref: "".into(),
+                        latest_ref: "".into(),
+                        sync_state: "current".into(),
+                        sync_message: "".into(),
+                        lag_count: 0,
+                        last_probe_at: None,
+                        last_sync_at: None,
+                        managed_by_app: false,
+                        can_sync: false,
+                        symlink_source: None,
+                    },
+                    structure: SkillStructureFields {
+                        structure_status: "complete".into(),
+                        structure_features: vec!["skill_md".into()],
+                        structure_warnings: vec![],
+                        manifest_title: Some("skill-a".into()),
+                        manifest_description: Some("desc".into()),
+                    },
                 }],
             }],
         );

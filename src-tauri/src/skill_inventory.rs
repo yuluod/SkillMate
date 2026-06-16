@@ -2,7 +2,7 @@ use crate::app_core::{assistant_definitions, expand_path, format_size};
 use crate::managed_state::{is_managed_by_state, managed_state_origin, STATE_FILE_NAME};
 use crate::skill_origin::build_sync_info;
 use crate::skill_structure::{analyze_skill_structure, read_skill_preview};
-use crate::{AIAssistant, Skill};
+use crate::{AIAssistant, Skill, SkillInventoryFields, SkillOriginFields, SkillStructureFields};
 use rusqlite::Connection;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -59,7 +59,12 @@ pub fn scan_all_assistants(db: &Connection) -> Vec<AIAssistant> {
 pub fn collect_known_skill_paths(db: &Connection) -> Vec<String> {
     scan_all_assistants(db)
         .into_iter()
-        .flat_map(|assistant| assistant.skills.into_iter().map(|skill| skill.path))
+        .flat_map(|assistant| {
+            assistant
+                .skills
+                .into_iter()
+                .map(|skill| skill.inventory.path)
+        })
         .collect()
 }
 
@@ -122,45 +127,51 @@ fn build_skill(db: &Connection, managed: &ManagedSkill) -> Skill {
         _ => "未托管".to_string(),
     };
     Skill {
-        id: ep.to_string_lossy().to_string(),
-        name: managed.name.clone(),
-        path: ep.to_string_lossy().to_string(),
-        skill_type: if ep.is_dir() {
-            "skill-folder".to_string()
-        } else {
-            "skill-file".to_string()
+        inventory: SkillInventoryFields {
+            id: ep.to_string_lossy().to_string(),
+            name: managed.name.clone(),
+            path: ep.to_string_lossy().to_string(),
+            skill_type: if ep.is_dir() {
+                "skill-folder".to_string()
+            } else {
+                "skill-file".to_string()
+            },
+            source,
+            source_type,
+            size: format_size(size),
+            modified,
+            tags,
+            description: String::new(),
+            readme: read_skill_preview(ep),
+            version: "1.0.0".to_string(),
+            compatible_with: vec![managed.assistant.clone()],
+            usage_count: 0,
         },
-        source,
-        source_type,
-        size: format_size(size),
-        modified,
-        tags,
-        description: String::new(),
-        readme: read_skill_preview(ep),
-        version: "1.0.0".to_string(),
-        upstream_url,
-        has_update: sync_info.has_update,
-        compatible_with: vec![managed.assistant.clone()],
-        usage_count: 0,
-        origin_kind: sync_info.meta.origin_kind,
-        origin_locator: sync_info.meta.origin_locator,
-        resolved_locator: sync_info.meta.resolved_locator,
-        tracking_ref: sync_info.meta.tracking_ref,
-        installed_ref: sync_info.meta.installed_ref,
-        latest_ref: sync_info.meta.latest_ref,
-        sync_state: sync_info.meta.sync_state,
-        sync_message: sync_info.meta.sync_message,
-        lag_count: sync_info.meta.lag_count,
-        last_probe_at: sync_info.meta.last_probe_at,
-        last_sync_at: sync_info.meta.last_sync_at,
-        managed_by_app: sync_info.meta.managed_by_app || state_managed,
-        can_sync: sync_info.can_sync,
-        symlink_source,
-        structure_status: structure.structure_status,
-        structure_features: structure.structure_features,
-        structure_warnings: structure.structure_warnings,
-        manifest_title: structure.manifest_title,
-        manifest_description: structure.manifest_description,
+        origin: SkillOriginFields {
+            upstream_url,
+            has_update: sync_info.has_update,
+            origin_kind: sync_info.meta.origin_kind,
+            origin_locator: sync_info.meta.origin_locator,
+            resolved_locator: sync_info.meta.resolved_locator,
+            tracking_ref: sync_info.meta.tracking_ref,
+            installed_ref: sync_info.meta.installed_ref,
+            latest_ref: sync_info.meta.latest_ref,
+            sync_state: sync_info.meta.sync_state,
+            sync_message: sync_info.meta.sync_message,
+            lag_count: sync_info.meta.lag_count,
+            last_probe_at: sync_info.meta.last_probe_at,
+            last_sync_at: sync_info.meta.last_sync_at,
+            managed_by_app: sync_info.meta.managed_by_app || state_managed,
+            can_sync: sync_info.can_sync,
+            symlink_source,
+        },
+        structure: SkillStructureFields {
+            structure_status: structure.structure_status,
+            structure_features: structure.structure_features,
+            structure_warnings: structure.structure_warnings,
+            manifest_title: structure.manifest_title,
+            manifest_description: structure.manifest_description,
+        },
     }
 }
 
