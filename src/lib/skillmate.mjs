@@ -64,6 +64,28 @@ const VALIDATION_STATUS_LABELS = {
   fail: "失败",
 };
 
+const APP_UPDATE_STATUS_LABELS = {
+  idle: "未检查",
+  checking: "检查中",
+  current: "已是最新",
+  available: "发现更新",
+  downloading: "下载中",
+  installing: "安装中",
+  ready_to_restart: "等待重启",
+  error: "检查失败",
+};
+
+const APP_UPDATE_STATUS_TONES = {
+  idle: "muted",
+  checking: "muted",
+  current: "success",
+  available: "warn",
+  downloading: "warn",
+  installing: "warn",
+  ready_to_restart: "success",
+  error: "error",
+};
+
 export function buildInstallCommandPreview({ source, assistantName, installMode, projectPath }) {
   if (installMode === "symlink") {
     return `将本地目录软连接到 ${projectPath || "项目"} 的 ${assistantName || "目标"} Skills 目录`;
@@ -498,6 +520,70 @@ export function buildProjectTargetPreviewSummary(targets) {
   return targets.map((target) => (
     `${target.assistant}：${target.target_path}${target.exists ? " · 已存在" : ""}${target.recommended ? " · 推荐" : ""}`
   ));
+}
+
+export function getAppUpdateStatusLabel(status) {
+  return APP_UPDATE_STATUS_LABELS[status] || APP_UPDATE_STATUS_LABELS.idle;
+}
+
+export function getAppUpdateStatusTone(status) {
+  return APP_UPDATE_STATUS_TONES[status] || APP_UPDATE_STATUS_TONES.idle;
+}
+
+export function formatAppUpdateDate(value) {
+  if (!value) {
+    return "未知";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+  return date.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+export function buildAppUpdateProgressText(progress) {
+  if (!progress) {
+    return "";
+  }
+  const downloaded = Number(progress.downloaded || 0);
+  const total = Number(progress.contentLength || 0);
+  if (total > 0) {
+    const percent = Math.min(100, Math.round((downloaded / total) * 100));
+    return `${percent}%`;
+  }
+  if (downloaded > 0) {
+    return `${Math.round(downloaded / 1024)} KB`;
+  }
+  return "";
+}
+
+export function buildAppUpdateView(state) {
+  const status = state?.status || "idle";
+  const update = state?.update || null;
+  const progress = state?.progress || null;
+  return {
+    status,
+    statusLabel: getAppUpdateStatusLabel(status),
+    statusTone: getAppUpdateStatusTone(status),
+    currentVersion: state?.currentVersion || update?.currentVersion || "",
+    nextVersion: update?.version || "",
+    dateLabel: formatAppUpdateDate(update?.date),
+    releaseNotes: update?.body || "",
+    progressText: buildAppUpdateProgressText(progress),
+    progressPercent: progress?.contentLength
+      ? Math.min(100, Math.round(((progress.downloaded || 0) / progress.contentLength) * 100))
+      : 0,
+    canCheck: !["checking", "downloading", "installing"].includes(status),
+    canInstall: status === "available",
+    canRestart: status === "ready_to_restart",
+    error: state?.error || "",
+  };
 }
 
 export function resolveScenarioSkills({ scenario, allSkills }) {

@@ -5,6 +5,8 @@ import {
   SUPPORTED_INSTALL_SOURCES,
   buildImportPreviewSummary,
   buildImportPreviewToken,
+  buildAppUpdateProgressText,
+  buildAppUpdateView,
   buildInstallDetectionView,
   buildInstallDetectionSummary,
   buildInstallDetectionWarningSummary,
@@ -29,6 +31,8 @@ import {
   getStructureStatusLabel,
   getStructureStatusTone,
   getPackageKindLabel,
+  getAppUpdateStatusLabel,
+  getAppUpdateStatusTone,
   isInstallPreviewCurrent,
   isImportPreviewCurrent,
   normalizeSkillStructure,
@@ -37,6 +41,42 @@ import {
   shouldShowInstallAdvancedOptions,
   shouldShowProjectLinkOption,
 } from "./skillmate.mjs";
+
+test("应用更新状态视图应当映射按钮能力和版本信息", () => {
+  assert.deepEqual(
+    buildAppUpdateView({
+      status: "available",
+      currentVersion: "0.0.1",
+      update: {
+        currentVersion: "0.0.1",
+        version: "0.0.2",
+        body: "修复安装流程",
+      },
+    }),
+    {
+      status: "available",
+      statusLabel: "发现更新",
+      statusTone: "warn",
+      currentVersion: "0.0.1",
+      nextVersion: "0.0.2",
+      dateLabel: "未知",
+      releaseNotes: "修复安装流程",
+      progressText: "",
+      progressPercent: 0,
+      canCheck: true,
+      canInstall: true,
+      canRestart: false,
+      error: "",
+    }
+  );
+});
+
+test("应用更新进度应当优先展示百分比", () => {
+  assert.equal(buildAppUpdateProgressText({ downloaded: 512, contentLength: 1024 }), "50%");
+  assert.equal(buildAppUpdateProgressText({ downloaded: 2048, contentLength: 0 }), "2 KB");
+  assert.equal(getAppUpdateStatusLabel("ready_to_restart"), "等待重启");
+  assert.equal(getAppUpdateStatusTone("error"), "error");
+});
 
 test("安装来源只保留 Git 仓库和本地目录", () => {
   assert.deepEqual(SUPPORTED_INSTALL_SOURCES, ["git", "local"]);

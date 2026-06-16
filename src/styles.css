@@ -474,10 +474,22 @@ body {
   background: rgba(245, 158, 11, 0.12);
 }
 
+.update-pill.success {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 35%, transparent);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+}
+
 .update-pill.error {
   color: var(--error);
   border-color: rgba(239, 68, 68, 0.35);
   background: rgba(239, 68, 68, 0.1);
+}
+
+.update-pill.muted {
+  color: var(--text2);
+  border-color: var(--border);
+  background: var(--bg3);
 }
 
 .count {
@@ -877,6 +889,85 @@ body {
 .git-url { font-size: 0.9rem; color: var(--text2); word-break: break-all; }
 .git-sync { font-size: 0.8rem; color: var(--text3); margin: 8px 0; }
 .git-meta { font-size: 0.85rem; color: var(--text2); margin-top: 6px; }
+.app-update-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(220px, 0.8fr);
+  gap: 16px;
+  align-items: start;
+}
+.app-update-main {
+  display: grid;
+  gap: 8px;
+}
+.app-update-main .update-pill {
+  width: fit-content;
+}
+.app-update-main h3 {
+  font-size: 1.1rem;
+}
+.app-update-main p {
+  color: var(--text2);
+  line-height: 1.5;
+}
+.app-update-meta {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.app-update-meta > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+.app-update-meta .label {
+  color: var(--text3);
+  font-size: 0.76rem;
+}
+.app-update-meta .value {
+  color: var(--text);
+  font-size: 0.82rem;
+  text-align: right;
+  min-width: 0;
+}
+.app-update-meta .mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.app-update-progress {
+  margin-top: 14px;
+  display: grid;
+  gap: 8px;
+}
+.app-update-progress-head {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text2);
+  font-size: 0.82rem;
+}
+.progress-track {
+  height: 8px;
+  overflow: hidden;
+  background: var(--bg3);
+  border-radius: 999px;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+  transition: width 0.18s ease;
+}
+.app-update-notes {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text2);
+  font: inherit;
+  line-height: 1.55;
+  max-height: 220px;
+  overflow: auto;
+}
 .import-preview {
   margin-top: 14px;
   padding: 12px 14px;
@@ -1292,4 +1383,5 @@ body {
   .content { padding: 12px; }
   .grid { grid-template-columns: 1fr; }
   .update-toolbar { display: none; }
+  .app-update-panel { grid-template-columns: 1fr; }
 }

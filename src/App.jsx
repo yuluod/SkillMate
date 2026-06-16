@@ -10,6 +10,7 @@ import zedLogo from "./assets/brands/zed.png";
 import cursorLogo from "./assets/brands/cursor.png";
 import vscodeLogo from "./assets/brands/vscode.svg";
 import {
+  buildAppUpdateView,
   buildImportPreviewSummary,
   buildGitBackupPayload,
   buildValidationSummary,
@@ -28,7 +29,7 @@ import {
   resolveScenarioSkills,
   SUPPORTED_INSTALL_SOURCES,
 } from "./lib/skillmate.mjs";
-import { useImportExportFlow, useInstallFlow, useUpdateFlow } from "./lib/skillmateFlows.js";
+import { useAppUpdateFlow, useImportExportFlow, useInstallFlow, useUpdateFlow } from "./lib/skillmateFlows.js";
 
 const EMPTY_DATA = { assistants: [], tags: [], scenarios: [], git: { enabled: false, remote_url: "" } };
 const THEME_STORAGE_KEY = "skillmate-theme-mode";
@@ -398,6 +399,13 @@ function App() {
   } = useUpdateFlow({ updateable, showToast, loadData });
 
   const {
+    appUpdateState,
+    checkAppUpdate,
+    installAppUpdate,
+    restartApp,
+  } = useAppUpdateFlow({ showToast });
+
+  const {
     src,
     setSrc,
     pkg,
@@ -611,6 +619,11 @@ function App() {
     });
     return { behind, syncable, failed };
   }, [orderedUpdateable, updateState]);
+
+  const appUpdateView = useMemo(
+    () => buildAppUpdateView(appUpdateState),
+    [appUpdateState]
+  );
 
   const scenarioDetails = useMemo(() => (
     data.scenarios.reduce((acc, scenario) => {
@@ -1037,6 +1050,7 @@ function App() {
               <div className="sort-tabs" style={{ marginBottom: 16 }}>
                 {[
                   ["backup", "备份"],
+                  ["app-update", "应用更新"],
                   ["data", "导入导出"],
                   ["skillset", "Skill Set"],
                   ["tags", "标签"],
@@ -1054,6 +1068,63 @@ function App() {
                   <div className="git-meta">当前远端: {gitRemoteUrl || "未配置"}</div>
                   <div className="git-meta">上次同步: {data.git.last_sync || "从未"}</div>
                   <div className="card-actions" style={{marginTop:12}}><button className="btn btn-primary btn-sm" onClick={saveGitBackup}><Icon name="check" size={14} />保存</button><button className="btn btn-secondary btn-sm" onClick={syncGit}><Icon name="upload" size={14} />立即同步</button></div>
+                </div>
+              </div>
+              )}
+              {settingsTab === "app-update" && (
+              <div className="settings-card">
+                <div className="settings-head"><Icon name="updates" size={20} /><h3>应用更新</h3></div>
+                <div className="settings-body">
+                  <div className="app-update-panel">
+                    <div className="app-update-main">
+                      <span className={`update-pill ${appUpdateView.statusTone}`}>{appUpdateView.statusLabel}</span>
+                      <h3>{appUpdateView.nextVersion ? `SkillMate ${appUpdateView.nextVersion}` : "SkillMate"}</h3>
+                      <p>{appUpdateView.nextVersion ? "检测到可安装的新版本" : "检查 GitHub Releases 上的最新正式版本"}</p>
+                    </div>
+                    <div className="app-update-meta">
+                      <div><span className="label">当前版本</span><span className="value mono">{appUpdateView.currentVersion || "未知"}</span></div>
+                      <div><span className="label">新版本</span><span className="value mono">{appUpdateView.nextVersion || "暂无"}</span></div>
+                      <div><span className="label">发布时间</span><span className="value">{appUpdateView.dateLabel}</span></div>
+                    </div>
+                  </div>
+                  {appUpdateView.progressText && (
+                    <div className="app-update-progress">
+                      <div className="app-update-progress-head">
+                        <span>下载进度</span>
+                        <strong>{appUpdateView.progressText}</strong>
+                      </div>
+                      <div className="progress-track">
+                        <div className="progress-fill" style={{ width: `${appUpdateView.progressPercent || 8}%` }} />
+                      </div>
+                    </div>
+                  )}
+                  {appUpdateView.releaseNotes && (
+                    <div className="import-preview">
+                      <div className="import-preview-head">
+                        <strong>更新日志</strong>
+                        <span>来自 release metadata</span>
+                      </div>
+                      <pre className="app-update-notes">{appUpdateView.releaseNotes}</pre>
+                    </div>
+                  )}
+                  {appUpdateView.error && (
+                    <div className="install-compact error">
+                      <span>更新检查异常</span>
+                      <strong>{appUpdateView.error}</strong>
+                    </div>
+                  )}
+                  <div className="card-actions" style={{ marginTop: 12, opacity: 1 }}>
+                    <button className="btn btn-secondary btn-sm" onClick={checkAppUpdate} disabled={!appUpdateView.canCheck}>
+                      <Icon name="refresh" size={14} />{appUpdateState.status === "checking" ? "检查中" : "检查更新"}
+                    </button>
+                    <button className="btn btn-primary btn-sm" onClick={installAppUpdate} disabled={!appUpdateView.canInstall}>
+                      <Icon name="upload" size={14} />下载并安装
+                    </button>
+                    <button className="btn btn-secondary btn-sm" onClick={restartApp} disabled={!appUpdateView.canRestart}>
+                      <Icon name="refresh" size={14} />重启应用
+                    </button>
+                  </div>
+                  <div className="git-meta">应用更新使用 GitHub Releases 的 latest.json；更新包会由 Tauri 签名校验后再安装。</div>
                 </div>
               </div>
               )}
