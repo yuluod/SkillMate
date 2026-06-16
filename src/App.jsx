@@ -1047,7 +1047,7 @@ function App() {
           {view === "settings" && (
             <div className="settings">
               <div className="content-head"><div><h2>设置</h2></div></div>
-              <div className="sort-tabs" style={{ marginBottom: 16 }}>
+              <div className="sort-tabs settings-tabs">
                 {[
                   ["backup", "备份"],
                   ["app-update", "应用更新"],
