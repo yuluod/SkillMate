@@ -74,6 +74,8 @@ test("Tauri updater 配置必须生成签名更新包", () => {
 
 test("Release workflow 必须发布 updater metadata", () => {
   const workflow = readText(".github/workflows/release.yml");
+  const publishStep = workflow.indexOf("Publish completed release");
+  const metadataStep = workflow.indexOf("Generate updater metadata");
 
   assert.match(workflow, /TAURI_SIGNING_PRIVATE_KEY/);
   assert.match(workflow, /缺少 updater 签名密钥/);
@@ -82,7 +84,15 @@ test("Release workflow 必须发布 updater metadata", () => {
   assert.match(workflow, /args: "--bundles app,dmg"/);
   assert.equal((workflow.match(/includeUpdaterJson: true/g) || []).length, 0);
   assert.equal((workflow.match(/updaterJsonPreferNsis: true/g) || []).length, 0);
+  assert.ok(publishStep >= 0, "Release workflow 必须包含发布 release 步骤");
+  assert.ok(metadataStep >= 0, "Release workflow 必须包含 updater metadata 步骤");
+  assert.ok(
+    publishStep < metadataStep,
+    "必须先发布 release，再生成 latest.json，避免写入 untagged 下载地址"
+  );
   assert.match(workflow, /Generate updater metadata/);
+  assert.match(workflow, /release 仍是 draft/);
+  assert.match(workflow, /encodeURIComponent\(assetName\)/);
   assert.match(workflow, /SkillMate_aarch64\.app\.tar\.gz/);
   assert.match(workflow, /SkillMate_\$\{version\}_x64-setup\.exe/);
   assert.match(workflow, /SkillMate_\$\{version\}_amd64\.deb/);

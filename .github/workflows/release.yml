@@ -354,6 +354,20 @@ jobs:
       - build-linux
 
     steps:
+      - name: Publish completed release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
+        run: |
+          cat > release-payload.json <<'JSON'
+          {
+            "draft": false,
+            "prerelease": false,
+            "make_latest": "true"
+          }
+          JSON
+          gh api --method PATCH "repos/${{ github.repository }}/releases/${RELEASE_ID}" --input release-payload.json
+
       - name: Generate updater metadata
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -371,6 +385,9 @@ jobs:
           const tagName = process.env.TAG_NAME;
           const version = tagName.replace(/^v/, "");
           const assets = new Map(release.assets.map((asset) => [asset.name, asset]));
+          if (release.draft) {
+            throw new Error("release 仍是 draft，不能生成 updater metadata");
+          }
 
           function requireAsset(name) {
             const asset = assets.get(name);
@@ -395,10 +412,11 @@ jobs:
           }
 
           function entry(assetName) {
-            const asset = requireAsset(assetName);
+            requireAsset(assetName);
+            const encodedAssetName = encodeURIComponent(assetName);
             return {
               signature: signatureFor(assetName),
-              url: asset.browser_download_url,
+              url: `https://github.com/${repo}/releases/download/${tagName}/${encodedAssetName}`,
             };
           }
 
@@ -440,17 +458,3 @@ jobs:
           );
           NODE
           gh release upload "${TAG_NAME}" latest.json --clobber --repo "${REPOSITORY}"
-
-      - name: Publish completed release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
-        run: |
-          cat > release-payload.json <<'JSON'
-          {
-            "draft": false,
-            "prerelease": false,
-            "make_latest": "true"
-          }
-          JSON
-          gh api --method PATCH "repos/${{ github.repository }}/releases/${RELEASE_ID}" --input release-payload.json
