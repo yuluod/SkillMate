@@ -28,6 +28,7 @@
   "bundle": {
     "active": true,
     "targets": ["deb", "rpm"],
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -39,6 +40,15 @@
   "plugins": {
     "shell": {
       "open": true
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVFRjlGRTI3MzJFQUEwMjcKUldRbm9Pb3lKLzc1WHBUUTNpd2d4MVBYOXUzYW5vR0VKZHBGdTJ2N0RLcFpGRXVPdDc2NlpGNkUK",
+      "endpoints": [
+        "https://github.com/yuluod/SkillMate/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     },
     "fs": {}
   }

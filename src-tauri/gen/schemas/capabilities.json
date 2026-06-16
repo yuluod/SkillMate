@@ -1,1 +1,1 @@
-{}
+{"default":{"identifier":"default","description":"允许主窗口访问 SkillMate 的基础 Tauri API、应用更新和重启能力。","local":true,"windows":["main"],"permissions":["core:default","updater:default","process:default"]}}
