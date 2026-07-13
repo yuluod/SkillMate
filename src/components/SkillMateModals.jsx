@@ -1,3 +1,4 @@
+import { useId } from "react";
 import Icon from "./Icon.jsx";
 import ModalShell from "./ModalShell.jsx";
 import {
@@ -11,40 +12,51 @@ import {
 } from "../lib/skillmate.mjs";
 
 export function InstallModal({
-  pkg,
-  setPkg,
-  installDetectionView,
-  installAssistant,
-  setInstallAssistant,
+  flow,
   assistants,
-  showProjectLinkOption,
-  installMode,
-  setInstallMode,
-  projectPath,
-  setProjectPath,
-  previewingProjectTargets,
-  projectTargetPreview,
-  showInstallAdvancedOptions,
-  installAdvancedOpen,
-  setInstallAdvancedOpen,
-  src,
-  setSrc,
-  installStructurePreview,
-  installPreviewView,
-  installPreviewCurrent,
-  runInstallPrimaryAction,
-  installPrimaryAction,
   loading,
-  installDetailsOpen,
-  setInstallDetailsOpen,
-  cmd,
   onClose,
 }) {
+  const {
+    source: {
+      kind: src,
+      setKind: setSrc,
+      package: pkg,
+      setPackage: setPkg,
+      detectionView: installDetectionView,
+    },
+    target: {
+      assistant: installAssistant,
+      setAssistant: setInstallAssistant,
+      mode: installMode,
+      setMode: setInstallMode,
+      projectPath,
+      setProjectPath,
+      projectPreview: projectTargetPreview,
+      previewingProject: previewingProjectTargets,
+      showProjectLinkOption,
+    },
+    preview: {
+      structure: installStructurePreview,
+      view: installPreviewView,
+      current: installPreviewCurrent,
+      primaryAction: installPrimaryAction,
+      runPrimaryAction: runInstallPrimaryAction,
+    },
+    disclosure: {
+      detailsOpen: installDetailsOpen,
+      setDetailsOpen: setInstallDetailsOpen,
+      advancedOpen: installAdvancedOpen,
+      setAdvancedOpen: setInstallAdvancedOpen,
+      showAdvancedOptions: showInstallAdvancedOptions,
+    },
+    commandPreview: cmd,
+  } = flow;
   return (
     <ModalShell title="安装 Skill" icon="plus" className="install-modal" onClose={onClose}>
       <div className="form">
-        <label>Skill 来源</label>
-        <input value={pkg} onChange={e => setPkg(e.target.value)} placeholder="Git URL、owner/repo、GitHub tree URL 或本地目录" />
+        <label htmlFor="install-source">Skill 来源</label>
+        <input id="install-source" value={pkg} onChange={e => setPkg(e.target.value)} placeholder="Git URL、owner/repo、GitHub tree URL 或本地目录" />
       </div>
       {installDetectionView && (
         <div className={`install-compact ${installDetectionView.tone}`}>
@@ -55,8 +67,8 @@ export function InstallModal({
       )}
       <div className="install-target">
         <div className="form">
-          <label>安装到</label>
-          <select value={installAssistant} onChange={e => setInstallAssistant(e.target.value)}>
+          <label htmlFor="install-assistant">安装到</label>
+          <select id="install-assistant" value={installAssistant} onChange={e => setInstallAssistant(e.target.value)}>
             {assistants.map((assistant) => (
               <option key={assistant.name} value={assistant.name}>{assistant.name}</option>
             ))}
@@ -72,8 +84,8 @@ export function InstallModal({
       {showProjectLinkOption && installMode === "symlink" && (
         <div className="install-project">
           <div className="form">
-            <label>项目路径</label>
-            <input value={projectPath} onChange={e => setProjectPath(e.target.value)} placeholder="/path/to/project" />
+            <label htmlFor="install-project-path">项目路径</label>
+            <input id="install-project-path" value={projectPath} onChange={e => setProjectPath(e.target.value)} placeholder="/path/to/project" />
           </div>
           {previewingProjectTargets && <div className="git-meta">正在识别项目目标目录...</div>}
           {projectTargetPreview.length > 0 && (
@@ -88,8 +100,8 @@ export function InstallModal({
       {(showInstallAdvancedOptions || installAdvancedOpen) && (
         <div className="install-advanced">
           <div className="form">
-            <label>来源类型</label>
-            <select value={src} onChange={e => setSrc(e.target.value)}>
+            <label htmlFor="install-source-kind">来源类型</label>
+            <select id="install-source-kind" value={src} onChange={e => setSrc(e.target.value)}>
               {SUPPORTED_INSTALL_SOURCES.map((source) => (
                 <option key={source} value={source}>{source === "git" ? "Git 仓库" : "本地目录"}</option>
               ))}
@@ -124,12 +136,25 @@ export function InstallModal({
       </div>
       {installDetailsOpen && (
         <div className="install-details">
-          <div className="form"><label>执行方式</label><div className="cmd">{cmd}</div></div>
+          <div className="form"><span className="form-label">执行方式</span><div className="cmd">{cmd}</div></div>
           {installStructurePreview && (
             <>
               <p>{buildStructureWarningSummary(installStructurePreview)}</p>
               {installPreviewView?.packageWarnings && <p>{installPreviewView.packageWarnings}</p>}
               {installPreviewView?.needsModel && <p>本地规则置信度不足，可后续启用模型辅助识别。</p>}
+              {installPreviewView?.policy?.message && (
+                <div className={`install-compact ${installPreviewView.policy.allowed ? "success" : "error"}`}>
+                  <span>安装策略</span>
+                  <strong>{installPreviewView.policy.message}</strong>
+                </div>
+              )}
+              {installPreviewView?.policy?.findings?.length > 0 && (
+                <ul className={`import-preview-list ${installPreviewView.policy.allowed ? "" : "danger"}`}>
+                  {installPreviewView.policy.findings.map((finding, index) => (
+                    <li key={`${finding.code}-${index}`}>{finding.label}：{finding.message}</li>
+                  ))}
+                </ul>
+              )}
               {installPreviewView?.skills?.length > 0 && (
                 <ul className="import-preview-list">
                   {installPreviewView.skills.map((skill) => (
@@ -213,16 +238,17 @@ export function TagEditorModal({
 }
 
 export function ConfirmModal({ confirmState, onClose, onConfirm }) {
+  const descriptionId = useId();
   return (
-    <ModalShell title={confirmState.title} onClose={onClose}>
-      <p style={{ color: "var(--text2)", fontSize: "0.9rem", marginBottom: 20 }}>{confirmState.message}</p>
+    <ModalShell title={confirmState.title} onClose={onClose} role="alertdialog" descriptionId={descriptionId}>
+      <p id={descriptionId} style={{ color: "var(--text2)", fontSize: "0.9rem", marginBottom: 20 }}>{confirmState.message}</p>
       <div className="card-actions" style={{ justifyContent: "flex-end" }}>
         <button className="btn btn-secondary btn-sm" onClick={onClose}>取消</button>
         <button
-          className="btn btn-danger btn-sm"
+          className={`btn btn-${confirmState.tone === "primary" ? "primary" : "danger"} btn-sm`}
           onClick={onConfirm}
         >
-          确认删除
+          {confirmState.confirmLabel || "确认"}
         </button>
       </div>
     </ModalShell>

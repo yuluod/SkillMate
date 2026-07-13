@@ -19,6 +19,7 @@ import {
   buildPackageDetectionSummary,
   buildScenarioManifestPreviewSummary,
   buildSkillCardView,
+  buildUniqueSkillInventory,
   buildSkillMateManifestPreviewSummary,
   buildSkillDescription,
   buildStructureWarningSummary,
@@ -26,6 +27,7 @@ import {
   buildSkillProfilePreviewSummary,
   buildProjectTargetPreviewSummary,
   buildGitBackupPayload,
+  buildGitBackupState,
   buildInstallCommandPreview,
   filterSkillsByScenario,
   formatScenarioCopyText,
@@ -75,6 +77,11 @@ test("应用更新状态视图应当映射按钮能力和版本信息", () => {
       canCheck: true,
       canInstall: true,
       canRestart: false,
+      primaryAction: "install",
+      primaryActionLabel: "下载并安装后重启",
+      primaryActionIcon: "upload",
+      canRunPrimaryAction: true,
+      showSecondaryCheck: true,
       error: "",
     }
   );
@@ -83,8 +90,32 @@ test("应用更新状态视图应当映射按钮能力和版本信息", () => {
 test("应用更新进度应当优先展示百分比", () => {
   assert.equal(buildAppUpdateProgressText({ downloaded: 512, contentLength: 1024 }), "50%");
   assert.equal(buildAppUpdateProgressText({ downloaded: 2048, contentLength: 0 }), "2 KB");
+  assert.equal(getAppUpdateStatusLabel("restarting"), "正在重启");
   assert.equal(getAppUpdateStatusLabel("ready_to_restart"), "等待重启");
   assert.equal(getAppUpdateStatusTone("error"), "error");
+  assert.deepEqual(
+    buildAppUpdateView({ status: "restarting" }),
+    {
+      status: "restarting",
+      statusLabel: "正在重启",
+      statusTone: "warn",
+      currentVersion: "",
+      nextVersion: "",
+      dateLabel: "未知",
+      releaseNotes: "",
+      progressText: "",
+      progressPercent: 0,
+      canCheck: false,
+      canInstall: false,
+      canRestart: false,
+      primaryAction: "restart",
+      primaryActionLabel: "正在重启",
+      primaryActionIcon: "refresh",
+      canRunPrimaryAction: false,
+      showSecondaryCheck: false,
+      error: "",
+    }
+  );
 });
 
 test("App 可靠性回归点应当避免脆弱写法", () => {
@@ -97,9 +128,9 @@ test("App 可靠性回归点应当避免脆弱写法", () => {
   assert.match(source, /loadRequestRef/);
   assert.match(source, /SkillMateModals\.jsx/);
   assert.match(modalShell, /function ModalShell/);
-  assert.match(modalShell, /role="dialog"/);
+  assert.match(modalShell, /role=\{role\}/);
   assert.match(modalShell, /aria-modal="true"/);
-  assert.match(modalShell, /event\.key === "Escape"/);
+  assert.match(modalShell, /activateModalFocus/);
 });
 
 test("安装来源只保留 Git 仓库和本地目录", () => {
@@ -144,8 +175,38 @@ test("安装预览视图应当映射动作、冲突和包 warning", () => {
       actions: [{ action: "skip", source: "writer", target: "/tmp/writer", reason: "目标目录已存在", label: "跳过" }],
       conflicts: [{ target: "/tmp/writer", reason: "target_exists" }],
       needsModel: false,
+      policy: {
+        mode: "off",
+        allowed: true,
+        message: "",
+        findings: [],
+      },
     }
   );
+});
+
+test("安装预览视图应当展示策略阻止原因", () => {
+  const view = buildInstallPreviewView({
+    can_apply: false,
+    structure_status: "complete",
+    package_detection: { detected_skills: [], warnings: [] },
+    conflicts: [{ target: "/tmp/writer", reason: "install_policy_blocked" }],
+    install_policy: {
+      mode: "trusted-only",
+      allowed: false,
+      message: "安装策略阻止了 1 项风险",
+      findings: [{ code: "untrusted_git_host", severity: "critical", message: "Git 主机 example.com 不在信任列表" }],
+    },
+  });
+
+  assert.equal(view.tone, "error");
+  assert.equal(view.policy.allowed, false);
+  assert.deepEqual(view.policy.findings, [{
+    code: "untrusted_git_host",
+    severity: "critical",
+    message: "Git 主机 example.com 不在信任列表",
+    label: "Git 主机不在信任列表",
+  }]);
 });
 
 test("安装预览视图应当映射项目软连接动作", () => {
@@ -276,7 +337,7 @@ test("安装预览摘要应当保留结构、目标和写入计划", () => {
       conflicts: [],
     }),
     [
-      "结构：完整",
+      "结构：符合规范",
       "目标：/tmp/project/.codex/skills/writer",
       "写入：1 个动作",
       "单 Skill · 1 个 Skill",
@@ -326,7 +387,7 @@ test("SkillMate manifest 预览摘要应当提示格式问题", () => {
   );
 });
 
-test("Skill Profile 预览摘要应当提示组合名称和非破坏性应用边界", () => {
+test("Skill Profile 预览摘要应当提示组合名称和受管对齐边界", () => {
   assert.deepEqual(
     buildSkillProfilePreviewSummary({
       profile: { name: "写作模式", skills: [{}, {}] },
@@ -337,6 +398,7 @@ test("Skill Profile 预览摘要应当提示组合名称和非破坏性应用边
       diff: {
         to_install: ["Codex:writer:local"],
         already_present: ["Claude Code:review:local"],
+        to_remove: ["Codex:old:local"],
         conflicts: [],
       },
     }),
@@ -346,7 +408,8 @@ test("Skill Profile 预览摘要应当提示组合名称和非破坏性应用边
       "Codex：writer · 将安装 1 个 Skill",
       "将补齐 1 条缺失记录",
       "1 条记录已存在",
-      "应用 Profile 只安装缺失的受管 Skill，不会自动删除手工目录",
+      "将移除 1 条不在目标组合中的受管记录",
+      "应用 Profile 会对齐 SkillMate 受管 Skill，不会删除手工添加的目录",
     ]
   );
 });
@@ -364,7 +427,7 @@ test("Skill Profile 预览摘要应当提示 Profile 格式问题", () => {
       "manifest 没有可执行动作",
       "Profile 有 1 个格式问题",
       "Profile 至少需要包含一条 Skill 记录",
-      "应用 Profile 只安装缺失的受管 Skill，不会自动删除手工目录",
+      "应用 Profile 会对齐 SkillMate 受管 Skill，不会删除手工添加的目录",
     ]
   );
 });
@@ -413,9 +476,9 @@ test("安装预览必须体现目标助手和来源", () => {
 });
 
 test("结构状态应当映射为稳定中文文案和语义样式", () => {
-  assert.equal(getStructureStatusLabel("complete"), "完整");
-  assert.equal(getStructureStatusLabel("partial"), "部分");
-  assert.equal(getStructureStatusLabel("unknown"), "非标准");
+  assert.equal(getStructureStatusLabel("complete"), "符合规范");
+  assert.equal(getStructureStatusLabel("partial"), "需要修复");
+  assert.equal(getStructureStatusLabel("unknown"), "非 Skill");
   assert.equal(getStructureStatusTone("complete"), "success");
   assert.equal(getStructureStatusTone("partial"), "warn");
   assert.equal(getStructureStatusTone("unknown"), "error");
@@ -433,15 +496,15 @@ test("Skill 结构数据适配应当容忍缺失字段", () => {
   assert.deepEqual(
     normalizeSkillStructure({
       structure_status: "complete",
-      structure_features: ["skill_md"],
-      structure_warnings: ["missing_support_dirs"],
+      structure_features: ["skill_md", "name", "description"],
+      structure_warnings: [],
       manifest_title: "写作",
       manifest_description: "处理文稿",
     }),
     {
       status: "complete",
-      features: ["skill_md"],
-      warnings: ["missing_support_dirs"],
+      features: ["skill_md", "name", "description"],
+      warnings: [],
       manifestTitle: "写作",
       manifestDescription: "处理文稿",
     }
@@ -453,7 +516,7 @@ test("结构 warning 摘要应当输出可读中文", () => {
     buildStructureWarningSummary({
       structure_warnings: ["missing_skill_md", "frontmatter_invalid", "target_exists"],
     }),
-    "缺少 SKILL.md、frontmatter 无效、目标目录已存在"
+    "缺少 SKILL.md、YAML frontmatter 无效、目标目录已存在"
   );
 
   assert.equal(
@@ -545,7 +608,7 @@ test("安装结果摘要应当包含结构状态和风险", () => {
       structure_status: "partial",
       structure_warnings: ["missing_skill_md"],
     }),
-    "结构部分：缺少 SKILL.md"
+    "结构需要修复：缺少 SKILL.md"
   );
 
   assert.equal(
@@ -553,7 +616,7 @@ test("安装结果摘要应当包含结构状态和风险", () => {
       structure_status: "complete",
       structure_warnings: [],
     }),
-    "结构完整"
+    "结构符合规范"
   );
 });
 
@@ -567,7 +630,7 @@ test("Skill 卡片视图应当优先使用 manifest 标题和说明", () => {
       has_update: true,
       can_sync: true,
       structure_status: "partial",
-      structure_warnings: ["missing_support_dirs"],
+      structure_warnings: ["missing_description"],
       manifest_title: "写作助手",
       manifest_description: "处理文稿",
       readme: "# fallback",
@@ -575,16 +638,70 @@ test("Skill 卡片视图应当优先使用 manifest 标题和说明", () => {
     {
       title: "写作助手",
       description: "处理文稿",
-      structureLabel: "部分",
+      structureLabel: "需要修复",
       structureTone: "warn",
-      warningSummary: "缺少资源目录",
+      warningSummary: "缺少必填 description",
+      securityWarningCount: 0,
+      securityWarningSummary: "",
+      hasManagedDrift: false,
       sourceLabel: "Git",
       canSync: true,
       hasUpdate: true,
       canDelete: true,
       canUnlink: false,
+      availableIn: [],
+      availabilityLabel: "",
+      isShared: false,
     }
   );
+});
+
+test("共享目录中的 Skill 在总览只保留一条并聚合可用助手", () => {
+  const inventory = buildUniqueSkillInventory([
+    {
+      name: "Codex",
+      icon: "codex",
+      skills: [{ id: "/Users/demo/.agents/skills/writer", path: "/Users/demo/.agents/skills/writer", name: "writer" }],
+    },
+    {
+      name: "Gemini CLI",
+      icon: "gemini",
+      skills: [{ id: "/Users/demo/.agents/skills/writer", path: "/Users/demo/.agents/skills/writer", name: "writer" }],
+    },
+  ]);
+
+  assert.equal(inventory.length, 1);
+  assert.deepEqual(inventory[0].availableIn, [
+    { name: "Codex", icon: "codex" },
+    { name: "Gemini CLI", icon: "gemini" },
+  ]);
+  assert.equal(buildSkillCardView(inventory[0]).availabilityLabel, "Codex、Gemini CLI");
+  assert.equal(buildSkillCardView(inventory[0]).isShared, true);
+});
+
+test("不同逻辑路径即使名称相同也保持为独立安装位置", () => {
+  const inventory = buildUniqueSkillInventory([
+    { name: "Claude Code", icon: "claude", skills: [{ path: "/project/.claude/skills/writer", name: "writer" }] },
+    { name: "Gemini CLI", icon: "gemini", skills: [{ path: "/project/.gemini/skills/writer", name: "writer" }] },
+  ]);
+
+  assert.equal(inventory.length, 2);
+  assert.deepEqual(inventory.map((skill) => skill.path), [
+    "/project/.claude/skills/writer",
+    "/project/.gemini/skills/writer",
+  ]);
+});
+
+test("Skill 卡片应当显式汇总静态风险与受管漂移", () => {
+  const view = buildSkillCardView({
+    name: "network-skill",
+    structure_status: "complete",
+    structure_warnings: ["contains_scripts", "references_network", "managed_content_changed"],
+  });
+
+  assert.equal(view.securityWarningCount, 2);
+  assert.equal(view.securityWarningSummary, "包含可执行脚本、可能访问网络");
+  assert.equal(view.hasManagedDrift, true);
 });
 
 test("Skill 卡片动作只应暴露受管删除或软连接解除", () => {
@@ -632,7 +749,7 @@ test("场景选择必须保存稳定路径而不是临时 ID", () => {
       manualInput: "",
       skills,
     }),
-    ["/Users/demo/.codex/skills/a", "/Users/demo/.codex/skills/b"]
+    []
   );
 
   assert.deepEqual(
@@ -658,6 +775,43 @@ test("Git 备份保存时必须保留仓库路径、远端地址和分支", () =
       branch: "backup/main",
     }
   );
+});
+
+test("Git 备份按钮能力统一处理空白、默认分支、未保存和忙碌状态", () => {
+  const saved = { repo_path: "~/backup", remote_url: "", branch: "main" };
+  assert.deepEqual(
+    buildGitBackupState({
+      draft: { repoPath: " ~/backup ", remoteUrl: " ", branch: " " },
+      saved,
+    }),
+    {
+      payload: { repoPath: "~/backup", remoteUrl: "", branch: "main" },
+      dirty: false,
+      configured: true,
+      saving: false,
+      syncing: false,
+      canSave: false,
+      canSync: true,
+    }
+  );
+  const dirty = buildGitBackupState({
+    draft: { repoPath: "~/other", remoteUrl: "", branch: "main" },
+    saved,
+  });
+  assert.equal(dirty.dirty, true);
+  assert.equal(dirty.canSave, true);
+  assert.equal(dirty.canSync, false);
+  const unconfigured = buildGitBackupState({
+    draft: { repoPath: "", remoteUrl: "", branch: "main" },
+    saved: {},
+  });
+  assert.equal(unconfigured.configured, false);
+  assert.equal(unconfigured.canSync, false);
+  assert.equal(buildGitBackupState({
+    draft: { repoPath: "~/backup", remoteUrl: "", branch: "main" },
+    saved,
+    syncing: true,
+  }).canSync, false);
 });
 
 test("导入预览 token 应当绑定路径和模式", () => {
@@ -750,6 +904,10 @@ test("应用场景后只保留场景内的 Skill", () => {
       activeScenarioPaths: ["/Users/demo/.codex/skills/b"],
     }),
     [{ path: "/Users/demo/.codex/skills/b", name: "B" }]
+  );
+  assert.deepEqual(
+    filterSkillsByScenario({ skills, activeScenarioPaths: [] }),
+    []
   );
 });
 

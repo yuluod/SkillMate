@@ -8,17 +8,24 @@
     "node": ">=22.13.0"
   },
   "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": ">=22.13.0",
+      "onFail": "error"
+    },
     "packageManager": {
       "name": "pnpm",
       "version": "11.6.0",
-      "onFail": "ignore"
+      "onFail": "error"
     }
   },
   "scripts": {
     "tauri": "tauri",
     "frontend:dev": "vite --host --port 1420",
     "frontend:build": "vite build",
-    "frontend:test": "node --test src/lib/*.test.mjs",
+    "frontend:test:pure": "node --test src/lib/*.test.mjs",
+    "frontend:test:ui": "vitest run",
+    "frontend:test": "pnpm frontend:test:pure && pnpm frontend:test:ui",
     "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml",
     "test": "pnpm frontend:test && pnpm rust:test",
     "dev": "tauri dev",
@@ -33,7 +40,11 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.2",
+    "@testing-library/react": "16.3.2",
+    "@testing-library/user-event": "14.6.1",
     "@vitejs/plugin-react": "^6.0.2",
-    "vite": "^8.0.16"
+    "jsdom": "29.1.1",
+    "vite": "^8.0.16",
+    "vitest": "4.1.10"
   }
 }

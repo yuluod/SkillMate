@@ -1,6 +1,6 @@
 import React from "react";
 
-const Icon = React.memo(function Icon({ name, size = 18 }) {
+const Icon = React.memo(function Icon({ name, size = 18, className = "" }) {
   const paths = {
     refresh: <><path d="M21 12a9 9 0 1 1-2.64-6.36" /><path d="M21 4v5h-5" /></>,
     plus: <><path d="M12 5v14" /><path d="M5 12h14" /></>,
@@ -26,7 +26,7 @@ const Icon = React.memo(function Icon({ name, size = 18 }) {
     sparkles: <><path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z" /><path d="M5 19l.5 1.5L7 21l-1.5.5L5 23l-.5-1.5L3 21l1.5-.5L5 19z" /><path d="M19 13l.5 1.5L21 15l-1.5.5L19 17l-.5-1.5L17 15l1.5-.5L19 13z" /></>
   };
   return (
-    <svg className="icon" style={{ width: size, height: size }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg className={`icon ${className}`.trim()} aria-hidden="true" focusable="false" style={{ width: size, height: size }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       {paths[name]}
     </svg>
   );

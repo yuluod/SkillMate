@@ -1,9 +1,9 @@
 export const SUPPORTED_INSTALL_SOURCES = ["git", "local"];
 
 const STRUCTURE_STATUS_LABELS = {
-  complete: "完整",
-  partial: "部分",
-  nonstandard: "非标准",
+  complete: "符合规范",
+  partial: "需要修复",
+  nonstandard: "非 Skill",
 };
 
 const STRUCTURE_STATUS_TONES = {
@@ -16,17 +16,60 @@ const STRUCTURE_WARNING_LABELS = {
   path_missing: "路径不存在",
   missing_entry_document: "缺少入口文档",
   missing_skill_md: "缺少 SKILL.md",
-  missing_support_dirs: "缺少资源目录",
-  empty_skill_md: "SKILL.md 内容为空",
-  frontmatter_invalid: "frontmatter 无效",
+  legacy_skill_filename: "入口文件必须命名为 SKILL.md",
+  readme_only: "README 不能替代 SKILL.md",
+  missing_frontmatter: "缺少 YAML frontmatter",
+  frontmatter_invalid: "YAML frontmatter 无效",
+  missing_name: "缺少必填 name",
+  invalid_name: "name 格式不符合规范",
+  name_directory_mismatch: "name 与目录名不一致",
+  missing_description: "缺少必填 description",
+  invalid_description: "description 必须是字符串",
+  description_too_long: "description 超过 1024 个字符",
+  invalid_compatibility: "compatibility 必须是字符串",
+  compatibility_too_long: "compatibility 超过 500 个字符",
+  invalid_license: "license 必须是字符串",
+  invalid_metadata: "metadata 必须是字符串映射",
+  invalid_allowed_tools: "allowed-tools 必须是字符串",
+  legacy_compatible_field: "compatible 已废弃，请使用 compatibility",
+  invalid_skill_structure: "Skill 不符合 Agent Skills 规范",
   structure_preview_failed: "结构预览失败",
+  entry_document_truncated: "入口文档过大，仅分析前 1 MB",
+  safety_scan_incomplete: "安全扫描达到上限，结果可能不完整",
+  plan_token_failed: "无法生成稳定操作计划",
+  duplicate_target: "安装计划包含重复目标",
   target_exists: "目标目录已存在",
   archive_unsupported: "压缩包安装暂未支持",
   empty_input: "输入为空",
   unrecognized_input: "规则无法识别",
   assistant_bundle_detected: "识别到助手包结构",
   unsafe_paths: "存在异常路径",
+  managed_state_invalid: "SkillMate 受管状态文件损坏",
+  managed_content_changed: "内容已偏离安装时状态",
+  skill_tags_invalid: "标签状态损坏，已回退到旧格式",
+  skill_tags_unavailable: "暂时无法读取标签状态",
+  contains_scripts: "包含可执行脚本",
+  declares_dependencies: "包含第三方依赖清单",
+  contains_symlinks: "包含软连接，复制时会跳过",
+  contains_hidden_files: "包含隐藏文件",
+  references_network: "可能访问网络",
+  references_environment: "可能读取环境变量或凭据",
+  install_policy_blocked: "安装策略已阻止",
+  nonstandard_skill: "来源不是标准 Skill",
+  untrusted_git_host: "Git 主机不在信任列表",
+  untrusted_local_root: "本地来源不在信任根目录",
+  policy_unavailable: "安装策略不可用",
 };
+
+const SECURITY_WARNING_CODES = new Set([
+  "contains_scripts",
+  "declares_dependencies",
+  "contains_symlinks",
+  "contains_hidden_files",
+  "references_network",
+  "references_environment",
+  "safety_scan_incomplete",
+]);
 
 const INSTALL_SOURCE_LABELS = {
   git: "Git 仓库",
@@ -56,6 +99,8 @@ const PREVIEW_ACTION_LABELS = {
   skip: "跳过",
   backup: "备份",
   symlink: "软连接",
+  keep: "保留",
+  remove: "移除",
 };
 
 const VALIDATION_STATUS_LABELS = {
@@ -71,6 +116,7 @@ const APP_UPDATE_STATUS_LABELS = {
   available: "发现更新",
   downloading: "下载中",
   installing: "安装中",
+  restarting: "正在重启",
   ready_to_restart: "等待重启",
   error: "检查失败",
 };
@@ -82,8 +128,21 @@ const APP_UPDATE_STATUS_TONES = {
   available: "warn",
   downloading: "warn",
   installing: "warn",
+  restarting: "warn",
   ready_to_restart: "success",
   error: "error",
+};
+
+const APP_UPDATE_PRIMARY_ACTIONS = {
+  idle: { action: "check", label: "检查更新", icon: "refresh", enabled: true },
+  checking: { action: "check", label: "检查中", icon: "refresh", enabled: false },
+  current: { action: "check", label: "重新检查", icon: "refresh", enabled: true },
+  available: { action: "install", label: "下载并安装后重启", icon: "upload", enabled: true },
+  downloading: { action: "install", label: "下载中", icon: "upload", enabled: false },
+  installing: { action: "install", label: "安装中", icon: "upload", enabled: false },
+  restarting: { action: "restart", label: "正在重启", icon: "refresh", enabled: false },
+  ready_to_restart: { action: "restart", label: "重启应用", icon: "refresh", enabled: true },
+  error: { action: "check", label: "重新检查", icon: "refresh", enabled: true },
 };
 
 export function buildInstallCommandPreview({ source, assistantName, installMode, projectPath }) {
@@ -267,9 +326,15 @@ export function buildInstallPreviewView(preview) {
   };
   const actions = Array.isArray(preview.target_actions) ? preview.target_actions : [];
   const conflicts = Array.isArray(preview.conflicts) ? preview.conflicts : [];
+  const policy = preview.install_policy || {
+    mode: "off",
+    allowed: true,
+    findings: [],
+    message: "",
+  };
   return {
     canApply: Boolean(preview.can_apply ?? preview.can_install),
-    tone: conflicts.length > 0 ? "error" : getStructureStatusTone(preview.structure_status),
+    tone: conflicts.length > 0 || policy.allowed === false ? "error" : getStructureStatusTone(preview.structure_status),
     message: preview.message || "",
     packageSummary: buildPackageDetectionSummary(packageDetection),
     packageWarnings: (packageDetection.warnings || [])
@@ -282,6 +347,15 @@ export function buildInstallPreviewView(preview) {
     })),
     conflicts,
     needsModel: Boolean(packageDetection.needs_model),
+    policy: {
+      mode: policy.mode || "off",
+      allowed: policy.allowed !== false,
+      message: policy.message || "",
+      findings: (policy.findings || []).map((finding) => ({
+        ...finding,
+        label: STRUCTURE_WARNING_LABELS[finding.code] || finding.message || finding.code,
+      })),
+    },
   };
 }
 
@@ -302,6 +376,9 @@ export function buildInstallPreviewSummary(preview) {
   }
   if (conflicts.length > 0) {
     lines.push(`冲突：${conflicts.length} 个`);
+  }
+  if (preview.install_policy?.message) {
+    lines.push(`策略：${preview.install_policy.message}`);
   }
   if (packageDetection.package_kind) {
     lines.push(buildPackageDetectionSummary(packageDetection));
@@ -326,18 +403,58 @@ export function buildSkillCardView(skill) {
   const structure = normalizeSkillStructure(skill);
   const isSymlink = skill?.source_type === "symlink";
   const isManaged = Boolean(skill?.managed_by_app);
+  const securityWarnings = structure.warnings.filter((warning) => SECURITY_WARNING_CODES.has(warning));
+  const availableIn = Array.isArray(skill?.availableIn) && skill.availableIn.length > 0
+    ? skill.availableIn
+    : (skill?.ai ? [{ name: skill.ai, icon: skill.aiIcon || "" }] : []);
   return {
     title: skill?.manifest_title || skill?.name || "",
     description: buildSkillDescription(skill),
     structureLabel: getStructureStatusLabel(structure.status),
     structureTone: getStructureStatusTone(structure.status),
     warningSummary: buildStructureWarningSummary(skill),
+    securityWarningCount: securityWarnings.length,
+    securityWarningSummary: securityWarnings
+      .map((warning) => STRUCTURE_WARNING_LABELS[warning] || warning)
+      .join("、"),
+    hasManagedDrift: structure.warnings.includes("managed_content_changed"),
     sourceLabel: skill?.source || "未托管",
     canSync: Boolean(skill?.can_sync),
     hasUpdate: Boolean(skill?.has_update),
     canDelete: isManaged && !isSymlink,
     canUnlink: isManaged && isSymlink,
+    availableIn,
+    availabilityLabel: availableIn.map((assistant) => assistant.name).join("、"),
+    isShared: availableIn.length > 1,
   };
+}
+
+export function buildUniqueSkillInventory(assistants) {
+  const byPath = new Map();
+  for (const assistant of Array.isArray(assistants) ? assistants : []) {
+    for (const skill of Array.isArray(assistant?.skills) ? assistant.skills : []) {
+      const path = typeof skill?.path === "string" ? skill.path : "";
+      const identity = path || `${assistant?.name || "unknown"}:${skill?.id || skill?.name || "unknown"}`;
+      const availability = {
+        name: assistant?.name || "未知助手",
+        icon: assistant?.icon || "",
+      };
+      const existing = byPath.get(identity);
+      if (existing) {
+        if (!existing.availableIn.some((item) => item.name === availability.name)) {
+          existing.availableIn.push(availability);
+        }
+        continue;
+      }
+      byPath.set(identity, {
+        ...skill,
+        ai: availability.name,
+        aiIcon: availability.icon,
+        availableIn: [availability],
+      });
+    }
+  }
+  return [...byPath.values()];
 }
 
 export function buildSkillDescription(skill) {
@@ -377,7 +494,7 @@ export function normalizeScenarioSkillPaths({ selectedPaths, manualInput, skills
     return trimmedInput.split(/[,\s]+/).filter(Boolean);
   }
 
-  return skills.slice(0, Math.min(5, skills.length)).map((skill) => skill.path);
+  return [];
 }
 
 export function buildGitBackupPayload({ repoPath, remoteUrl, branch }) {
@@ -385,6 +502,29 @@ export function buildGitBackupPayload({ repoPath, remoteUrl, branch }) {
     repoPath: repoPath.trim(),
     remoteUrl: remoteUrl.trim(),
     branch: branch.trim() || "main",
+  };
+}
+
+export function buildGitBackupState({ draft, saved, saving = false, syncing = false }) {
+  const payload = buildGitBackupPayload(draft);
+  const savedPayload = buildGitBackupPayload({
+    repoPath: saved?.repoPath ?? saved?.repo_path ?? "",
+    remoteUrl: saved?.remoteUrl ?? saved?.remote_url ?? "",
+    branch: saved?.branch ?? "main",
+  });
+  const dirty = payload.repoPath !== savedPayload.repoPath
+    || payload.remoteUrl !== savedPayload.remoteUrl
+    || payload.branch !== savedPayload.branch;
+  const configured = Boolean(savedPayload.repoPath);
+  const busy = Boolean(saving || syncing);
+  return {
+    payload,
+    dirty,
+    configured,
+    saving: Boolean(saving),
+    syncing: Boolean(syncing),
+    canSave: Boolean(payload.repoPath) && dirty && !busy,
+    canSync: configured && !dirty && !busy,
   };
 }
 
@@ -464,9 +604,12 @@ export function buildSkillMateManifestPreviewSummary(preview) {
   if (validationIssues.length > 0) {
     lines.push(`存在 ${validationIssues.length} 个格式问题`);
   }
-  if (actions.length > 0) {
-    lines.push(`将安装 ${actions.length} 条 Skill 记录`);
-  }
+  const installs = actions.filter((action) => !action.kind || action.kind === "install");
+  const keeps = actions.filter((action) => action.kind === "keep");
+  const removals = actions.filter((action) => action.kind === "remove");
+  if (installs.length > 0) lines.push(`将安装 ${installs.length} 条 Skill 记录`);
+  if (keeps.length > 0) lines.push(`将保留 ${keeps.length} 条来源一致的 Skill`);
+  if (removals.length > 0) lines.push(`将移除 ${removals.length} 条多余的受管 Skill`);
   if (conflicts.length > 0) {
     lines.push(`存在 ${conflicts.length} 个冲突`);
   }
@@ -506,10 +649,13 @@ export function buildSkillProfilePreviewSummary(preview) {
   if (Array.isArray(diff.already_present) && diff.already_present.length > 0) {
     lines.push(`${diff.already_present.length} 条记录已存在`);
   }
+  if (Array.isArray(diff.to_remove) && diff.to_remove.length > 0) {
+    lines.push(`将移除 ${diff.to_remove.length} 条不在目标组合中的受管记录`);
+  }
   if (Array.isArray(diff.conflicts) && diff.conflicts.length > 0) {
     lines.push(`Profile diff 有 ${diff.conflicts.length} 个冲突`);
   }
-  lines.push("应用 Profile 只安装缺失的受管 Skill，不会自动删除手工目录");
+  lines.push("应用 Profile 会对齐 SkillMate 受管 Skill，不会删除手工添加的目录");
   return lines;
 }
 
@@ -567,6 +713,7 @@ export function buildAppUpdateView(state) {
   const status = state?.status || "idle";
   const update = state?.update || null;
   const progress = state?.progress || null;
+  const primaryAction = APP_UPDATE_PRIMARY_ACTIONS[status] || APP_UPDATE_PRIMARY_ACTIONS.idle;
   return {
     status,
     statusLabel: getAppUpdateStatusLabel(status),
@@ -579,9 +726,14 @@ export function buildAppUpdateView(state) {
     progressPercent: progress?.contentLength
       ? Math.min(100, Math.round(((progress.downloaded || 0) / progress.contentLength) * 100))
       : 0,
-    canCheck: !["checking", "downloading", "installing"].includes(status),
+    canCheck: !["checking", "downloading", "installing", "restarting"].includes(status),
     canInstall: status === "available",
     canRestart: status === "ready_to_restart",
+    primaryAction: primaryAction.action,
+    primaryActionLabel: primaryAction.label,
+    primaryActionIcon: primaryAction.icon,
+    canRunPrimaryAction: primaryAction.enabled,
+    showSecondaryCheck: status === "available",
     error: state?.error || "",
   };
 }
@@ -600,10 +752,6 @@ export function formatScenarioCopyText(paths) {
 }
 
 export function filterSkillsByScenario({ skills, activeScenarioPaths }) {
-  if (!activeScenarioPaths.length) {
-    return skills;
-  }
-
   const allowed = new Set(activeScenarioPaths);
   return skills.filter((skill) => allowed.has(skill.path));
 }

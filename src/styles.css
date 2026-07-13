@@ -35,7 +35,7 @@
   --accent2: #1d4ed8;
   --text: #101828;
   --text2: #41516a;
-  --text3: #718096;
+  --text3: #5f6f85;
   --border: #d5deeb;
   --success: #0f9f6e;
   --warn: #b86b00;
@@ -821,6 +821,12 @@ body {
 
 .ai-skill-tag.more { background: var(--bg4); color: var(--text3); }
 .ai-empty-hint { font-size: 0.75rem; color: var(--text3); margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.scan-diagnostics { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); text-align: left; }
+.scan-diagnostics summary { cursor: pointer; color: var(--warn); font-size: 0.72rem; }
+.scan-diagnostics ul { display: grid; gap: 8px; margin-top: 8px; padding: 0; list-style: none; }
+.scan-diagnostics li { display: grid; gap: 2px; min-width: 0; }
+.scan-diagnostics li span { overflow: hidden; color: var(--text2); font: 0.68rem 'SF Mono', monospace; text-overflow: ellipsis; white-space: nowrap; }
+.scan-diagnostics li small { color: var(--text3); font-size: 0.68rem; line-height: 1.4; }
 
 /* ============================
    Scenario Cards
@@ -912,6 +918,10 @@ body {
   max-width: 100%;
   margin-bottom: 18px;
 }
+
+.settings-action-row { margin-top: 12px; }
+.settings-section { margin-top: 18px; }
+.profile-description { margin-top: 6px; margin-bottom: 0; }
 
 .settings-card {
   background: var(--bg2);
@@ -1148,6 +1158,7 @@ body {
 
 .form { margin-bottom: 14px; }
 .form label { display: block; font-size: 0.83rem; color: var(--text2); margin-bottom: 6px; font-weight: 650; }
+.form-label { display: block; margin-bottom: 6px; color: var(--text2); font-size: 0.83rem; font-weight: 650; }
 .form input, .form select {
   width: 100%;
   min-height: 38px;
@@ -1453,6 +1464,21 @@ body {
   object-fit: cover;
 }
 
+.load-error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--error) 45%, var(--border));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--error) 8%, var(--bg2));
+}
+.load-error-banner div { display: grid; gap: 3px; min-width: 0; }
+.load-error-banner strong { color: var(--error); }
+.load-error-banner span { overflow: hidden; color: var(--text2); font-size: 0.78rem; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ============================
    Responsive
    ============================ */
@@ -1460,6 +1486,16 @@ body {
   .content { padding: 24px; }
   .settings { max-width: none; }
   .app-update-panel { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 820px) {
+  .header { gap: 10px; padding-inline: 14px; }
+  .header-left { min-width: auto; }
+  .app-sub { display: none; }
+  .content { padding: 16px; }
+  .grid, .ai-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+  .settings-body { padding: 16px; }
+  .modal { width: min(94vw, 520px); max-height: 90vh; overflow-y: auto; }
 }
 
 @media (max-width: 768px) {
@@ -1473,3 +1509,14 @@ body {
   .update-toolbar { display: none; }
   .app-update-panel { grid-template-columns: 1fr; }
 }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+.scenario-editor-card { margin-bottom: 20px; }
+.scenario-detail-path { margin-top: 6px; margin-bottom: 0; }

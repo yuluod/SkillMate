@@ -1,64 +1,35 @@
 import { useEffect, useId, useRef } from "react";
 import Icon from "./Icon.jsx";
+import { activateModalFocus } from "../lib/modalFocus.mjs";
 
-function getModalFocusableElements(modal) {
-  if (!modal) return [];
-  return Array.from(
-    modal.querySelectorAll(
-      'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
-    )
-  ).filter((element) => !element.hasAttribute("disabled") && !element.getAttribute("aria-hidden"));
-}
-
-export default function ModalShell({ title, icon, className = "", onClose, children }) {
+export default function ModalShell({ title, icon, className = "", onClose, children, role = "dialog", descriptionId }) {
   const titleId = useId();
   const modalRef = useRef(null);
+  const onCloseRef = useRef(onClose);
 
   useEffect(() => {
-    const previousFocus = document.activeElement;
-    const modal = modalRef.current;
-    const focusable = getModalFocusableElements(modal);
-    (focusable[0] || modal)?.focus();
-
-    function handleKeyDown(event) {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const elements = getModalFocusableElements(modalRef.current);
-      if (elements.length === 0) {
-        event.preventDefault();
-        modalRef.current?.focus();
-        return;
-      }
-      const first = elements[0];
-      const last = elements[elements.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    }
-
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-      previousFocus?.focus?.();
-    };
+    onCloseRef.current = onClose;
   }, [onClose]);
+
+  useEffect(() => {
+    const modal = modalRef.current;
+    if (!modal) return undefined;
+    return activateModalFocus({
+      document,
+      modal,
+      onClose: () => onCloseRef.current(),
+    });
+  }, []);
 
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div
         ref={modalRef}
         className={`modal ${className}`.trim()}
-        role="dialog"
+        role={role}
         aria-modal="true"
         aria-labelledby={titleId}
+        aria-describedby={descriptionId}
         tabIndex={-1}
         onClick={e => e.stopPropagation()}
       >
