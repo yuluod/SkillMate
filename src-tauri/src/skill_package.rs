@@ -1,4 +1,7 @@
-use crate::skill_structure::{analyze_skill_structure, SkillStructureInfo};
+use crate::skill_structure::{
+    analyze_skill_safety, analyze_skill_structure, detect_skill_entry, SkillEntryKind,
+    SkillStructureInfo,
+};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -33,7 +36,7 @@ pub fn detect_skill_package(path: &Path) -> PackageDetection {
 
     let has_bundle_signal = has_assistant_bundle_signal(path);
     let root_structure = analyze_skill_structure(path);
-    if has_entry_document(path) {
+    if has_standard_entry_document(path) {
         return PackageDetection {
             package_kind: "single_skill".to_string(),
             detected_skills: vec![detected_skill(path, path, root_structure)],
@@ -42,7 +45,10 @@ pub fn detect_skill_package(path: &Path) -> PackageDetection {
         };
     }
 
-    let mut skills = collect_child_skills(path);
+    let mut skills = collect_child_skills(path, false);
+    if skills.is_empty() {
+        skills = collect_child_skills(path, true);
+    }
     if skills.len() > 1 {
         skills.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
         return PackageDetection {
@@ -95,19 +101,37 @@ pub fn detect_skill_package(path: &Path) -> PackageDetection {
     }
 }
 
-fn collect_child_skills(root: &Path) -> Vec<DetectedSkill> {
+fn collect_child_skills(root: &Path, include_legacy: bool) -> Vec<DetectedSkill> {
     let mut skills = Vec::new();
     let mut candidates = immediate_dirs(root);
-    for bundle_root in [".codex/skills", ".claude/skills", "skills", "agents"] {
+    for bundle_root in [
+        ".codex/skills",
+        ".claude/skills",
+        ".gemini/skills",
+        ".openclaw/skills",
+        ".agents/skills",
+        "skills",
+        "agents",
+    ] {
         let path = root.join(bundle_root);
         if path.is_dir() {
-            candidates.extend(immediate_dirs(&path));
+            let direct_candidates = immediate_dirs(&path);
+            for candidate in &direct_candidates {
+                if !(has_standard_entry_document(candidate)
+                    || include_legacy && has_legacy_entry_document(candidate))
+                {
+                    candidates.extend(immediate_dirs(candidate));
+                }
+            }
+            candidates.extend(direct_candidates);
         }
     }
     candidates.sort();
     candidates.dedup();
     for candidate in candidates {
-        if has_entry_document(&candidate) {
+        if has_standard_entry_document(&candidate)
+            || (include_legacy && has_legacy_entry_document(&candidate))
+        {
             let structure = analyze_skill_structure(&candidate);
             skills.push(detected_skill(root, &candidate, structure));
         }
@@ -127,7 +151,12 @@ fn immediate_dirs(path: &Path) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-fn detected_skill(root: &Path, path: &Path, structure: SkillStructureInfo) -> DetectedSkill {
+fn detected_skill(root: &Path, path: &Path, mut structure: SkillStructureInfo) -> DetectedSkill {
+    for warning in analyze_skill_safety(path) {
+        if !structure.structure_warnings.contains(&warning) {
+            structure.structure_warnings.push(warning);
+        }
+    }
     DetectedSkill {
         relative_path: relative_path(root, path),
         structure_status: structure.structure_status,
@@ -153,10 +182,15 @@ fn normalized_relative_path(path: &Path) -> String {
         .join("/")
 }
 
-fn has_entry_document(path: &Path) -> bool {
-    ["SKILL.md", "skill.md", "README.md", "readme.md"]
-        .iter()
-        .any(|name| path.join(name).is_file())
+fn has_standard_entry_document(path: &Path) -> bool {
+    detect_skill_entry(path) == SkillEntryKind::Standard
+}
+
+fn has_legacy_entry_document(path: &Path) -> bool {
+    matches!(
+        detect_skill_entry(path),
+        SkillEntryKind::LegacyFilename | SkillEntryKind::ReadmeOnly
+    )
 }
 
 fn has_assistant_bundle_signal(path: &Path) -> bool {
@@ -164,6 +198,9 @@ fn has_assistant_bundle_signal(path: &Path) -> bool {
         "agents.toml",
         ".claude/agents",
         ".claude/skills",
+        ".gemini/skills",
+        ".openclaw/skills",
+        ".agents/skills",
         ".codex/skills",
         ".codex-plugin/plugin.json",
     ]
@@ -200,17 +237,23 @@ mod tests {
 
     #[test]
     fn detects_single_root_skill() {
-        let root = test_dir("single-root");
+        let temp = test_dir("single-root");
+        let root = temp.join("writer");
         fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("SKILL.md"), "---\nname: 写作\n---\n说明").unwrap();
+        fs::write(
+            root.join("SKILL.md"),
+            "---\nname: writer\ndescription: 帮助整理文稿\n---\n说明",
+        )
+        .unwrap();
 
         let detection = detect_skill_package(&root);
 
         assert_eq!(detection.package_kind, "single_skill");
         assert_eq!(detection.detected_skills.len(), 1);
         assert_eq!(detection.detected_skills[0].relative_path, ".");
+        assert_eq!(detection.detected_skills[0].structure_status, "complete");
         assert!(!detection.needs_model);
-        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(temp);
     }
 
     #[test]
@@ -218,8 +261,18 @@ mod tests {
         let root = test_dir("multi");
         fs::create_dir_all(root.join("writer")).unwrap();
         fs::create_dir_all(root.join("reviewer")).unwrap();
-        fs::write(root.join("writer/SKILL.md"), "writer").unwrap();
-        fs::write(root.join("reviewer/README.md"), "reviewer").unwrap();
+        fs::create_dir_all(root.join("legacy")).unwrap();
+        fs::write(
+            root.join("writer/SKILL.md"),
+            "---\nname: writer\ndescription: 写作\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("reviewer/SKILL.md"),
+            "---\nname: reviewer\ndescription: 审查\n---\n",
+        )
+        .unwrap();
+        fs::write(root.join("legacy/README.md"), "legacy").unwrap();
 
         let detection = detect_skill_package(&root);
 
@@ -236,7 +289,11 @@ mod tests {
     fn detects_assistant_bundle() {
         let root = test_dir("bundle");
         fs::create_dir_all(root.join(".codex/skills/writer")).unwrap();
-        fs::write(root.join(".codex/skills/writer/SKILL.md"), "writer").unwrap();
+        fs::write(
+            root.join(".codex/skills/writer/SKILL.md"),
+            "---\nname: writer\ndescription: 写作\n---\n",
+        )
+        .unwrap();
 
         let detection = detect_skill_package(&root);
 
@@ -248,6 +305,27 @@ mod tests {
         assert!(detection
             .warnings
             .contains(&"assistant_bundle_detected".to_string()));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn detects_one_level_skill_categories() {
+        let root = test_dir("category-layout");
+        let skill = root.join("skills/writing/writer");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: writer\ndescription: 写作\n---\n",
+        )
+        .unwrap();
+
+        let detection = detect_skill_package(&root);
+
+        assert_eq!(detection.detected_skills.len(), 1);
+        assert_eq!(
+            detection.detected_skills[0].relative_path,
+            "skills/writing/writer"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

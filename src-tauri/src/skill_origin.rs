@@ -2,13 +2,23 @@ use crate::app_core::{
     command_exists, detect_npm_package, detect_pip_package, find_git_repo_root, get_git_remote_url,
     git_count, git_output, has_git_upstream, now_ms, run_command_with_timeout,
 };
-use crate::skill_install::{
-    has_git_subdir_spec, probe_git_subdir_latest_ref, sync_git_subdir_skill, GitInstallOutcome,
-    GitInstallSpec,
+use crate::install_policy::{evaluate_install_policy, load_install_policy, InstallPolicyInput};
+use crate::managed_installation::{is_explicitly_managed, refresh_managed_installation};
+use crate::managed_state::{
+    is_managed_by_state, refresh_managed_skill_fingerprint, ManagedStateCheckpoint,
 };
+use crate::skill_install::{
+    has_git_snapshot_spec, installable_content_fingerprint, probe_git_snapshot,
+    probe_git_snapshots, sanitize_git_locator, sanitize_git_remote_url,
+    sync_git_snapshot_skill_checked, GitInstallOutcome, GitInstallSpec, GitSnapshotProbe,
+    GitSnapshotProbeRequest,
+};
+use crate::skill_reconcile::ReconcileTransaction;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
+use std::collections::HashMap;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -35,7 +45,51 @@ pub struct SkillSyncInfo {
     pub has_update: bool,
 }
 
-pub fn load_origin_meta(db: &Connection, skill_path: &str) -> Option<SkillOriginMeta> {
+#[derive(Default)]
+pub struct OriginInferenceCache {
+    repositories: HashMap<PathBuf, GitRepositoryIdentity>,
+    upstreams: HashMap<PathBuf, bool>,
+}
+
+#[derive(Debug, Clone)]
+struct GitRepositoryIdentity {
+    root: PathBuf,
+    remote_url: String,
+    installed_ref: String,
+    tracking_ref: String,
+}
+
+impl OriginInferenceCache {
+    fn repository_identity(&mut self, path: &Path) -> Option<GitRepositoryIdentity> {
+        let root = find_git_repo_root(path)?;
+        if let Some(identity) = self.repositories.get(&root) {
+            return Some(identity.clone());
+        }
+        let identity = GitRepositoryIdentity {
+            remote_url: sanitize_git_remote_url(&get_git_remote_url(&root).unwrap_or_default()),
+            installed_ref: git_output(&root, &["rev-parse", "HEAD"]).unwrap_or_default(),
+            tracking_ref: git_output(&root, &["rev-parse", "--abbrev-ref", "HEAD"])
+                .unwrap_or_default(),
+            root: root.clone(),
+        };
+        self.repositories.insert(root, identity.clone());
+        Some(identity)
+    }
+
+    fn has_upstream(&mut self, root: &Path) -> bool {
+        if let Some(value) = self.upstreams.get(root) {
+            return *value;
+        }
+        let value = has_git_upstream(root);
+        self.upstreams.insert(root.to_path_buf(), value);
+        value
+    }
+}
+
+pub fn load_origin_meta(
+    db: &Connection,
+    skill_path: &str,
+) -> Result<Option<SkillOriginMeta>, String> {
     db.query_row(
         "SELECT skill_path, origin_kind, origin_locator, resolved_locator, tracking_ref, installed_ref, latest_ref, sync_state, sync_message, lag_count, last_probe_at, last_sync_at, managed_by_app FROM skill_origin_meta WHERE skill_path = ?",
         [skill_path],
@@ -56,7 +110,9 @@ pub fn load_origin_meta(db: &Connection, skill_path: &str) -> Option<SkillOrigin
                 managed_by_app: row.get::<_, i32>(12)? != 0,
             })
         },
-    ).optional().ok().flatten()
+    )
+    .optional()
+    .map_err(|error| error.to_string())
 }
 
 pub fn save_origin_meta(db: &Connection, meta: &SkillOriginMeta) -> Result<(), String> {
@@ -118,6 +174,14 @@ fn should_skip_probe(meta: &SkillOriginMeta, force: bool) -> bool {
 }
 
 pub fn infer_origin_meta(path: &Path, existing: Option<SkillOriginMeta>) -> SkillOriginMeta {
+    infer_origin_meta_with_cache(path, existing, &mut OriginInferenceCache::default())
+}
+
+fn infer_origin_meta_with_cache(
+    path: &Path,
+    existing: Option<SkillOriginMeta>,
+    cache: &mut OriginInferenceCache,
+) -> SkillOriginMeta {
     let default_path = path.to_string_lossy().to_string();
     let mut meta = existing.unwrap_or(SkillOriginMeta {
         skill_path: default_path.clone(),
@@ -136,11 +200,8 @@ pub fn infer_origin_meta(path: &Path, existing: Option<SkillOriginMeta>) -> Skil
     });
     meta.skill_path = default_path.clone();
 
-    if let Some(repo_root) = find_git_repo_root(path) {
-        let remote_url = get_git_remote_url(&repo_root).unwrap_or_default();
-        let installed_ref = git_output(&repo_root, &["rev-parse", "HEAD"]).unwrap_or_default();
-        let tracking_ref =
-            git_output(&repo_root, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    if let Some(repository) = cache.repository_identity(path) {
+        let remote_url = repository.remote_url;
         meta.origin_kind = "git".to_string();
         if meta.origin_locator.is_empty() {
             meta.origin_locator = remote_url.clone();
@@ -148,8 +209,8 @@ pub fn infer_origin_meta(path: &Path, existing: Option<SkillOriginMeta>) -> Skil
         if meta.resolved_locator.is_empty() {
             meta.resolved_locator = remote_url.clone();
         }
-        meta.tracking_ref = tracking_ref;
-        meta.installed_ref = installed_ref;
+        meta.tracking_ref = repository.tracking_ref;
+        meta.installed_ref = repository.installed_ref;
         if meta.sync_state.is_empty() {
             meta.sync_state = if remote_url.is_empty() {
                 "unsupported".to_string()
@@ -163,9 +224,6 @@ pub fn infer_origin_meta(path: &Path, existing: Option<SkillOriginMeta>) -> Skil
             } else {
                 "待检查".to_string()
             };
-        }
-        if !meta.managed_by_app && !remote_url.is_empty() {
-            meta.managed_by_app = true;
         }
         return meta;
     }
@@ -231,6 +289,9 @@ pub fn infer_origin_meta(path: &Path, existing: Option<SkillOriginMeta>) -> Skil
 }
 
 pub fn can_sync(meta: &SkillOriginMeta, path: &Path) -> bool {
+    if !meta.managed_by_app {
+        return false;
+    }
     match meta.origin_kind.as_str() {
         "git" => {
             if meta.sync_state != "behind" {
@@ -239,21 +300,73 @@ pub fn can_sync(meta: &SkillOriginMeta, path: &Path) -> bool {
             if find_git_repo_root(path).is_some() {
                 return has_git_upstream(path);
             }
-            has_git_subdir_spec(&meta.origin_locator, &meta.resolved_locator)
+            has_git_snapshot_spec(&meta.origin_locator, &meta.resolved_locator)
         }
         _ => false,
     }
 }
 
-pub fn build_sync_info(db: &Connection, path: &Path) -> SkillSyncInfo {
-    let meta = infer_origin_meta(path, load_origin_meta(db, &path.to_string_lossy()));
+pub fn build_sync_info_with_cache(
+    db: &Connection,
+    path: &Path,
+    cache: &mut OriginInferenceCache,
+) -> SkillSyncInfo {
+    let mut meta = match load_origin_meta(db, &path.to_string_lossy()) {
+        Ok(Some(mut meta)) => {
+            meta.skill_path = path.to_string_lossy().to_string();
+            meta
+        }
+        Ok(None) => {
+            let mut meta = infer_origin_meta_with_cache(path, None, cache);
+            if let Err(error) = save_origin_meta(db, &meta) {
+                meta.sync_state = "failed".to_string();
+                meta.sync_message = format!("保存来源状态失败: {}", error);
+            }
+            meta
+        }
+        Err(error) => {
+            let mut meta = infer_origin_meta_with_cache(path, None, cache);
+            meta.sync_state = "failed".to_string();
+            meta.sync_message = format!("读取来源状态失败: {}", error);
+            meta
+        }
+    };
+    match is_explicitly_managed(db, path) {
+        Ok(managed) if meta.managed_by_app != managed => {
+            meta.managed_by_app = managed;
+            if let Err(error) = save_origin_meta(db, &meta) {
+                meta.sync_state = "failed".to_string();
+                meta.sync_message = format!("校正受管状态失败: {}", error);
+            }
+        }
+        Ok(_) => {}
+        Err(error) => {
+            meta.sync_state = "failed".to_string();
+            meta.sync_message = format!("读取受管状态失败: {}", error);
+            meta.managed_by_app = false;
+        }
+    }
     let has_update = meta.sync_state == "behind" || meta.lag_count > 0;
-    let can_sync_now = can_sync(&meta, path);
+    let can_sync_now = can_sync_with_cache(&meta, path, cache);
     SkillSyncInfo {
         meta,
         can_sync: can_sync_now,
         has_update,
     }
+}
+
+fn can_sync_with_cache(
+    meta: &SkillOriginMeta,
+    path: &Path,
+    cache: &mut OriginInferenceCache,
+) -> bool {
+    if !meta.managed_by_app || meta.origin_kind != "git" || meta.sync_state != "behind" {
+        return false;
+    }
+    if let Some(repository) = cache.repository_identity(path) {
+        return cache.has_upstream(&repository.root);
+    }
+    has_git_snapshot_spec(&meta.origin_locator, &meta.resolved_locator)
 }
 
 pub fn sync_info_json(info: &SkillSyncInfo) -> serde_json::Value {
@@ -279,38 +392,13 @@ pub fn sync_info_json(info: &SkillSyncInfo) -> serde_json::Value {
 
 fn probe_git_meta(path: &Path, meta: &mut SkillOriginMeta) {
     let Some(repo_root) = find_git_repo_root(path) else {
-        if has_git_subdir_spec(&meta.origin_locator, &meta.resolved_locator) {
-            match probe_git_subdir_latest_ref(
+        if has_git_snapshot_spec(&meta.origin_locator, &meta.resolved_locator) {
+            let result = probe_git_snapshot(
                 &meta.origin_locator,
                 &meta.resolved_locator,
                 &meta.tracking_ref,
-            ) {
-                Ok(latest_ref) => {
-                    meta.latest_ref = latest_ref;
-                    meta.lag_count = if !meta.installed_ref.is_empty()
-                        && meta.installed_ref == meta.latest_ref
-                    {
-                        0
-                    } else {
-                        1
-                    };
-                    meta.sync_state = if meta.lag_count > 0 {
-                        "behind".to_string()
-                    } else {
-                        "current".to_string()
-                    };
-                    meta.sync_message = if meta.lag_count > 0 {
-                        "Git 子目录来源有新提交".to_string()
-                    } else {
-                        "Git 子目录来源已同步".to_string()
-                    };
-                }
-                Err(err) => {
-                    meta.sync_state = "failed".to_string();
-                    meta.sync_message = format!("检查 Git 子目录失败: {}", err);
-                    meta.lag_count = 0;
-                }
-            }
+            );
+            apply_snapshot_probe(path, meta, result);
         } else {
             meta.sync_state = "failed".to_string();
             meta.sync_message = "未找到 Git 仓库".to_string();
@@ -320,7 +408,7 @@ fn probe_git_meta(path: &Path, meta: &mut SkillOriginMeta) {
         return;
     };
 
-    let remote_url = get_git_remote_url(&repo_root).unwrap_or_default();
+    let remote_url = sanitize_git_remote_url(&get_git_remote_url(&repo_root).unwrap_or_default());
     meta.origin_kind = "git".to_string();
     meta.origin_locator = if meta.origin_locator.is_empty() {
         remote_url.clone()
@@ -394,6 +482,47 @@ fn probe_git_meta(path: &Path, meta: &mut SkillOriginMeta) {
         meta.sync_state = "diverged".to_string();
         meta.sync_message = format!("本地与远端已分叉（本地 {} / 远端 {}）", ahead, behind);
     }
+}
+
+fn apply_snapshot_probe(
+    path: &Path,
+    meta: &mut SkillOriginMeta,
+    result: Result<GitSnapshotProbe, String>,
+) {
+    match result {
+        Ok(probe) => {
+            meta.latest_ref = probe.latest_ref;
+            let local_digest = installable_content_fingerprint(path);
+            meta.lag_count = match local_digest {
+                Ok(local_digest) if local_digest == probe.source_digest => 0,
+                Ok(_) => 1,
+                Err(error) => {
+                    meta.sync_state = "failed".to_string();
+                    meta.sync_message = format!("计算本地 Skill 指纹失败: {}", error);
+                    meta.last_probe_at = Some(now_ms());
+                    return;
+                }
+            };
+            meta.sync_state = if meta.lag_count > 0 {
+                "behind".to_string()
+            } else {
+                "current".to_string()
+            };
+            meta.sync_message = if meta.lag_count > 0 {
+                "Git 快照来源内容有更新".to_string()
+            } else if !meta.installed_ref.is_empty() && meta.installed_ref != meta.latest_ref {
+                "上游提交已变化，但当前 Skill 内容未变化".to_string()
+            } else {
+                "Git 快照来源已同步".to_string()
+            };
+        }
+        Err(error) => {
+            meta.sync_state = "failed".to_string();
+            meta.sync_message = format!("检查 Git 快照失败: {}", error);
+            meta.lag_count = 0;
+        }
+    }
+    meta.last_probe_at = Some(now_ms());
 }
 
 fn probe_legacy_package_meta(path: &Path, meta: &mut SkillOriginMeta, is_pip: bool) {
@@ -496,9 +625,25 @@ pub fn probe_skill_state(
     path: &Path,
     force: bool,
 ) -> Result<SkillSyncInfo, String> {
-    let mut meta = infer_origin_meta(path, load_origin_meta(db, &path.to_string_lossy()));
+    let mut cache = OriginInferenceCache::default();
+    let mut meta = infer_origin_meta_with_cache(
+        path,
+        load_origin_meta(db, &path.to_string_lossy())?,
+        &mut cache,
+    );
+    meta.managed_by_app = is_explicitly_managed(db, path)?;
+    probe_prepared_skill_state(db, path, force, meta, &mut cache)
+}
+
+fn probe_prepared_skill_state(
+    db: &Connection,
+    path: &Path,
+    force: bool,
+    mut meta: SkillOriginMeta,
+    cache: &mut OriginInferenceCache,
+) -> Result<SkillSyncInfo, String> {
     if should_skip_probe(&meta, force) {
-        let can_sync_now = can_sync(&meta, path);
+        let can_sync_now = can_sync_with_cache(&meta, path, cache);
         let has_update = meta.sync_state == "behind" || meta.lag_count > 0;
         return Ok(SkillSyncInfo {
             meta,
@@ -521,13 +666,98 @@ pub fn probe_skill_state(
     }
 
     save_origin_meta(db, &meta)?;
-    let can_sync_now = can_sync(&meta, path);
+    let can_sync_now = can_sync_with_cache(&meta, path, cache);
     let has_update = meta.sync_state == "behind" || meta.lag_count > 0;
     Ok(SkillSyncInfo {
         meta,
         can_sync: can_sync_now,
         has_update,
     })
+}
+
+pub fn probe_skill_states(
+    db: &Connection,
+    paths: &[PathBuf],
+    force: bool,
+) -> Vec<(String, Result<SkillSyncInfo, String>)> {
+    let mut completed = HashMap::<String, Result<SkillSyncInfo, String>>::new();
+    let mut snapshot_meta = HashMap::<String, (PathBuf, SkillOriginMeta)>::new();
+    let mut requests = Vec::new();
+    let mut inference_cache = OriginInferenceCache::default();
+
+    for path in paths {
+        let key = path.to_string_lossy().to_string();
+        let prepared = (|| {
+            let mut meta = infer_origin_meta_with_cache(
+                path,
+                load_origin_meta(db, &key)?,
+                &mut inference_cache,
+            );
+            meta.managed_by_app = is_explicitly_managed(db, path)?;
+            if should_skip_probe(&meta, force) {
+                let can_sync_now = can_sync_with_cache(&meta, path, &mut inference_cache);
+                let has_update = meta.sync_state == "behind" || meta.lag_count > 0;
+                return Ok(Some(SkillSyncInfo {
+                    meta,
+                    can_sync: can_sync_now,
+                    has_update,
+                }));
+            }
+            if meta.origin_kind == "git"
+                && find_git_repo_root(path).is_none()
+                && has_git_snapshot_spec(&meta.origin_locator, &meta.resolved_locator)
+            {
+                requests.push(GitSnapshotProbeRequest {
+                    key: key.clone(),
+                    origin_locator: meta.origin_locator.clone(),
+                    resolved_locator: meta.resolved_locator.clone(),
+                    tracking_ref: meta.tracking_ref.clone(),
+                });
+                snapshot_meta.insert(key.clone(), (path.clone(), meta));
+                Ok(None)
+            } else {
+                probe_prepared_skill_state(db, path, force, meta, &mut inference_cache).map(Some)
+            }
+        })();
+        match prepared {
+            Ok(Some(info)) => {
+                completed.insert(key, Ok(info));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                completed.insert(key, Err(error));
+            }
+        }
+    }
+
+    for (key, probe) in probe_git_snapshots(&requests) {
+        let Some((path, mut meta)) = snapshot_meta.remove(&key) else {
+            completed.insert(key, Err("批量检查结果缺少对应 Skill".to_string()));
+            continue;
+        };
+        apply_snapshot_probe(&path, &mut meta, probe);
+        let result = save_origin_meta(db, &meta).map(|_| {
+            let can_sync_now = can_sync_with_cache(&meta, &path, &mut inference_cache);
+            let has_update = meta.sync_state == "behind" || meta.lag_count > 0;
+            SkillSyncInfo {
+                meta,
+                can_sync: can_sync_now,
+                has_update,
+            }
+        });
+        completed.insert(key, result);
+    }
+
+    paths
+        .iter()
+        .map(|path| {
+            let key = path.to_string_lossy().to_string();
+            let result = completed
+                .remove(&key)
+                .unwrap_or_else(|| Err("未生成 Skill 检查结果".to_string()));
+            (key, result)
+        })
+        .collect()
 }
 
 pub fn save_installed_git_meta(
@@ -539,14 +769,14 @@ pub fn save_installed_git_meta(
     let mut meta = infer_origin_meta(target_path, None);
     meta.skill_path = target_path.to_string_lossy().to_string();
     meta.origin_kind = "git".to_string();
-    meta.origin_locator = spec.original.clone();
-    meta.resolved_locator = spec.repo_url.clone();
+    meta.origin_locator = sanitize_git_locator(&spec.original);
+    meta.resolved_locator = sanitize_git_remote_url(&spec.repo_url);
     meta.tracking_ref = spec.reference.clone().unwrap_or(meta.tracking_ref);
     meta.installed_ref = outcome.installed_ref.clone();
     meta.managed_by_app = true;
-    if spec.subdir.is_some() && find_git_repo_root(target_path).is_none() {
+    if find_git_repo_root(target_path).is_none() {
         meta.sync_state = "unprobed".to_string();
-        meta.sync_message = "待检查 Git 子目录来源".to_string();
+        meta.sync_message = "待检查 Git 快照来源".to_string();
         meta.lag_count = 0;
     } else if meta.sync_state.is_empty() || meta.sync_state == "unsupported" {
         meta.sync_state = "unprobed".to_string();
@@ -581,53 +811,108 @@ pub fn update_skill_from_upstream(db: &Connection, path: &Path) -> Result<String
         return Err("当前来源暂不支持一键更新".to_string());
     }
 
-    if let Some(repo_root) = find_git_repo_root(path) {
-        let out = run_command_with_timeout(
-            "git",
-            &["pull", "--ff-only"],
-            Some(&repo_root),
-            Duration::from_secs(60),
-            &[("GIT_TERMINAL_PROMPT", "0"), ("GCM_INTERACTIVE", "Never")],
-        )?;
-        if !out.status.success() {
-            let err = format!("更新失败: {}", String::from_utf8_lossy(&out.stderr).trim());
-            sync_info.meta.sync_state = "failed".to_string();
-            sync_info.meta.sync_message = err.clone();
-            sync_info.meta.last_probe_at = Some(now_ms());
-            save_origin_meta(db, &sync_info.meta)?;
-            return Err(err);
-        }
-    } else if has_git_subdir_spec(
+    if has_git_snapshot_spec(
         &sync_info.meta.origin_locator,
         &sync_info.meta.resolved_locator,
     ) {
-        let outcome = sync_git_subdir_skill(
+        let root = path
+            .parent()
+            .ok_or_else(|| "受管 Skill 缺少父目录".to_string())?;
+        let state_checkpoint = ManagedStateCheckpoint::capture(root)?;
+        let mut file_transaction = ReconcileTransaction::prepare(
+            std::slice::from_ref(&path.to_path_buf()),
+            std::slice::from_ref(&path.to_path_buf()),
+        )?;
+        let policy = load_install_policy(db)?;
+        let policy_source = if sync_info.meta.origin_locator.trim().is_empty() {
+            sync_info.meta.resolved_locator.as_str()
+        } else {
+            sync_info.meta.origin_locator.as_str()
+        };
+        let outcome = match sync_git_snapshot_skill_checked(
             &sync_info.meta.origin_locator,
             &sync_info.meta.resolved_locator,
             &sync_info.meta.tracking_ref,
             path,
-        )?;
+            |structure| {
+                let decision = evaluate_install_policy(
+                    &policy,
+                    InstallPolicyInput {
+                        source_kind: "git",
+                        source: policy_source,
+                        structure_status: &structure.structure_status,
+                        warnings: &structure.structure_warnings,
+                    },
+                );
+                if decision.allowed {
+                    Ok(())
+                } else {
+                    Err(decision.message)
+                }
+            },
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                return match file_transaction.rollback() {
+                    Ok(()) => Err(error),
+                    Err(rollback_error) => {
+                        Err(format!("{}；文件回滚失败: {}", error, rollback_error))
+                    }
+                }
+            }
+        };
         let now = now_ms();
         sync_info.meta.installed_ref = outcome.installed_ref.clone();
-        sync_info.meta.latest_ref = outcome.installed_ref;
+        sync_info.meta.latest_ref = outcome.installed_ref.clone();
         sync_info.meta.sync_state = "current".to_string();
-        sync_info.meta.sync_message = "Git 子目录更新成功".to_string();
+        sync_info.meta.sync_message = "Git 快照更新成功".to_string();
         sync_info.meta.lag_count = 0;
         sync_info.meta.last_probe_at = Some(now);
         sync_info.meta.last_sync_at = Some(now);
-        save_origin_meta(db, &sync_info.meta)?;
-        return Ok("更新成功".to_string());
+        if let Err(error) = persist_managed_update(db, path, &sync_info.meta, &state_checkpoint) {
+            return match file_transaction.rollback() {
+                Ok(()) => Err(error),
+                Err(rollback_error) => Err(format!("{}；文件回滚失败: {}", error, rollback_error)),
+            };
+        }
+        match file_transaction.commit() {
+            Ok(()) => Ok("更新成功".to_string()),
+            Err(warning) => Ok(format!("更新成功；{}", warning)),
+        }
     } else {
-        return Err("不是 Git 仓库".to_string());
+        Err("当前 Git 来源缺少可重建的快照信息，已拒绝修改本地仓库".to_string())
+    }
+}
+
+fn persist_managed_update(
+    db: &Connection,
+    path: &Path,
+    meta: &SkillOriginMeta,
+    state_checkpoint: &ManagedStateCheckpoint,
+) -> Result<(), String> {
+    let root = path
+        .parent()
+        .ok_or_else(|| "受管 Skill 缺少父目录".to_string())?;
+    let has_sidecar_entry = is_managed_by_state(root, path)?;
+    if has_sidecar_entry {
+        refresh_managed_skill_fingerprint(root, path)?;
     }
 
-    sync_info = probe_skill_state(db, path, true)?;
-    sync_info.meta.last_sync_at = Some(now_ms());
-    if sync_info.meta.sync_state == "current" {
-        sync_info.meta.sync_message = "更新成功，已与远端同步".to_string();
+    let database_result = (|| {
+        let transaction = db
+            .unchecked_transaction()
+            .map_err(|error| error.to_string())?;
+        save_origin_meta(&transaction, meta)?;
+        refresh_managed_installation(&transaction, path, Some(&meta.installed_ref))?;
+        transaction.commit().map_err(|error| error.to_string())
+    })();
+    if let Err(error) = database_result {
+        return match state_checkpoint.restore(root) {
+            Ok(()) => Err(error),
+            Err(restore_error) => Err(format!("{}；恢复受管指纹失败: {}", error, restore_error)),
+        };
     }
-    save_origin_meta(db, &sync_info.meta)?;
-    Ok("更新成功".to_string())
+    Ok(())
 }
 
 fn npm_latest_version(package: &str) -> Result<String, String> {
@@ -697,30 +982,121 @@ fn pip_latest_version(package: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::process::Command;
 
     fn test_dir(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("skillmate-origin-test-{}-{}", name, now_ms()))
     }
 
     #[test]
-    fn git_subdir_meta_can_sync_without_local_git_repo() {
-        let path = test_dir("git-subdir-sync").join("writer");
-        let meta = SkillOriginMeta {
+    fn git_snapshot_meta_can_sync_without_local_git_repo() {
+        let path = test_dir("git-snapshot-sync").join("writer");
+        let root_snapshot = SkillOriginMeta {
             skill_path: path.to_string_lossy().to_string(),
             origin_kind: "git".into(),
-            origin_locator: "example/skills#main:skills/writer".into(),
+            origin_locator: "example/skills#main".into(),
             resolved_locator: "https://github.com/example/skills.git".into(),
             tracking_ref: "main".into(),
             installed_ref: "old".into(),
             latest_ref: "new".into(),
             sync_state: "behind".into(),
-            sync_message: "Git 子目录来源有新提交".into(),
+            sync_message: "Git 快照来源有新提交".into(),
             lag_count: 1,
             last_probe_at: None,
             last_sync_at: None,
             managed_by_app: true,
         };
 
-        assert!(can_sync(&meta, &path));
+        assert!(can_sync(&root_snapshot, &path));
+
+        let mut subdir_snapshot = root_snapshot;
+        subdir_snapshot.origin_locator = "example/skills#main:skills/writer".into();
+        assert!(can_sync(&subdir_snapshot, &path));
+    }
+
+    #[test]
+    fn discovered_git_skill_is_not_claimed_by_skillmate() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let root = test_dir("unmanaged-git");
+        let skill = root.join("writer");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: writer\ndescription: 写作\n---\n",
+        )
+        .unwrap();
+        let run = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{:?}", output);
+        };
+        run(&["init"]);
+        run(&[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/example/manual-skill.git",
+        ]);
+
+        let meta = infer_origin_meta(&skill, None);
+
+        assert_eq!(meta.origin_kind, "git");
+        assert!(!meta.managed_by_app);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unmanaged_git_snapshot_cannot_be_updated() {
+        let path = test_dir("unmanaged-snapshot").join("writer");
+        let meta = SkillOriginMeta {
+            skill_path: path.to_string_lossy().to_string(),
+            origin_kind: "git".into(),
+            origin_locator: "example/skills#main:writer".into(),
+            resolved_locator: "https://github.com/example/skills.git".into(),
+            tracking_ref: "main".into(),
+            installed_ref: "old".into(),
+            latest_ref: "new".into(),
+            sync_state: "behind".into(),
+            sync_message: "有更新".into(),
+            lag_count: 1,
+            last_probe_at: None,
+            last_sync_at: None,
+            managed_by_app: false,
+        };
+
+        assert!(!can_sync(&meta, &path));
+    }
+
+    #[test]
+    fn origin_inference_reuses_repository_identity_for_sibling_skills() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let root = test_dir("repository-cache");
+        let first = root.join("skills/first");
+        let second = root.join("skills/second");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        let output = Command::new("git")
+            .arg("init")
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let mut cache = OriginInferenceCache::default();
+
+        let first_meta = infer_origin_meta_with_cache(&first, None, &mut cache);
+        let second_meta = infer_origin_meta_with_cache(&second, None, &mut cache);
+
+        assert_eq!(first_meta.origin_kind, "git");
+        assert_eq!(second_meta.origin_kind, "git");
+        assert_eq!(cache.repositories.len(), 1);
+        let _ = fs::remove_dir_all(root);
     }
 }

@@ -1,7 +1,10 @@
+use crate::app_core::{atomic_write, generate_id};
 use crate::skillmate_manifest::{SkillMateManifestPreview, SkillMateManifestSkill};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+
+const PROFILE_STORE_VERSION: u32 = 1;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
 pub struct SkillSetProfileStore {
@@ -28,6 +31,7 @@ pub struct SkillSetProfilePreview {
     pub profile_issues: Vec<SkillSetProfileIssue>,
     pub diff: SkillSetProfileDiff,
     pub manifest_preview: SkillMateManifestPreview,
+    pub plan_token: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -40,25 +44,32 @@ pub struct SkillSetProfileIssue {
 pub struct SkillSetProfileDiff {
     pub to_install: Vec<String>,
     pub already_present: Vec<String>,
+    pub to_remove: Vec<String>,
     pub conflicts: Vec<String>,
 }
 
-pub fn read_skill_profiles() -> SkillSetProfileStore {
+pub fn read_skill_profiles() -> Result<SkillSetProfileStore, String> {
     let path = profiles_path();
-    let Ok(content) = fs::read_to_string(path) else {
-        return empty_store();
+    let content = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(empty_store()),
+        Err(error) => return Err(format!("无法读取 Profile 状态: {}", error)),
     };
-    normalize_store(serde_json::from_str(&content).unwrap_or_else(|_| empty_store()))
+    let store: SkillSetProfileStore = serde_json::from_str(&content)
+        .map_err(|error| format!("Profile 状态文件损坏 {}: {}", path.to_string_lossy(), error))?;
+    ensure_supported_store_version(&store)?;
+    Ok(normalize_store(store))
 }
 
 pub fn write_skill_profiles(store: &SkillSetProfileStore) -> Result<(), String> {
+    ensure_supported_store_version(store)?;
     let path = profiles_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let content =
         serde_json::to_string_pretty(&normalize_store(store.clone())).map_err(|e| e.to_string())?;
-    fs::write(path, content).map_err(|e| e.to_string())
+    atomic_write(&path, content.as_bytes())
 }
 
 pub fn upsert_skill_profile(
@@ -71,7 +82,7 @@ pub fn upsert_skill_profile(
         return Err("Profile 名称不能为空".to_string());
     }
     let now = chrono::Utc::now().to_rfc3339();
-    let mut store = read_skill_profiles();
+    let mut store = read_skill_profiles()?;
     if let Some(profile) = store
         .profiles
         .iter_mut()
@@ -82,7 +93,7 @@ pub fn upsert_skill_profile(
         profile.updated_at = now;
     } else {
         store.profiles.push(SkillSetProfile {
-            id: format!("profile-{}", chrono::Utc::now().timestamp_millis()),
+            id: format!("profile-{}", generate_id()),
             name: trimmed_name.to_string(),
             description: description.trim().to_string(),
             active: false,
@@ -92,11 +103,11 @@ pub fn upsert_skill_profile(
         });
     }
     write_skill_profiles(&store)?;
-    Ok(read_skill_profiles())
+    read_skill_profiles()
 }
 
 pub fn set_active_profile(profile_id: &str) -> Result<SkillSetProfileStore, String> {
-    let mut store = read_skill_profiles();
+    let mut store = read_skill_profiles()?;
     if !store
         .profiles
         .iter()
@@ -112,14 +123,30 @@ pub fn set_active_profile(profile_id: &str) -> Result<SkillSetProfileStore, Stri
         profile.active = profile.id == profile_id;
     }
     write_skill_profiles(&store)?;
-    Ok(read_skill_profiles())
+    read_skill_profiles()
 }
 
 pub fn rollback_active_profile() -> Result<String, String> {
-    let store = read_skill_profiles();
+    let store = read_skill_profiles()?;
     let (store, previous_profile_id) = rollback_active_profile_store(store)?;
     write_skill_profiles(&store)?;
     Ok(previous_profile_id)
+}
+
+pub fn previous_active_profile_id() -> Result<String, String> {
+    let store = read_skill_profiles()?;
+    let previous_profile_id = store
+        .previous_active_profile_id
+        .ok_or_else(|| "没有可回滚的上一个 Profile".to_string())?;
+    if store
+        .profiles
+        .iter()
+        .any(|profile| profile.id == previous_profile_id)
+    {
+        Ok(previous_profile_id)
+    } else {
+        Err("上一个 Profile 不存在，无法回滚".to_string())
+    }
 }
 
 fn rollback_active_profile_store(
@@ -189,7 +216,7 @@ fn profiles_path() -> PathBuf {
 
 fn empty_store() -> SkillSetProfileStore {
     SkillSetProfileStore {
-        version: 1,
+        version: PROFILE_STORE_VERSION,
         active_profile_id: None,
         previous_active_profile_id: None,
         profiles: vec![],
@@ -197,7 +224,7 @@ fn empty_store() -> SkillSetProfileStore {
 }
 
 fn normalize_store(mut store: SkillSetProfileStore) -> SkillSetProfileStore {
-    store.version = 1;
+    store.version = PROFILE_STORE_VERSION;
     if let Some(active_id) = store.active_profile_id.clone() {
         for profile in &mut store.profiles {
             profile.active = profile.id == active_id;
@@ -217,6 +244,17 @@ fn normalize_store(mut store: SkillSetProfileStore) -> SkillSetProfileStore {
         }
     }
     store
+}
+
+fn ensure_supported_store_version(store: &SkillSetProfileStore) -> Result<(), String> {
+    if store.version > PROFILE_STORE_VERSION {
+        Err(format!(
+            "Profile 状态版本 {} 高于当前支持版本 {}，请升级 SkillMate 后重试",
+            store.version, PROFILE_STORE_VERSION
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -270,6 +308,16 @@ mod tests {
         assert!(issues.iter().any(|issue| issue.code == "missing_name"));
         assert!(issues.iter().any(|issue| issue.code == "empty_skills"));
         assert!(issues.iter().any(|issue| issue.code == "duplicate_id"));
+    }
+
+    #[test]
+    fn rejects_profile_store_from_newer_skillmate() {
+        let store = SkillSetProfileStore {
+            version: 999,
+            ..Default::default()
+        };
+
+        assert!(ensure_supported_store_version(&store).is_err());
     }
 
     #[test]

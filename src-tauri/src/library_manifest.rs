@@ -1,4 +1,5 @@
-use crate::app_core::expand_path;
+use crate::app_core::{atomic_write, expand_path};
+use crate::operation_plan::operation_plan_token;
 use crate::{AIAssistant, Scenario, Tag};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -33,6 +34,7 @@ pub struct ImportPreview {
     pub existing_tags_to_remove: usize,
     pub existing_scenarios_to_remove: usize,
     pub existing_skill_tag_mappings_to_remove: usize,
+    pub plan_token: String,
 }
 
 pub fn build_library_export(
@@ -67,48 +69,58 @@ pub fn merge_imported_library(
     export: LibraryExport,
     replace_existing: bool,
 ) -> Result<(usize, usize), String> {
+    let transaction = db
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
     let mut tag_count = 0usize;
     let mut scenario_count = 0usize;
 
     if replace_existing {
-        db.execute("DELETE FROM skill_tags", [])
+        transaction
+            .execute("DELETE FROM skill_tags", [])
             .map_err(|e| e.to_string())?;
-        db.execute("DELETE FROM scenarios", [])
+        transaction
+            .execute("DELETE FROM scenarios", [])
             .map_err(|e| e.to_string())?;
-        db.execute("DELETE FROM tags", [])
+        transaction
+            .execute("DELETE FROM tags", [])
             .map_err(|e| e.to_string())?;
     }
 
     for tag in export.tags {
-        db.execute(
-            "INSERT OR REPLACE INTO tags (id, name, color) VALUES (?, ?, ?)",
-            params![tag.id, tag.name, tag.color],
-        )
-        .map_err(|e| e.to_string())?;
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO tags (id, name, color) VALUES (?, ?, ?)",
+                params![tag.id, tag.name, tag.color],
+            )
+            .map_err(|e| e.to_string())?;
         tag_count += 1;
     }
 
     for scenario in export.scenarios {
-        let skill_ids = scenario.skill_ids.join(",");
-        db.execute(
-            "INSERT OR REPLACE INTO scenarios (id, name, description, skill_ids, created_at) VALUES (?, ?, ?, ?, ?)",
-            params![scenario.id, scenario.name, scenario.description, skill_ids, scenario.created_at],
+        let skill_ids_json =
+            serde_json::to_string(&scenario.skill_ids).map_err(|error| error.to_string())?;
+        transaction.execute(
+            "INSERT OR REPLACE INTO scenarios (id, name, description, skill_ids, skill_ids_json, created_at) VALUES (?, ?, ?, '', ?, ?)",
+            params![scenario.id, scenario.name, scenario.description, skill_ids_json, scenario.created_at],
         )
         .map_err(|e| e.to_string())?;
         scenario_count += 1;
     }
 
     for skill in export.skills {
-        let tags = skill.tags.join(",");
-        if !tags.is_empty() {
-            db.execute(
-                "INSERT OR REPLACE INTO skill_tags (skill_path, tags) VALUES (?, ?)",
-                params![skill.path, tags],
+        if !skill.tags.is_empty() {
+            let tags_json =
+                serde_json::to_string(&skill.tags).map_err(|error| error.to_string())?;
+            transaction.execute(
+                "INSERT OR REPLACE INTO skill_tags (skill_path, tags, tags_json) VALUES (?, '', ?)",
+                params![skill.path, tags_json],
             )
             .map_err(|e| e.to_string())?;
         }
     }
 
+    transaction.commit().map_err(|error| error.to_string())?;
     Ok((tag_count, scenario_count))
 }
 
@@ -156,7 +168,7 @@ pub fn preview_imported_library(
         }
     }
 
-    Ok(ImportPreview {
+    let mut preview = ImportPreview {
         replace_existing,
         tags_to_add,
         tags_to_replace,
@@ -182,7 +194,10 @@ pub fn preview_imported_library(
         } else {
             0
         },
-    })
+        plan_token: String::new(),
+    };
+    preview.plan_token = operation_plan_token("library-import", &(export, &preview))?;
+    Ok(preview)
 }
 
 pub fn read_library_export(path: String) -> Result<LibraryExport, String> {
@@ -211,10 +226,7 @@ pub fn write_library_export(path: String, export: &LibraryExport) -> Result<Stri
     if target_path.to_string_lossy().trim().is_empty() {
         return Err("导出文件路径不能为空".to_string());
     }
-    if let Some(parent) = target_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
     let payload = serde_json::to_string_pretty(export).map_err(|e| e.to_string())?;
-    fs::write(&target_path, payload).map_err(|e| e.to_string())?;
+    atomic_write(&target_path, payload.as_bytes())?;
     Ok(format!("已导出到 {}", target_path.to_string_lossy()))
 }

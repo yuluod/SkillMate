@@ -1,5 +1,6 @@
-use crate::app_core::expand_path;
+use crate::app_core::{atomic_write, expand_path};
 use crate::library_manifest::count_rows;
+use crate::operation_plan::operation_plan_token;
 use crate::Scenario;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,7 @@ pub struct ScenarioManifestPreview {
     pub scenarios_to_replace: usize,
     pub existing_scenarios_to_remove: usize,
     pub missing_skill_refs: Vec<String>,
+    pub plan_token: String,
 }
 
 pub fn build_scenario_manifest(scenarios: Vec<Scenario>) -> ScenarioManifest {
@@ -80,7 +82,7 @@ pub fn preview_scenario_manifest(
     missing_skill_refs.sort();
     missing_skill_refs.dedup();
 
-    Ok(ScenarioManifestPreview {
+    let mut preview = ScenarioManifestPreview {
         replace_existing,
         scenarios_to_add,
         scenarios_to_replace,
@@ -90,7 +92,10 @@ pub fn preview_scenario_manifest(
             0
         },
         missing_skill_refs,
-    })
+        plan_token: String::new(),
+    };
+    preview.plan_token = operation_plan_token("scenario-import", &(manifest, &preview))?;
+    Ok(preview)
 }
 
 pub fn merge_scenario_manifest(
@@ -98,20 +103,26 @@ pub fn merge_scenario_manifest(
     manifest: ScenarioManifest,
     replace_existing: bool,
 ) -> Result<usize, String> {
+    let transaction = db
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
     if replace_existing {
-        db.execute("DELETE FROM scenarios", [])
+        transaction
+            .execute("DELETE FROM scenarios", [])
             .map_err(|e| e.to_string())?;
     }
     let mut scenario_count = 0usize;
     for scenario in manifest.scenarios {
-        let skill_ids = scenario.skill_ids.join(",");
-        db.execute(
-            "INSERT OR REPLACE INTO scenarios (id, name, description, skill_ids, created_at) VALUES (?, ?, ?, ?, ?)",
-            params![scenario.id, scenario.name, scenario.description, skill_ids, scenario.created_at],
+        let skill_ids_json =
+            serde_json::to_string(&scenario.skill_ids).map_err(|error| error.to_string())?;
+        transaction.execute(
+            "INSERT OR REPLACE INTO scenarios (id, name, description, skill_ids, skill_ids_json, created_at) VALUES (?, ?, ?, '', ?, ?)",
+            params![scenario.id, scenario.name, scenario.description, skill_ids_json, scenario.created_at],
         )
         .map_err(|e| e.to_string())?;
         scenario_count += 1;
     }
+    transaction.commit().map_err(|error| error.to_string())?;
     Ok(scenario_count)
 }
 
@@ -123,11 +134,8 @@ pub fn write_scenario_manifest(
     if target_path.to_string_lossy().trim().is_empty() {
         return Err("导出文件路径不能为空".to_string());
     }
-    if let Some(parent) = target_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
     let payload = serde_json::to_string_pretty(manifest).map_err(|e| e.to_string())?;
-    fs::write(&target_path, payload).map_err(|e| e.to_string())?;
+    atomic_write(&target_path, payload.as_bytes())?;
     Ok(format!(
         "已导出场景 manifest 到 {}",
         target_path.to_string_lossy()
