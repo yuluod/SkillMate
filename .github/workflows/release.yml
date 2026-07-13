@@ -12,7 +12,7 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
@@ -20,8 +20,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  NODE_VERSION: 22.13.0
   PNPM_VERSION: 11.6.0
+  RUST_VERSION: 1.96.0
 
 jobs:
   frontend-test:
@@ -30,20 +30,20 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: ${{ env.PNPM_VERSION }}
           run_install: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
@@ -59,20 +59,20 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Rust
+        run: rustup toolchain install "${{ env.RUST_VERSION }}" --profile minimal
 
       - name: Cache Rust
-        uses: swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: "src-tauri -> target"
 
       - name: Run Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
 
   rust-test-windows:
     name: Rust tests Windows
@@ -80,20 +80,20 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Rust
+        run: rustup toolchain install "${{ env.RUST_VERSION }}" --profile minimal
 
       - name: Cache Rust
-        uses: swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: "src-tauri -> target"
 
       - name: Run Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
 
   rust-test-linux:
     name: Rust tests Linux
@@ -101,7 +101,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
@@ -117,16 +117,16 @@ jobs:
             patchelf \
             rpm
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Rust
+        run: rustup toolchain install "${{ env.RUST_VERSION }}" --profile minimal
 
       - name: Cache Rust
-        uses: swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: "src-tauri -> target"
 
       - name: Run Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
 
   prepare-release:
     name: Prepare release
@@ -138,8 +138,40 @@ jobs:
       - rust-test-linux
     outputs:
       release_id: ${{ steps.create-release.outputs.release_id }}
+      release_sha: ${{ steps.validate-release.outputs.release_sha }}
+    permissions:
+      contents: write
 
     steps:
+      - name: Checkout release tag
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+
+      - name: Validate tag, versions, and main ancestry
+        id: validate-release
+        env:
+          TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          node scripts/release/validate-release.mjs
+          git fetch origin main --no-tags
+          release_sha="$(git rev-list -n 1 "${TAG_NAME}")"
+          if [ -z "${release_sha}" ]; then
+            echo "::error title=无效发布 tag::无法解析 ${TAG_NAME}"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${release_sha}" origin/main; then
+            echo "::error title=发布来源错误::${TAG_NAME} 不在 main 分支历史中"
+            exit 1
+          fi
+          echo "release_sha=${release_sha}" >> "${GITHUB_OUTPUT}"
+
       - name: 验证 updater 签名密钥
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -149,17 +181,23 @@ jobs:
             exit 1
           fi
 
-      - name: Remove stale release for this tag
+      - name: Reject published release and clear stale draft
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: |
-          release_id="$(
+          release="$(
             gh api "repos/${{ github.repository }}/releases?per_page=100" \
-              --jq ".[] | select(.tag_name == \"${TAG_NAME}\") | .id" \
+              --jq ".[] | select(.tag_name == \"${TAG_NAME}\") | [.id, .draft] | @tsv" \
               | head -n 1
           )"
-          if [ -n "${release_id}" ]; then
+          if [ -n "${release}" ]; then
+            release_id="$(printf '%s' "${release}" | cut -f1)"
+            is_draft="$(printf '%s' "${release}" | cut -f2)"
+            if [ "${is_draft}" != "true" ]; then
+              echo "::error title=拒绝覆盖正式 Release::${TAG_NAME} 已经公开；请创建新版本 tag"
+              exit 1
+            fi
             gh api --method DELETE "repos/${{ github.repository }}/releases/${release_id}"
           fi
 
@@ -168,6 +206,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          RELEASE_SHA: ${{ steps.validate-release.outputs.release_sha }}
         run: |
           cat > release-body.md <<'EOF'
           ## 安装包
@@ -184,7 +223,7 @@ jobs:
           release_id="$(
             gh api --method POST "repos/${{ github.repository }}/releases" \
               -f tag_name="${TAG_NAME}" \
-              -f target_commitish="${GITHUB_SHA}" \
+              -f target_commitish="${RELEASE_SHA}" \
               -f name="SkillMate ${TAG_NAME}" \
               -f body="$(cat release-body.md)" \
               -F draft=true \
@@ -198,31 +237,35 @@ jobs:
     name: Build macOS
     runs-on: macos-latest
     needs: prepare-release
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: ${{ env.PNPM_VERSION }}
           run_install: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Rust
+        run: |
+          rustup toolchain install "${{ env.RUST_VERSION }}" --profile minimal
+          rustup target add aarch64-apple-darwin --toolchain "${{ env.RUST_VERSION }}"
 
       - name: Cache Rust
-        uses: swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: "src-tauri -> target"
 
@@ -230,7 +273,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build and upload macOS artifacts
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -238,37 +281,39 @@ jobs:
         with:
           releaseId: ${{ needs.prepare-release.outputs.release_id }}
           tagName: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-          args: "--bundles app,dmg"
+          args: "--target aarch64-apple-darwin --bundles app,dmg"
 
   build-windows:
     name: Build Windows
     runs-on: windows-latest
     needs: prepare-release
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: ${{ env.PNPM_VERSION }}
           run_install: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Rust
+        run: rustup toolchain install "${{ env.RUST_VERSION }}" --profile minimal
 
       - name: Cache Rust
-        uses: swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: "src-tauri -> target"
 
@@ -276,7 +321,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build and upload Windows artifacts
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -290,10 +335,12 @@ jobs:
     name: Build Linux
     runs-on: ubuntu-22.04
     needs: prepare-release
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
@@ -310,23 +357,23 @@ jobs:
             rpm
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: ${{ env.PNPM_VERSION }}
           run_install: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .node-version
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Rust
+        run: rustup toolchain install "${{ env.RUST_VERSION }}" --profile minimal
 
       - name: Cache Rust
-        uses: swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: "src-tauri -> target"
 
@@ -334,7 +381,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build and upload Linux artifacts
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -352,8 +399,75 @@ jobs:
       - build-macos
       - build-windows
       - build-linux
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
 
     steps:
+      - name: Checkout release tooling
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+
+      - name: Generate updater metadata
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
+          TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh api "repos/${REPOSITORY}/releases/${RELEASE_ID}" > release.json
+          mkdir -p release-signatures
+          gh release download "${TAG_NAME}" --pattern "*.sig" --dir release-signatures --repo "${REPOSITORY}"
+          RELEASE_JSON=release.json SIGNATURE_DIR=release-signatures OUTPUT_JSON=latest.json \
+            node scripts/release/generate-latest.mjs
+          gh release upload "${TAG_NAME}" latest.json --clobber --repo "${REPOSITORY}"
+
+          uploaded="$(gh api "repos/${REPOSITORY}/releases/${RELEASE_ID}" --jq '.assets[].name | select(. == "latest.json")')"
+          if [ "${uploaded}" != "latest.json" ]; then
+            echo "::error title=updater metadata 上传失败::draft release 中未找到 latest.json"
+            exit 1
+          fi
+
+      - name: Download release assets for supply-chain metadata
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          mkdir -p release-artifacts
+          gh release download "${TAG_NAME}" --dir release-artifacts --repo "${REPOSITORY}"
+          find release-artifacts -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum | sed 's#release-artifacts/##' > SHA256SUMS
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          path: release-artifacts
+          format: spdx-json
+          output-file: skillmate-sbom.spdx.json
+          upload-artifact: false
+
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            release-artifacts/*
+            SHA256SUMS
+            skillmate-sbom.spdx.json
+
+      - name: Upload checksums and SBOM
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: gh release upload "${TAG_NAME}" SHA256SUMS skillmate-sbom.spdx.json --clobber --repo "${REPOSITORY}"
+
       - name: Publish completed release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -367,94 +481,3 @@ jobs:
           }
           JSON
           gh api --method PATCH "repos/${{ github.repository }}/releases/${RELEASE_ID}" --input release-payload.json
-
-      - name: Generate updater metadata
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
-          TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          gh api "repos/${REPOSITORY}/releases/${RELEASE_ID}" > release.json
-          node <<'NODE'
-          const fs = require("fs");
-          const { execFileSync } = require("child_process");
-
-          const release = JSON.parse(fs.readFileSync("release.json", "utf8"));
-          const repo = process.env.REPOSITORY;
-          const tagName = process.env.TAG_NAME;
-          const version = tagName.replace(/^v/, "");
-          const assets = new Map(release.assets.map((asset) => [asset.name, asset]));
-          if (release.draft) {
-            throw new Error("release 仍是 draft，不能生成 updater metadata");
-          }
-
-          function requireAsset(name) {
-            const asset = assets.get(name);
-            if (!asset) {
-              throw new Error(`缺少 release asset: ${name}`);
-            }
-            return asset;
-          }
-
-          function signatureFor(assetName) {
-            const sigAsset = requireAsset(`${assetName}.sig`);
-            const signature = execFileSync("gh", [
-              "api",
-              `repos/${repo}/releases/assets/${sigAsset.id}`,
-              "-H",
-              "Accept: application/octet-stream",
-            ]).toString("utf8").trim();
-            if (!signature) {
-              throw new Error(`updater 签名为空: ${assetName}.sig`);
-            }
-            return signature;
-          }
-
-          function entry(assetName) {
-            requireAsset(assetName);
-            const encodedAssetName = encodeURIComponent(assetName);
-            return {
-              signature: signatureFor(assetName),
-              url: `https://github.com/${repo}/releases/download/${tagName}/${encodedAssetName}`,
-            };
-          }
-
-          const macApp = entry("SkillMate_aarch64.app.tar.gz");
-          const windowsNsis = entry(`SkillMate_${version}_x64-setup.exe`);
-          const linuxDeb = entry(`SkillMate_${version}_amd64.deb`);
-          const linuxRpm = entry(`SkillMate-${version}-1.x86_64.rpm`);
-          const platforms = {
-            "darwin-aarch64": macApp,
-            "darwin-aarch64-app": macApp,
-            "linux-x86_64": linuxDeb,
-            "linux-x86_64-deb": linuxDeb,
-            "linux-x86_64-rpm": linuxRpm,
-            "windows-x86_64": windowsNsis,
-            "windows-x86_64-nsis": windowsNsis,
-          };
-          const requiredPlatforms = [
-            "darwin-aarch64",
-            "darwin-aarch64-app",
-            "windows-x86_64",
-            "windows-x86_64-nsis",
-            "linux-x86_64",
-            "linux-x86_64-deb",
-            "linux-x86_64-rpm",
-          ];
-          const missing = requiredPlatforms.filter((platform) => !platforms[platform]);
-          if (missing.length > 0) {
-            throw new Error(`latest.json 缺少平台: ${missing.join(", ")}`);
-          }
-
-          fs.writeFileSync(
-            "latest.json",
-            `${JSON.stringify({
-              version,
-              notes: release.body || "",
-              pub_date: new Date().toISOString(),
-              platforms,
-            }, null, 2)}\n`
-          );
-          NODE
-          gh release upload "${TAG_NAME}" latest.json --clobber --repo "${REPOSITORY}"
