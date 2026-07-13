@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const DB_SCHEMA_VERSION: i64 = 5;
+const DB_SCHEMA_VERSION: i64 = 6;
 
 fn database_path() -> Result<PathBuf, String> {
     let directory = dirs::data_dir()
@@ -98,7 +98,8 @@ fn migrate_database(connection: &Connection) -> Result<(), String> {
         )
         .map_err(|error| error.to_string())?;
 
-    if !table_has_column(&transaction, "scenarios", "skill_ids_json")? {
+    let scenario_json_added = !table_has_column(&transaction, "scenarios", "skill_ids_json")?;
+    if scenario_json_added {
         transaction
             .execute(
                 "ALTER TABLE scenarios ADD COLUMN skill_ids_json TEXT NOT NULL DEFAULT '[]'",
@@ -106,7 +107,8 @@ fn migrate_database(connection: &Connection) -> Result<(), String> {
             )
             .map_err(|error| error.to_string())?;
     }
-    if !table_has_column(&transaction, "skill_tags", "tags_json")? {
+    let tags_json_added = !table_has_column(&transaction, "skill_tags", "tags_json")?;
+    if tags_json_added {
         transaction
             .execute(
                 "ALTER TABLE skill_tags ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'",
@@ -114,8 +116,24 @@ fn migrate_database(connection: &Connection) -> Result<(), String> {
             )
             .map_err(|error| error.to_string())?;
     }
+    for (column, definition) in [
+        ("enabled", "INTEGER NOT NULL DEFAULT 0"),
+        ("remote_url", "TEXT NOT NULL DEFAULT ''"),
+        ("repo_path", "TEXT NOT NULL DEFAULT ''"),
+        ("branch", "TEXT NOT NULL DEFAULT 'main'"),
+        ("last_sync", "TEXT NOT NULL DEFAULT ''"),
+    ] {
+        if !table_has_column(&transaction, "git_backup", column)? {
+            transaction
+                .execute(
+                    &format!("ALTER TABLE git_backup ADD COLUMN {column} {definition}"),
+                    [],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+    }
 
-    if current_version < 2 {
+    if current_version < 2 || scenario_json_added || tags_json_added {
         migrate_legacy_json_columns(&transaction)?;
     }
     seed_default_tags(&transaction)?;
@@ -282,5 +300,80 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(version, 999);
+    }
+
+    #[test]
+    fn migration_adds_repo_path_to_legacy_git_backup_table() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE git_backup (
+                    id INTEGER PRIMARY KEY,
+                    enabled INTEGER,
+                    remote_url TEXT,
+                    branch TEXT,
+                    last_sync TEXT
+                 );
+                 CREATE TABLE scenarios (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    skill_ids TEXT,
+                    created_at TEXT
+                 );
+                 CREATE TABLE skill_tags (skill_path TEXT PRIMARY KEY, tags TEXT);
+                 INSERT INTO git_backup VALUES (1, 1, 'https://example.com/backup.git', 'main', '2026-07-13');
+                 INSERT INTO scenarios VALUES ('s1', '旧场景', '', '/tmp/a,/tmp/b', '2026-07-13');
+                 INSERT INTO skill_tags VALUES ('/tmp/a', 'one,two');
+                 PRAGMA user_version = 5;",
+            )
+            .unwrap();
+
+        migrate_database(&connection).unwrap();
+
+        assert!(table_has_column(&connection, "git_backup", "repo_path").unwrap());
+        let backup: (i32, String, String, String, String) = connection
+            .query_row(
+                "SELECT enabled, remote_url, repo_path, branch, last_sync FROM git_backup WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            backup,
+            (
+                1,
+                "https://example.com/backup.git".to_string(),
+                String::new(),
+                "main".to_string(),
+                "2026-07-13".to_string(),
+            )
+        );
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, DB_SCHEMA_VERSION);
+        let scenario_json: String = connection
+            .query_row(
+                "SELECT skill_ids_json FROM scenarios WHERE id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let tags_json: String = connection
+            .query_row(
+                "SELECT tags_json FROM skill_tags WHERE skill_path = '/tmp/a'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Vec<String>>(&scenario_json).unwrap(),
+            vec!["/tmp/a", "/tmp/b"]
+        );
+        assert_eq!(
+            serde_json::from_str::<Vec<String>>(&tags_json).unwrap(),
+            vec!["one", "two"]
+        );
     }
 }
