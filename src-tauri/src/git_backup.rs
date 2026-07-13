@@ -42,7 +42,13 @@ impl Default for GitBackup {
 pub fn load(connection: &Connection) -> Result<GitBackup, String> {
     connection
         .query_row(
-            "SELECT enabled, remote_url, repo_path, branch, last_sync FROM git_backup WHERE id = 1",
+            "SELECT
+                COALESCE(enabled, 0),
+                COALESCE(remote_url, ''),
+                COALESCE(repo_path, ''),
+                COALESCE(branch, 'main'),
+                COALESCE(last_sync, '')
+             FROM git_backup WHERE id = 1",
             [],
             |row| {
                 Ok(GitBackup {
@@ -807,6 +813,32 @@ mod tests {
 
         assert!(!repo.join("assistants").exists());
         fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn load_normalizes_null_legacy_backup_values() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE git_backup (
+                    id INTEGER PRIMARY KEY,
+                    enabled INTEGER,
+                    remote_url TEXT,
+                    repo_path TEXT,
+                    branch TEXT,
+                    last_sync TEXT
+                 );
+                 INSERT INTO git_backup VALUES (1, NULL, NULL, NULL, NULL, NULL);",
+            )
+            .unwrap();
+
+        let backup = load(&connection).unwrap();
+
+        assert!(!backup.enabled);
+        assert_eq!(backup.remote_url, "");
+        assert_eq!(backup.repo_path, "");
+        assert_eq!(backup.branch, "main");
+        assert_eq!(backup.last_sync, "");
     }
 
     #[test]

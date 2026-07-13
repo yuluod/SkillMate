@@ -85,7 +85,7 @@ pub fn get_scenarios(state: tauri::State<'_, AppState>) -> Result<Vec<Scenario>,
 
 pub fn get_scenarios_from_db(db: &Connection) -> Result<Vec<Scenario>, String> {
     let mut statement = db
-        .prepare("SELECT id, name, description, skill_ids_json, COALESCE(skill_ids, ''), created_at FROM scenarios")
+        .prepare("SELECT id, name, COALESCE(description, ''), skill_ids_json, COALESCE(skill_ids, ''), COALESCE(created_at, '') FROM scenarios")
         .map_err(|error| error.to_string())?;
     let records = statement
         .query_map([], |row| {

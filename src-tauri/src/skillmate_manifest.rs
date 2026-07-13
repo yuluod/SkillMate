@@ -178,7 +178,14 @@ fn portable_manifest_path(base: &Path, value: &str) -> String {
     let path = expand_path(value.trim());
     match path.strip_prefix(base) {
         Ok(relative) if relative.as_os_str().is_empty() => ".".to_string(),
-        Ok(relative) => Path::new(".").join(relative).to_string_lossy().to_string(),
+        Ok(relative) => relative
+            .components()
+            .filter_map(|component| match component {
+                Component::Normal(value) => Some(value.to_string_lossy()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("/"),
         Err(_) => value.to_string(),
     }
 }
@@ -554,6 +561,7 @@ target_name = "writer"
         let content = fs::read_to_string(&path).unwrap();
         assert!(content.find("Codex").unwrap() < content.find("Gemini CLI").unwrap());
         assert!(content.contains("project_path = \".\""));
+        assert!(content.contains("source = \"skills/writer\""));
 
         let restored = read_skillmate_manifest(&path).unwrap();
         assert_eq!(restored.skills[0].assistant, "Codex");
@@ -561,7 +569,7 @@ target_name = "writer"
             restored.skills[0].project_path.as_deref(),
             Some(root.to_string_lossy().as_ref())
         );
-        assert_eq!(restored.skills[1].source, source.to_string_lossy());
+        assert_eq!(Path::new(&restored.skills[1].source), source);
         let _ = fs::remove_dir_all(root);
     }
 
