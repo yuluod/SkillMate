@@ -297,6 +297,16 @@ fn git_repo_name(repo_url: &str) -> Result<String, String> {
         .split('?')
         .next()
         .unwrap_or(without_fragment);
+    let local_path = Path::new(without_query.trim());
+    if local_path.is_absolute() || local_path.exists() {
+        if let Some(candidate) = local_path
+            .file_name()
+            .map(|name| name.to_string_lossy().trim_end_matches(".git").to_string())
+            .filter(|name| !name.trim().is_empty())
+        {
+            return Ok(candidate);
+        }
+    }
     let trimmed = without_query.trim().trim_end_matches('/');
     let candidate = trimmed
         .rsplit('/')
@@ -469,5 +479,21 @@ fn install_detection(
         confidence: confidence.into(),
         warnings,
         needs_model,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_git_path_uses_directory_name() {
+        let root = std::env::temp_dir().join("skillmate-local-git-name");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let spec = parse_git_install_spec(&root.to_string_lossy()).unwrap();
+
+        assert_eq!(spec.target_name, "skillmate-local-git-name");
+        let _ = std::fs::remove_dir_all(root);
     }
 }
