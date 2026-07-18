@@ -78,7 +78,7 @@ test("发布版本校验必须拒绝 tag 与三处版本不一致", () => {
 test("latest.json 生成器必须输出完整平台并拒绝缺失签名", () => {
   const version = "0.0.4";
   const assetNames = [
-    "SkillMate_aarch64.app.tar.gz",
+    `SkillMate_${version}_aarch64.app.tar.gz`,
     `SkillMate_${version}_x64-setup.exe`,
     `SkillMate_${version}_amd64.deb`,
     `SkillMate-${version}-1.x86_64.rpm`,
@@ -173,7 +173,7 @@ test("Release workflow 必须发布 updater metadata", () => {
   assert.match(workflow, /skillmate-sbom\.spdx\.json/);
   assert.match(workflow, /actions\/attest-build-provenance@[0-9a-f]{40}/);
   assert.match(generator, /encodeURIComponent\(assetName\)/);
-  assert.match(generator, /SkillMate_aarch64\.app\.tar\.gz/);
+  assert.match(generator, /SkillMate_\$\{version\}_aarch64\.app\.tar\.gz/);
   assert.match(generator, /SkillMate_\$\{version\}_x64-setup\.exe/);
   assert.match(generator, /SkillMate_\$\{version\}_amd64\.deb/);
   assert.match(generator, /SkillMate-\$\{version\}-1\.x86_64\.rpm/);
