@@ -41,7 +41,7 @@ export function buildLatestMetadata({ release, repository, tagName, signatures, 
     };
   }
 
-  const macApp = entry("SkillMate_aarch64.app.tar.gz");
+  const macApp = entry(`SkillMate_${version}_aarch64.app.tar.gz`);
   const windowsNsis = entry(`SkillMate_${version}_x64-setup.exe`);
   const linuxDeb = entry(`SkillMate_${version}_amd64.deb`);
   const linuxRpm = entry(`SkillMate-${version}-1.x86_64.rpm`);
@@ -73,7 +73,7 @@ function runCli() {
   const release = JSON.parse(readFileSync(releasePath, "utf8"));
   const version = String(process.env.TAG_NAME || "").replace(/^v/, "");
   const assetNames = [
-    "SkillMate_aarch64.app.tar.gz",
+    `SkillMate_${version}_aarch64.app.tar.gz`,
     `SkillMate_${version}_x64-setup.exe`,
     `SkillMate_${version}_amd64.deb`,
     `SkillMate-${version}-1.x86_64.rpm`,
