@@ -40,7 +40,7 @@ test("发布元数据版本必须保持一致", () => {
   const tauriConfig = readJson("src-tauri/tauri.conf.json");
   const cargoVersion = readCargoPackageVersion();
 
-  assert.equal(packageJson.version, "0.0.6");
+  assert.equal(packageJson.version, "0.0.7");
   assert.equal(tauriConfig.version, packageJson.version);
   assert.equal(cargoVersion, packageJson.version);
 });
