@@ -193,6 +193,7 @@ test("Release workflow 必须发布 updater metadata", () => {
 
 test("普通 CI 必须覆盖前端、格式、Clippy 和 Rust 测试", () => {
   const workflow = readText(".github/workflows/ci.yml");
+  const platformTestStart = workflow.indexOf("  platform-test:");
 
   assert.match(workflow, /pull_request:/);
   assert.match(workflow, /branches:\s*\n\s*- main/);
@@ -201,7 +202,9 @@ test("普通 CI 必须覆盖前端、格式、Clippy 和 Rust 测试", () => {
   assert.match(workflow, /\.\/actionlint/);
   assert.match(workflow, /windows-2022/);
   assert.match(workflow, /macos-14/);
-  assert.match(workflow, /cargo check --manifest-path src-tauri\/Cargo\.toml --all-targets --locked/);
+  assert.ok(platformTestStart >= 0, "普通 CI 必须包含跨平台测试 job");
+  const platformTest = workflow.slice(platformTestStart);
+  assert.match(platformTest, /cargo test --manifest-path src-tauri\/Cargo\.toml --locked --no-fail-fast/);
   assert.match(workflow, /cargo fmt --manifest-path src-tauri\/Cargo\.toml -- --check/);
   assert.match(workflow, /cargo clippy --manifest-path src-tauri\/Cargo\.toml --all-targets --locked -- -D warnings/);
   assert.match(workflow, /cargo test --manifest-path src-tauri\/Cargo\.toml --locked --no-fail-fast/);
