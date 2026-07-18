@@ -12,18 +12,56 @@ export function invokeSkillMateCommand(command, args) {
   return invoke(command, args);
 }
 
+async function loadDashboard() {
+  const assistants = await invoke("get_all_assistants");
+  const [tagsResult, scenariosResult, gitResult] = await Promise.allSettled([
+    invoke("get_all_tags"),
+    invoke("get_scenarios"),
+    invoke("get_git_backup"),
+  ]);
+  const diagnostics = [];
+  const optionalValue = (section, label, result, fallback) => {
+    if (result.status === "fulfilled") return result.value;
+    diagnostics.push({ section, label, message: String(result.reason) });
+    return fallback;
+  };
+
+  return {
+    assistants,
+    tags: optionalValue("tags", "标签", tagsResult, []),
+    scenarios: optionalValue("scenarios", "场景", scenariosResult, []),
+    git: optionalValue("git", "Git 备份", gitResult, {
+      enabled: false,
+      repo_path: "",
+      remote_url: "",
+      branch: "main",
+      last_sync: "",
+    }),
+    diagnostics,
+  };
+}
+
+async function readSkill(path) {
+  const [contentResult, validationResult] = await Promise.allSettled([
+    invoke("get_skill_readme", { path }),
+    invoke("inspect_skill_validation", { path }),
+  ]);
+  if (contentResult.status === "rejected") throw contentResult.reason;
+
+  const diagnostics = validationResult.status === "rejected"
+    ? [{ section: "validation", label: "结构验证", message: String(validationResult.reason) }]
+    : [];
+  return {
+    content: contentResult.value,
+    validation: validationResult.status === "fulfilled" ? validationResult.value : null,
+    diagnostics,
+  };
+}
+
 export const skillmateApi = Object.freeze({
   inventory: Object.freeze({
-    loadDashboard: () => Promise.all([
-      invoke("get_all_assistants"),
-      invoke("get_all_tags"),
-      invoke("get_scenarios"),
-      invoke("get_git_backup"),
-    ]).then(([assistants, tags, scenarios, git]) => ({ assistants, tags, scenarios, git })),
-    readSkill: (path) => Promise.all([
-      invoke("get_skill_readme", { path }),
-      invoke("inspect_skill_validation", { path }),
-    ]).then(([content, validation]) => ({ content, validation })),
+    loadDashboard,
+    readSkill,
     deleteSkill: (path) => invoke("delete_skill", { path }),
     unlinkSkill: (path) => invoke("unlink_symlink_skill", { path }),
     openFolder: (path) => invoke("open_folder", { path }),

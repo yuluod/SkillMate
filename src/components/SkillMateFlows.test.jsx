@@ -4,11 +4,12 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SkillsView } from "./InventoryViews.jsx";
-import { InstallModal } from "./SkillMateModals.jsx";
+import { InstallModal, PreviewModal } from "./SkillMateModals.jsx";
 import SettingsView from "./SettingsView.jsx";
 import { useInstallPolicyFlow } from "../lib/useInstallPolicyFlow.js";
 import { useGitBackupFlow } from "../lib/useGitBackupFlow.js";
 import { useScenarioFlow } from "../lib/useScenarioFlow.js";
+import { skillmateApi } from "../lib/skillmateApi.js";
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 
@@ -80,6 +81,56 @@ function installFlow(overrides = {}) {
     ...overrides,
   };
 }
+
+describe("Dashboard 数据加载", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+  });
+
+  it("可选模块失败时仍返回助手和其他可用数据", async () => {
+    invoke.mockImplementation(async (command) => {
+      if (command === "get_all_assistants") return [{ name: "Codex", skills: [] }];
+      if (command === "get_all_tags") throw new Error("标签数据库不可用");
+      if (command === "get_scenarios") return [{ id: "writing", name: "写作" }];
+      if (command === "get_git_backup") return { enabled: true, repo_path: "/tmp/backup" };
+      throw new Error(`未处理命令: ${command}`);
+    });
+
+    const result = await skillmateApi.inventory.loadDashboard();
+
+    expect(result.assistants).toEqual([{ name: "Codex", skills: [] }]);
+    expect(result.tags).toEqual([]);
+    expect(result.scenarios).toEqual([{ id: "writing", name: "写作" }]);
+    expect(result.git).toEqual({ enabled: true, repo_path: "/tmp/backup" });
+    expect(result.diagnostics).toEqual([{
+      section: "tags",
+      label: "标签",
+      message: "Error: 标签数据库不可用",
+    }]);
+  });
+
+  it("核心助手扫描失败时不返回成功形状", async () => {
+    invoke.mockRejectedValueOnce(new Error("助手目录不可读"));
+
+    await expect(skillmateApi.inventory.loadDashboard()).rejects.toThrow("助手目录不可读");
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("结构验证失败时仍展示 Skill 文档和诊断", async () => {
+    invoke.mockImplementation(async (command) => {
+      if (command === "get_skill_readme") return "# Writer\n\n写作说明";
+      if (command === "inspect_skill_validation") throw new Error("结构验证暂时不可用");
+      throw new Error(`未处理命令: ${command}`);
+    });
+
+    const preview = await skillmateApi.inventory.readSkill("/tmp/writer");
+    render(<PreviewModal preview={{ title: "writer", ...preview }} onClose={vi.fn()} />);
+
+    expect(screen.getByText(/# Writer/)).toBeTruthy();
+    expect(screen.getByText(/结构验证暂时不可用/)).toBeTruthy();
+    expect(preview.validation).toBeNull();
+  });
+});
 
 describe("安装流程交互", () => {
   it("在执行信息中展示安装策略阻止原因", async () => {

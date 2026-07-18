@@ -187,6 +187,12 @@ export function InstallModal({
 export function PreviewModal({ preview, onClose }) {
   return (
     <ModalShell title={preview.title} className="large" onClose={onClose}>
+      {preview.diagnostics?.length > 0 && (
+        <div className="install-compact warn" role="status">
+          <span>部分预览不可用</span>
+          <strong>{preview.diagnostics.map((item) => `${item.label}：${item.message}`).join("；")}</strong>
+        </div>
+      )}
       {preview.validation && (
         <div className="import-preview" style={{ marginBottom: 14 }}>
           <div className="import-preview-head">
