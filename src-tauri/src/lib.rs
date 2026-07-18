@@ -24,7 +24,10 @@ mod skillmate_manifest;
 use app_core::{
     assistant_root_by_name, expand_path, managed_skill_roots, now_ms, project_skill_root_by_name,
 };
-use database::{create_db_connection, open_db_connection};
+use database::{
+    create_db_connection, database_initialization_error, open_db_connection,
+    remember_database_initialization_error,
+};
 use git_backup::GitBackup;
 use install_policy::{
     evaluate_install_policy, load_install_policy, policy_failure_decision, save_install_policy,
@@ -85,7 +88,7 @@ use tauri::Manager;
 static SYNC_LOCK: Mutex<()> = Mutex::new(());
 
 pub(crate) struct AppState {
-    db: Mutex<Connection>,
+    db: Option<Mutex<Connection>>,
 }
 
 fn map_sync_lock<T>(lock: LockResult<T>) -> Result<T, String> {
@@ -101,8 +104,24 @@ pub(crate) fn lock_app_db<'a>(
 ) -> Result<MutexGuard<'a, Connection>, String> {
     state
         .db
+        .as_ref()
+        .ok_or_else(|| {
+            database_initialization_error()
+                .unwrap_or("数据库不可用，请重启应用后重试")
+                .to_string()
+        })?
         .lock()
         .map_err(|_| "数据库连接已中毒，请重启应用后重试".to_string())
+}
+
+async fn run_blocking_task<T, F>(task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|error| format!("后台任务异常终止: {}", error))
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -363,10 +382,13 @@ fn rollback_skill_profile() -> Result<String, String> {
     rollback_profile(&db)
 }
 
-#[tauri::command(async)]
-fn get_all_assistants() -> Result<Vec<AIAssistant>, String> {
-    let db = open_db_connection()?;
-    scan_all_assistants(&db)
+#[tauri::command]
+async fn get_all_assistants() -> Result<Vec<AIAssistant>, String> {
+    run_blocking_task(|| {
+        let db = open_db_connection()?;
+        scan_all_assistants(&db)
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -402,11 +424,14 @@ fn set_install_policy(
     save_install_policy(&db, config)
 }
 
-#[tauri::command(async)]
-fn sync_to_git(message: String) -> Result<String, String> {
-    let _guard = acquire_sync_lock()?;
-    let db = open_db_connection()?;
-    git_backup::sync(&db, &message)
+#[tauri::command]
+async fn sync_to_git(message: String) -> Result<String, String> {
+    run_blocking_task(move || {
+        let _guard = acquire_sync_lock()?;
+        let db = open_db_connection()?;
+        git_backup::sync(&db, &message)
+    })
+    .await?
 }
 
 fn install_result(
@@ -526,8 +551,33 @@ fn apply_policy_to_preview(
     preview.install_policy = decision;
 }
 
-#[tauri::command(async)]
-fn install_skill(
+#[tauri::command]
+async fn install_skill(
+    package: String,
+    source: String,
+    assistant_name: String,
+    install_mode: Option<String>,
+    project_path: Option<String>,
+    plan_token: Option<String>,
+) -> InstallResult {
+    match run_blocking_task(move || {
+        install_skill_blocking(
+            package,
+            source,
+            assistant_name,
+            install_mode,
+            project_path,
+            plan_token,
+        )
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => install_result(false, "安装任务异常终止", error, None),
+    }
+}
+
+fn install_skill_blocking(
     package: String,
     source: String,
     assistant_name: String,
@@ -1123,9 +1173,15 @@ fn is_same_path(left: &Path, right: &Path) -> bool {
     }
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    let db = create_db_connection().expect("failed to initialize SkillMate database");
+fn initialize_database_state() -> Option<Connection> {
+    let db = match create_db_connection() {
+        Ok(db) => db,
+        Err(error) => {
+            let message = remember_database_initialization_error(&error);
+            eprintln!("{}", message);
+            return None;
+        }
+    };
     for assistant in app_core::assistant_definitions() {
         for root in assistant.global_discovery_roots() {
             if let Err(error) = register_managed_root(&db, &root, "global", None) {
@@ -1155,6 +1211,12 @@ pub fn run() {
     if let Err(error) = prune_missing_managed_installations(&db) {
         eprintln!("清理失效受管安装索引失败: {}", error);
     }
+    Some(db)
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let db = initialize_database_state();
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
@@ -1163,7 +1225,9 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
-        .manage(AppState { db: Mutex::new(db) })
+        .manage(AppState {
+            db: db.map(Mutex::new),
+        })
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
@@ -1655,6 +1719,16 @@ mod tests {
         let err = map_sync_lock(lock.lock()).unwrap_err();
 
         assert_eq!(err, "同步锁已中毒，请重启应用后重试");
+    }
+
+    #[test]
+    fn blocking_task_runs_on_dedicated_thread() {
+        let caller = std::thread::current().id();
+        let worker =
+            tauri::async_runtime::block_on(run_blocking_task(|| std::thread::current().id()))
+                .unwrap();
+
+        assert_ne!(worker, caller);
     }
 
     #[test]

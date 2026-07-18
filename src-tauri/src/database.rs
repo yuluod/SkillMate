@@ -1,9 +1,11 @@
 use rusqlite::{params, Connection};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 const DB_SCHEMA_VERSION: i64 = 6;
+static DATABASE_INITIALIZATION_ERROR: OnceLock<String> = OnceLock::new();
 
 fn database_path() -> Result<PathBuf, String> {
     let directory = dirs::data_dir()
@@ -14,7 +16,7 @@ fn database_path() -> Result<PathBuf, String> {
 }
 
 pub fn create_db_connection() -> Result<Connection, String> {
-    let connection = open_db_connection()?;
+    let connection = open_db_connection_unchecked()?;
     connection
         .pragma_update(None, "journal_mode", "WAL")
         .map_err(|error| error.to_string())?;
@@ -23,6 +25,13 @@ pub fn create_db_connection() -> Result<Connection, String> {
 }
 
 pub fn open_db_connection() -> Result<Connection, String> {
+    if let Some(error) = database_initialization_error() {
+        return Err(error.to_string());
+    }
+    open_db_connection_unchecked()
+}
+
+fn open_db_connection_unchecked() -> Result<Connection, String> {
     let connection = Connection::open(database_path()?).map_err(|error| error.to_string())?;
     connection
         .busy_timeout(Duration::from_secs(5))
@@ -31,6 +40,23 @@ pub fn open_db_connection() -> Result<Connection, String> {
         .pragma_update(None, "foreign_keys", "ON")
         .map_err(|error| error.to_string())?;
     Ok(connection)
+}
+
+pub fn remember_database_initialization_error(error: &str) -> String {
+    DATABASE_INITIALIZATION_ERROR
+        .get_or_init(|| database_initialization_message(error))
+        .clone()
+}
+
+pub fn database_initialization_error() -> Option<&'static str> {
+    DATABASE_INITIALIZATION_ERROR.get().map(String::as_str)
+}
+
+fn database_initialization_message(error: &str) -> String {
+    format!(
+        "数据库初始化失败：{}。SkillMate 已在受限模式启动，请修复数据目录后重启应用",
+        error
+    )
 }
 
 fn migrate_database(connection: &Connection) -> Result<(), String> {
@@ -375,5 +401,15 @@ mod tests {
             serde_json::from_str::<Vec<String>>(&tags_json).unwrap(),
             vec!["one", "two"]
         );
+    }
+
+    #[test]
+    fn initialization_error_explains_limited_mode_and_restart() {
+        let message = database_initialization_message("database is locked");
+
+        assert!(message.contains("数据库初始化失败"));
+        assert!(message.contains("database is locked"));
+        assert!(message.contains("受限模式"));
+        assert!(message.contains("重启应用"));
     }
 }
