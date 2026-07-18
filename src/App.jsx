@@ -116,7 +116,7 @@ function App() {
   const [init, setInit] = useState(true);
   const [installOpen, setInstallOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [preview, setPreview] = useState({ title: "", content: "", validation: null });
+  const [preview, setPreview] = useState({ title: "", content: "", validation: null, diagnostics: [] });
   const [tagEditor, setTagEditor] = useState({ open: false, skill: null, selected: [] });
   const [toastState, setToastState] = useState({ show: false, msg: "", type: "" });
   const [theme, setTheme] = useState(getSavedThemeMode);
@@ -219,19 +219,31 @@ function App() {
     const requestId = ++loadRequestRef.current;
     setLoading(true);
     try {
-      const { assistants, tags, scenarios, git } = await skillmateApi.inventory.loadDashboard();
+      const { assistants, tags, scenarios, git, diagnostics = [] } = await skillmateApi.inventory.loadDashboard();
       if (!mountedRef.current || requestId !== loadRequestRef.current) return;
-      setData({ assistants, tags, scenarios, git });
-      setTags((current) => tags.map((tag) => ({
-        ...tag,
-        selected: current.some((item) => item.id === tag.id && item.selected),
-      })));
-      setLoadError("");
+      const failedSections = new Set(diagnostics.map((item) => item.section));
+      setData((current) => ({
+        assistants,
+        tags: failedSections.has("tags") ? current.tags : tags,
+        scenarios: failedSections.has("scenarios") ? current.scenarios : scenarios,
+        git: failedSections.has("git") ? current.git : git,
+      }));
+      if (!failedSections.has("tags")) {
+        setTags((current) => tags.map((tag) => ({
+          ...tag,
+          selected: current.some((item) => item.id === tag.id && item.selected),
+        })));
+      }
+      const diagnosticMessage = diagnostics
+        .map((item) => `${item.label}：${item.message}`)
+        .join("；");
+      setLoadError(diagnosticMessage ? `部分数据加载失败：${diagnosticMessage}` : "");
       if (resetUpdates) resetUpdateState();
-      gitBackupFlow.hydrate(git);
+      if (!failedSections.has("git")) gitBackupFlow.hydrate(git);
+      if (diagnosticMessage) showToast("部分数据加载失败，已保留可用内容", "warn");
     } catch (e) {
       if (mountedRef.current && requestId === loadRequestRef.current) {
-        setLoadError(String(e));
+        setLoadError(`核心数据加载失败：${String(e)}`);
         showToast(`加载失败: ${e}`, "error");
       }
     }
@@ -370,8 +382,13 @@ function App() {
 
   async function openPreview(path) {
     try {
-      const { content, validation } = await skillmateApi.inventory.readSkill(path);
-      setPreview({ title: path.split(/[\/]/).pop(), content: content || "无内容", validation });
+      const { content, validation, diagnostics = [] } = await skillmateApi.inventory.readSkill(path);
+      setPreview({
+        title: path.split(/[\\/]/).pop(),
+        content: content || "无内容",
+        validation,
+        diagnostics,
+      });
       setPreviewOpen(true);
     } catch (e) { showToast(`预览失败: ${e}`, "error"); }
   }
@@ -521,7 +538,7 @@ function App() {
         <main className="content">
           {loadError && (
             <div className="load-error-banner" role="alert">
-              <div><strong>数据加载失败</strong><span>{loadError}</span></div>
+              <div><strong>数据加载异常</strong><span>{loadError}</span></div>
               <button className="btn btn-secondary btn-sm" onClick={() => loadData({ resetUpdates: false })}>重试</button>
             </div>
           )}
