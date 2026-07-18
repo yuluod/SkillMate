@@ -104,15 +104,13 @@ jobs:
       - name: Run tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked --no-fail-fast
 
-  platform-check:
-    name: Check ${{ matrix.name }}
+  platform-test:
+    name: Test ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: Linux
-            os: ubuntu-22.04
           - name: macOS
             os: macos-14
           - name: Windows
@@ -121,17 +119,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libxdo-dev \
-            libssl-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev
 
       - name: Install pinned Rust
         run: rustup toolchain install "${{ env.RUST_VERSION }}" --profile minimal
@@ -142,5 +129,5 @@ jobs:
           workspaces: "src-tauri -> target"
           key: ${{ matrix.name }}
 
-      - name: Check all targets
-        run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets --locked
+      - name: Run tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked --no-fail-fast
