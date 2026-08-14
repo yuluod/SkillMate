@@ -1320,6 +1320,7 @@ fn sensitive_scan_avoids_runtime_documentation_and_detects_known_tokens() {
     for token in [
         "sk-proj-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
         "AKIA1234567890ABCDEF",
+        // Slack 令牌样本用转义拼接,避免触发托管平台密钥扫描误报
         concat!("xox", "b-123456789012-123456789012-abcdefghijklmnopqrstuvwxyzABCD"),
         "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJlX3dpdGhfbGVuZ3Ro",
     ] {
