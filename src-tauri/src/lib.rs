@@ -60,10 +60,12 @@ use scenario_manifest::{
 };
 use serde::{Deserialize, Serialize};
 use skill_install::{
-    detect_install_source_rules, install_local_package_at_digest,
-    install_local_symlink_package_at_digest, install_target_name, is_git_install_source,
-    preview_install_source, preview_local_symlink_install, seal_install_preview, InstallDetection,
-    InstallPreview, InstallResult, PreparedGitInstall,
+    install_local_package_at_digest, install_local_symlink_package_at_digest,
+    preview_install_source, preview_local_symlink_install, seal_install_preview, InstallPreview,
+    InstallResult, PreparedGitInstall,
+};
+use skill_install_source::{
+    detect_install_source_rules, install_target_name, is_git_install_source, InstallDetection,
 };
 use skill_inventory::{collect_known_skill_paths, scan_all_assistants};
 use skill_orchestration::{

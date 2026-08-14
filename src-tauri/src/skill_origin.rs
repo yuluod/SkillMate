@@ -7,10 +7,10 @@ use crate::managed_installation::{is_explicitly_managed, refresh_managed_install
 use crate::managed_state::{is_managed_by_state, refresh_managed_skill_fingerprint};
 use crate::skill_install::{
     has_git_snapshot_spec, installable_content_fingerprint, probe_git_snapshot,
-    probe_git_snapshots, sanitize_git_locator, sanitize_git_remote_url,
-    sync_git_snapshot_skill_checked, GitInstallOutcome, GitInstallSpec, GitSnapshotProbe,
+    probe_git_snapshots, sync_git_snapshot_skill_checked, GitInstallOutcome, GitSnapshotProbe,
     GitSnapshotProbeRequest,
 };
+use crate::skill_install_source::{sanitize_git_locator, sanitize_git_remote_url, GitInstallSpec};
 use crate::skill_reconcile::ReconcileTransaction;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
