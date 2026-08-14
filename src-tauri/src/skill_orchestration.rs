@@ -9,9 +9,9 @@ use crate::managed_state::{content_fingerprint, managed_state_origin};
 use crate::operation_plan::{operation_plan_token, verify_operation_plan};
 use crate::skill_install::{
     install_git_package_at_ref, install_local_package_at_digest,
-    install_local_symlink_package_at_digest, is_git_install_source, parse_git_install_spec,
-    InstallPreview,
+    install_local_symlink_package_at_digest, InstallPreview,
 };
+use crate::skill_install_source::{is_git_install_source, parse_git_install_spec};
 use crate::skill_inventory::scan_all_assistants;
 use crate::skill_origin::{load_origin_meta, save_installed_git_meta};
 use crate::skill_profile::{

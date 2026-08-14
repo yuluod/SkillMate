@@ -2,10 +2,9 @@ use crate::app_core::{expand_path, generate_id, run_command_with_timeout};
 use crate::install_policy::InstallPolicyDecision;
 use crate::managed_state::mark_managed_skill;
 use crate::operation_plan::{operation_plan_token, StableHash};
-pub use crate::skill_install_source::{
-    detect_install_source_rules, install_target_name, is_git_install_source,
-    parse_git_install_spec, sanitize_git_locator, sanitize_git_remote_url, validate_git_reference,
-    validate_git_repo_locator, GitInstallSpec, InstallDetection,
+use crate::skill_install_source::{
+    install_target_name, is_git_install_source, parse_git_install_spec, sanitize_git_locator,
+    validate_git_reference, validate_git_repo_locator, GitInstallSpec,
 };
 use crate::skill_package::{
     detect_skill_package, DetectedSkill, PackageDetection, SkillPackageSource,
@@ -1538,6 +1537,7 @@ fn format_git_error(out: &Output) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skill_install_source::detect_install_source_rules;
     use std::path::{Path, PathBuf};
 
     fn test_dir(name: &str) -> PathBuf {

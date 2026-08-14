@@ -4,7 +4,7 @@ use crate::app_core::{
 };
 use crate::managed_installation::{list_managed_installations, list_managed_roots};
 use crate::operation_plan::StableHash;
-use crate::skill_install::{
+use crate::skill_install_source::{
     sanitize_git_remote_url, validate_git_reference, validate_git_repo_locator,
 };
 use rusqlite::{params, Connection, OptionalExtension};

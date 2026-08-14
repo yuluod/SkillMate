@@ -2,9 +2,9 @@ use crate::app_core::{
     assistant_root_by_name, atomic_write, expand_path, project_skill_root_by_name,
 };
 use crate::skill_install::{
-    install_target_name, is_git_install_source, parse_git_install_spec, preview_install_source,
-    preview_local_symlink_install, InstallPreview, PreviewConflict,
+    preview_install_source, preview_local_symlink_install, InstallPreview, PreviewConflict,
 };
+use crate::skill_install_source::{install_target_name, is_git_install_source, parse_git_install_spec};
 use crate::skill_model::SkillDescriptor;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
