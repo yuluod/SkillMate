@@ -389,7 +389,7 @@ fn is_empty_dir(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skillmate_manifest::SkillMateManifestSkill;
+    use crate::skill_model::SkillDescriptor;
 
     fn test_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -478,7 +478,7 @@ mod tests {
         fs::write(target.join("SKILL.md"), "writer").unwrap();
         let installations = vec![ManagedInstallation {
             path: target.clone(),
-            skill: SkillMateManifestSkill {
+            skill: SkillDescriptor {
                 assistant: "Codex".to_string(),
                 ..Default::default()
             },

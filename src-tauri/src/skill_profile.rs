@@ -1,5 +1,6 @@
 use crate::app_core::{atomic_write, generate_id};
-use crate::skillmate_manifest::{SkillMateManifestPreview, SkillMateManifestSkill};
+use crate::skill_model::SkillDescriptor;
+use crate::skillmate_manifest::SkillMateManifestPreview;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -20,7 +21,7 @@ pub struct SkillSetProfile {
     pub name: String,
     pub description: String,
     pub active: bool,
-    pub skills: Vec<SkillMateManifestSkill>,
+    pub skills: Vec<SkillDescriptor>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -75,7 +76,7 @@ pub fn write_skill_profiles(store: &SkillSetProfileStore) -> Result<(), String> 
 pub fn upsert_skill_profile(
     name: &str,
     description: &str,
-    skills: Vec<SkillMateManifestSkill>,
+    skills: Vec<SkillDescriptor>,
 ) -> Result<SkillSetProfileStore, String> {
     let trimmed_name = name.trim();
     if trimmed_name.is_empty() {

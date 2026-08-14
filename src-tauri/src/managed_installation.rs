@@ -3,7 +3,7 @@ use crate::managed_state::{
     read_managed_state, unmark_managed_skill, ManagedSkillState, ManagedStateCheckpoint,
 };
 use crate::skill_install_source::{is_git_install_source, parse_git_install_spec};
-use crate::skillmate_manifest::SkillMateManifestSkill;
+use crate::skill_model::SkillDescriptor;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub struct ManagedInstallation {
     pub path: PathBuf,
-    pub skill: SkillMateManifestSkill,
+    pub skill: SkillDescriptor,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -344,7 +344,7 @@ pub fn list_managed_installations(db: &Connection) -> Result<Vec<ManagedInstalla
         .query_map([], |row| {
             Ok(ManagedInstallation {
                 path: PathBuf::from(row.get::<_, String>(0)?),
-                skill: SkillMateManifestSkill {
+                skill: SkillDescriptor {
                     assistant: row.get(1)?,
                     source: row.get(2)?,
                     source_kind: row.get(3)?,
@@ -449,7 +449,7 @@ pub fn find_managed_installation(
     };
     Ok(Some(ManagedInstallation {
         path: PathBuf::from(row.get::<_, String>(0).map_err(|error| error.to_string())?),
-        skill: SkillMateManifestSkill {
+        skill: SkillDescriptor {
             assistant: row.get(1).map_err(|error| error.to_string())?,
             source: row.get(2).map_err(|error| error.to_string())?,
             source_kind: row.get(3).map_err(|error| error.to_string())?,
@@ -553,7 +553,7 @@ fn managed_record_from_state(
     entry: &ManagedSkillState,
     scope: &str,
     project_path: Option<&str>,
-) -> Result<Option<(PathBuf, SkillMateManifestSkill)>, String> {
+) -> Result<Option<(PathBuf, SkillDescriptor)>, String> {
     let path = PathBuf::from(&entry.path);
     if !path.exists() && std::fs::symlink_metadata(&path).is_err() {
         return Ok(None);
@@ -564,7 +564,7 @@ fn managed_record_from_state(
     } else {
         None
     };
-    let skill = SkillMateManifestSkill {
+    let skill = SkillDescriptor {
         assistant: entry.assistant.clone(),
         source,
         source_kind,
@@ -585,7 +585,7 @@ fn managed_record_from_state(
 pub fn record_managed_installation(
     db: &Connection,
     path: &Path,
-    skill: &SkillMateManifestSkill,
+    skill: &SkillDescriptor,
 ) -> Result<(), String> {
     let target_name = skill
         .target_name
