@@ -19,11 +19,12 @@ use crate::skill_profile::{
     upsert_skill_profile, validate_skill_profile, write_skill_profiles, SkillSetProfileDiff,
     SkillSetProfilePreview, SkillSetProfileStore,
 };
+use crate::skill_model::SkillDescriptor;
 use crate::skill_reconcile::ReconcileTransaction;
 use crate::skillmate_manifest::{
     manifest_target_root, preview_skillmate_manifest_with_existing, resolved_manifest_source,
     sort_manifest_skills, ExistingTargetDisposition, SkillMateManifest, SkillMateManifestAction,
-    SkillMateManifestPreview, SkillMateManifestSkill,
+    SkillMateManifestPreview,
 };
 use rusqlite::Connection;
 use std::collections::HashSet;
@@ -98,7 +99,7 @@ pub fn build_current_manifest(db: &Connection) -> Result<SkillMateManifest, Stri
             } else {
                 None
             };
-            skills.push(SkillMateManifestSkill {
+            skills.push(SkillDescriptor {
                 assistant: assistant.name.clone(),
                 source,
                 source_kind,
@@ -504,7 +505,7 @@ pub fn rollback_profile(db: &Connection) -> Result<String, String> {
 
 #[derive(Debug, Clone)]
 struct ManifestRemoval {
-    skill: SkillMateManifestSkill,
+    skill: SkillDescriptor,
     path: PathBuf,
 }
 
@@ -583,7 +584,7 @@ fn manifest_reconcile_scope(
 
 fn manifest_target_matches(
     db: &Connection,
-    skill: &SkillMateManifestSkill,
+    skill: &SkillDescriptor,
     target_path: &Path,
 ) -> Result<bool, String> {
     let effective_source = resolved_manifest_source(skill).unwrap_or_else(|_| skill.source.clone());
@@ -640,7 +641,7 @@ fn manifest_target_matches(
 
 fn manifest_target_disposition(
     db: &Connection,
-    skill: &SkillMateManifestSkill,
+    skill: &SkillDescriptor,
     target_path: &Path,
 ) -> Result<ExistingTargetDisposition, String> {
     if !target_path.exists() && fs::symlink_metadata(target_path).is_err() {
@@ -715,7 +716,7 @@ fn build_profile_diff(
     }
 }
 
-fn manifest_skill_key(skill: &SkillMateManifestSkill) -> String {
+fn manifest_skill_key(skill: &SkillDescriptor) -> String {
     let source = resolved_manifest_source(skill).unwrap_or_else(|_| skill.source.clone());
     format!(
         "{}:{}:{}:{}:{}:{}:{}:{}:{}",
@@ -736,7 +737,7 @@ fn manifest_skill_key(skill: &SkillMateManifestSkill) -> String {
 
 fn apply_manifest_skill(
     db: &Connection,
-    skill: SkillMateManifestSkill,
+    skill: SkillDescriptor,
     preview: &InstallPreview,
 ) -> Result<(), String> {
     let target_path = PathBuf::from(&preview.target_path);
@@ -822,8 +823,8 @@ fn rollback_error(subject: &str, error: &str, cleanup_errors: Vec<String>) -> St
 mod tests {
     use super::*;
 
-    fn manifest_skill(source: &str, reference: &str) -> SkillMateManifestSkill {
-        SkillMateManifestSkill {
+    fn manifest_skill(source: &str, reference: &str) -> SkillDescriptor {
+        SkillDescriptor {
             assistant: "Codex".to_string(),
             source: source.to_string(),
             source_kind: "git".to_string(),
@@ -857,7 +858,7 @@ mod tests {
             version: 2,
             reconcile: true,
             skills: vec![
-                SkillMateManifestSkill {
+                SkillDescriptor {
                     assistant: "Codex".to_string(),
                     source: "owner/project".to_string(),
                     source_kind: "git".to_string(),
@@ -866,7 +867,7 @@ mod tests {
                     project_path: Some(root.to_string_lossy().to_string()),
                     ..Default::default()
                 },
-                SkillMateManifestSkill {
+                SkillDescriptor {
                     assistant: "Gemini CLI".to_string(),
                     source: "owner/other".to_string(),
                     source_kind: "git".to_string(),
@@ -875,7 +876,7 @@ mod tests {
                     project_path: Some(other.to_string_lossy().to_string()),
                     ..Default::default()
                 },
-                SkillMateManifestSkill {
+                SkillDescriptor {
                     assistant: "Claude Code".to_string(),
                     source: "owner/global".to_string(),
                     source_kind: "git".to_string(),
@@ -906,7 +907,7 @@ mod tests {
             version: 2,
             reconcile: true,
             skills: vec![
-                SkillMateManifestSkill {
+                SkillDescriptor {
                     assistant: "Codex".to_string(),
                     source: "owner/project".to_string(),
                     source_kind: "git".to_string(),
@@ -914,7 +915,7 @@ mod tests {
                     project_path: Some("/tmp/project".to_string()),
                     ..Default::default()
                 },
-                SkillMateManifestSkill {
+                SkillDescriptor {
                     assistant: "Claude Code".to_string(),
                     source: "owner/global".to_string(),
                     source_kind: "git".to_string(),

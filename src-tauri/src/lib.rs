@@ -13,6 +13,7 @@ mod organization_commands;
 mod scenario_manifest;
 mod skill_install;
 mod skill_install_source;
+mod skill_model;
 mod skill_inventory;
 mod skill_orchestration;
 mod skill_origin;
@@ -1323,7 +1324,8 @@ mod tests {
     use crate::library_manifest::{LibraryExport, LibrarySkillRecord};
     use crate::scenario_manifest::ScenarioManifest;
     use crate::skill_orchestration::apply_manifest;
-    use crate::skillmate_manifest::{SkillMateManifest, SkillMateManifestSkill};
+    use crate::skill_model::SkillDescriptor;
+    use crate::skillmate_manifest::SkillMateManifest;
     use rusqlite::params;
 
     fn test_db() -> Connection {
@@ -1395,7 +1397,7 @@ mod tests {
         let manifest = SkillMateManifest {
             version: 2,
             reconcile: false,
-            skills: vec![SkillMateManifestSkill {
+            skills: vec![SkillDescriptor {
                 assistant: "Codex".to_string(),
                 source: source.to_string_lossy().to_string(),
                 source_kind: "local".to_string(),
@@ -1466,7 +1468,7 @@ mod tests {
         let manifest = SkillMateManifest {
             version: 2,
             reconcile: false,
-            skills: vec![SkillMateManifestSkill {
+            skills: vec![SkillDescriptor {
                 assistant: "Codex".to_string(),
                 source: source.to_string_lossy().to_string(),
                 source_kind: "local".to_string(),
