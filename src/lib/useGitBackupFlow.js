@@ -2,25 +2,41 @@ import { useCallback, useMemo, useState } from "react";
 import { buildGitBackupState } from "./skillmate.mjs";
 import { skillmateApi } from "./skillmateApi.js";
 
+function toDraft(config) {
+  return {
+    repoPath: config?.repoPath ?? config?.repo_path ?? "",
+    remoteUrl: config?.remoteUrl ?? config?.remote_url ?? "",
+    branch: config?.branch || "main",
+  };
+}
+
 export function useGitBackupFlow({ saved, showToast, loadData }) {
-  const [repoPath, setRepoPath] = useState(saved?.repo_path || "");
-  const [branch, setBranch] = useState(saved?.branch || "main");
-  const [remoteUrl, setRemoteUrl] = useState(saved?.remote_url || "");
+  const [draft, setDraft] = useState(() => toDraft(saved));
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
 
-  const hydrate = useCallback((config) => {
-    setRepoPath(config?.repo_path || "");
-    setRemoteUrl(config?.remote_url || "");
-    setBranch(config?.branch || "main");
+  const setRepoPath = useCallback((repoPath) => {
+    setDraft((current) => ({ ...current, repoPath }));
+  }, []);
+  const setRemoteUrl = useCallback((remoteUrl) => {
+    setDraft((current) => ({ ...current, remoteUrl }));
+  }, []);
+  const setBranch = useCallback((branch) => {
+    setDraft((current) => ({ ...current, branch }));
   }, []);
 
+  const hydrate = useCallback((config) => {
+    setDraft((current) => (
+      buildGitBackupState({ draft: current, saved }).dirty ? current : toDraft(config)
+    ));
+  }, [saved]);
+
   const state = useMemo(() => buildGitBackupState({
-    draft: { repoPath, remoteUrl, branch },
+    draft,
     saved,
     saving,
     syncing,
-  }), [branch, remoteUrl, repoPath, saved, saving, syncing]);
+  }), [draft, saved, saving, syncing]);
 
   const save = useCallback(async () => {
     if (!state.payload.repoPath) {
@@ -63,11 +79,11 @@ export function useGitBackupFlow({ saved, showToast, loadData }) {
   }, [loadData, saving, showToast, state.configured, state.dirty, syncing]);
 
   return {
-    repoPath,
+    repoPath: draft.repoPath,
     setRepoPath,
-    remoteUrl,
+    remoteUrl: draft.remoteUrl,
     setRemoteUrl,
-    branch,
+    branch: draft.branch,
     setBranch,
     hydrate,
     save,

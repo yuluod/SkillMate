@@ -5,6 +5,7 @@ use crate::managed_state::{
 use crate::skill_install_source::{is_git_install_source, parse_git_install_spec};
 use crate::skillmate_manifest::SkillMateManifestSkill;
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -20,7 +21,7 @@ pub struct ManagedRoot {
     pub project_path: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct OriginMetadataRow {
     origin_kind: String,
     origin_locator: String,
@@ -36,7 +37,7 @@ struct OriginMetadataRow {
     managed_by_app: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ManagedInstallationRow {
     assistant: String,
     source: String,
@@ -52,13 +53,13 @@ struct ManagedInstallationRow {
     installed_at: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct SkillTagsRow {
     tags: Option<String>,
     tags_json: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PathMetadataCheckpoint {
     path: PathBuf,
     origin: Option<OriginMetadataRow>,
@@ -66,10 +67,25 @@ struct PathMetadataCheckpoint {
     tags: Option<SkillTagsRow>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ManagedRootRow {
+    scope: String,
+    project_path: Option<String>,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ManagedRootCheckpoint {
+    path: PathBuf,
+    row: Option<ManagedRootRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManagedMetadataCheckpoint {
     paths: Vec<PathMetadataCheckpoint>,
     roots: Vec<(PathBuf, ManagedStateCheckpoint)>,
+    #[serde(default)]
+    managed_roots: Vec<ManagedRootCheckpoint>,
 }
 
 impl ManagedMetadataCheckpoint {
@@ -77,21 +93,29 @@ impl ManagedMetadataCheckpoint {
         let mut unique_paths = paths.to_vec();
         unique_paths.sort();
         unique_paths.dedup();
-        let mut roots = unique_paths
+        let mut root_paths = unique_paths
             .iter()
             .filter_map(|path| path.parent().map(Path::to_path_buf))
             .collect::<Vec<_>>();
-        roots.sort();
-        roots.dedup();
-        let roots = roots
+        root_paths.sort();
+        root_paths.dedup();
+        let roots = root_paths
+            .iter()
+            .map(|root| ManagedStateCheckpoint::capture(root).map(|state| (root.clone(), state)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let managed_roots = root_paths
             .into_iter()
-            .map(|root| ManagedStateCheckpoint::capture(&root).map(|state| (root, state)))
+            .map(|root| capture_managed_root(db, root))
             .collect::<Result<Vec<_>, _>>()?;
         let paths = unique_paths
             .into_iter()
             .map(|path| capture_path_metadata(db, path))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self { paths, roots })
+        Ok(Self {
+            paths,
+            roots,
+            managed_roots,
+        })
     }
 
     pub fn restore(&self, db: &Connection) -> Result<(), String> {
@@ -100,6 +124,9 @@ impl ManagedMetadataCheckpoint {
             .map_err(|error| error.to_string())?;
         for checkpoint in &self.paths {
             restore_path_metadata(&transaction, checkpoint)?;
+        }
+        for checkpoint in &self.managed_roots {
+            restore_managed_root(&transaction, checkpoint)?;
         }
         transaction.commit().map_err(|error| error.to_string())?;
 
@@ -115,6 +142,47 @@ impl ManagedMetadataCheckpoint {
             Err(format!("恢复受管状态失败: {}", errors.join("；")))
         }
     }
+
+    pub(crate) fn sidecar_paths(&self) -> Vec<PathBuf> {
+        self.roots
+            .iter()
+            .map(|(root, _)| root.join(crate::managed_state::STATE_FILE_NAME))
+            .collect()
+    }
+}
+
+fn capture_managed_root(db: &Connection, path: PathBuf) -> Result<ManagedRootCheckpoint, String> {
+    let key = path.to_string_lossy().to_string();
+    let row = db
+        .query_row(
+            "SELECT scope, project_path, updated_at FROM managed_roots WHERE root_path = ?",
+            [&key],
+            |row| {
+                Ok(ManagedRootRow {
+                    scope: row.get(0)?,
+                    project_path: row.get(1)?,
+                    updated_at: row.get(2)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    Ok(ManagedRootCheckpoint { path, row })
+}
+
+fn restore_managed_root(db: &Connection, checkpoint: &ManagedRootCheckpoint) -> Result<(), String> {
+    let key = checkpoint.path.to_string_lossy().to_string();
+    db.execute("DELETE FROM managed_roots WHERE root_path = ?", [&key])
+        .map_err(|error| error.to_string())?;
+    if let Some(row) = &checkpoint.row {
+        db.execute(
+            "INSERT INTO managed_roots (root_path, scope, project_path, updated_at)
+             VALUES (?, ?, ?, ?)",
+            params![&key, &row.scope, &row.project_path, &row.updated_at],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 fn capture_path_metadata(db: &Connection, path: PathBuf) -> Result<PathMetadataCheckpoint, String> {
@@ -712,6 +780,14 @@ mod tests {
         )
         .unwrap();
         db
+    }
+
+    #[test]
+    fn metadata_checkpoint_accepts_journal_without_managed_roots() {
+        let checkpoint: ManagedMetadataCheckpoint =
+            serde_json::from_str(r#"{"paths":[],"roots":[]}"#).unwrap();
+
+        assert!(checkpoint.managed_roots.is_empty());
     }
 
     #[test]

@@ -15,8 +15,8 @@ import { createSingleFlightPlanExecutor } from "./plannedAction.mjs";
 import { invokeSkillMateCommand, skillmateApi, skillmateCommands } from "./skillmateApi.js";
 
 export function useInstallFlow({ installOpen, assistants, setInstallOpen, showToast, loadData, setLoading }) {
-  const [src, setSrc] = useState("git");
-  const [pkg, setPkg] = useState("");
+  const [sourceInput, setSourceInput] = useState({ kind: "git", package: "", manual: false });
+  const { kind: src, package: pkg } = sourceInput;
   const [installDetection, setInstallDetection] = useState(null);
   const [installStructurePreview, setInstallStructurePreview] = useState(null);
   const [previewingInstall, setPreviewingInstall] = useState(false);
@@ -33,6 +33,14 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
     planExecutorRef.current = createSingleFlightPlanExecutor(invokeSkillMateCommand);
   }
 
+  const setPkg = useCallback((value) => {
+    setSourceInput((current) => ({ ...current, package: value }));
+  }, []);
+
+  const setSrc = useCallback((value) => {
+    setSourceInput((current) => ({ ...current, kind: value, manual: true }));
+  }, []);
+
   useEffect(() => {
     setInstallAssistant((current) => (
       assistants.some((assistant) => assistant.name === current)
@@ -43,6 +51,9 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
 
   useEffect(() => {
     if (!installOpen) {
+      setSourceInput((current) => (
+        current.manual ? { ...current, manual: false } : current
+      ));
       setInstallDetailsOpen(false);
       setInstallAdvancedOpen(false);
       setInstallStructurePreview(null);
@@ -95,9 +106,12 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
         const result = await skillmateApi.install.detectSource(pkg.trim());
         if (cancelled) return;
         setInstallDetection(result);
-        if (SUPPORTED_INSTALL_SOURCES.includes(result.normalized_source) && result.normalized_source !== src) {
-          setSrc(result.normalized_source);
-          setInstallStructurePreview(null);
+        if (SUPPORTED_INSTALL_SOURCES.includes(result.normalized_source)) {
+          setSourceInput((current) => (
+            current.manual || current.kind === result.normalized_source
+              ? current
+              : { ...current, kind: result.normalized_source }
+          ));
         }
       } catch (e) {
         if (!cancelled) {
@@ -117,7 +131,7 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [installOpen, pkg, src]);
+  }, [installOpen, pkg]);
 
   useEffect(() => {
     if (
@@ -307,7 +321,7 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
         const structureSummary = buildInstallStructureSummary(r);
         showToast(structureSummary ? `安装成功，${structureSummary}` : "安装成功", "success");
         setInstallOpen(false);
-        setPkg("");
+        setSourceInput((current) => ({ ...current, package: "", manual: false }));
         setInstallDetection(null);
         setInstallStructurePreview(null);
         setInstallPreviewToken(null);
