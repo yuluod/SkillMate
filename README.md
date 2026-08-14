@@ -70,7 +70,7 @@ Git 来源支持普通仓库地址、GitHub shorthand、GitHub tree URL，以及
 - 标签：为 Skill 添加标签并筛选
 - 场景：保存一组 Skill 路径，查看缺失状态，回填编辑器或复制路径
 - 导入 / 导出：导出标签、场景和受管 Skill 清单，导入前可预览变更
-- Git 备份：把去重后的全局和受管项目 Skill 内容快照到本地 Git 仓库，并可推送到远端
+- Git 备份：只把 SkillMate 明确登记的受管 Skill 内容快照到本地 Git 仓库，并可推送到远端
 - SkillMate manifest：导出 / 预览 / 应用 `skillmate.toml`，以 `install` / `keep` / `remove` 计划把受管 Skill 对齐到目标状态
 - Skill Set Profile：保存一组当前 Skill 来源组合，支持预览、应用和一次性回滚
 
@@ -78,7 +78,9 @@ Git 来源支持普通仓库地址、GitHub shorthand、GitHub tree URL，以及
 
 SkillMate 只会自动移除自身记录的受管 Skill，不会删除手工放入助手目录的内容。安装、Manifest 和 Profile 应用失败时会尽量恢复文件、受管状态和数据库记录，并明确报告未能完成的回滚步骤。
 
-Git 备份用于保存 Skill 内容，不是完整应用恢复。快照不会包含 SkillMate 数据库、标签、场景、Profile、受管 sidecar、凭据、运行时缓存或软连接；每次同步都会在仓库中写入清单，记录来源根、复制统计和排除原因。
+Git 备份用于保存受管 Skill 内容，不是完整应用恢复。快照不会包含 SkillMate 数据库、标签、场景、Profile、受管 sidecar、运行时缓存或软连接，并会尽力排除常见凭据与密钥文件；每次同步都会在仓库中写入清单，记录来源路径、复制统计和排除原因。
+
+为保证提交内容与安全扫描结果一致，SkillMate 会直接提交已验证的 Git tree；Git 的 clean filter（包括换行规范化）会生效，但不会执行提交 hooks，也不会自动应用 `commit.gpgSign`。需要额外签名或提交钩子时，请在同步后自行处理。
 
 ## 当前边界
 

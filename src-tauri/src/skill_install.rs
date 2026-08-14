@@ -2,12 +2,13 @@ use crate::app_core::{expand_path, generate_id, run_command_with_timeout};
 use crate::install_policy::InstallPolicyDecision;
 use crate::managed_state::mark_managed_skill;
 use crate::operation_plan::{operation_plan_token, StableHash};
-pub use crate::skill_install_source::{
-    detect_install_source_rules, install_target_name, is_git_install_source,
-    parse_git_install_spec, sanitize_git_locator, sanitize_git_remote_url, validate_git_reference,
-    validate_git_repo_locator, GitInstallSpec, InstallDetection,
+use crate::skill_install_source::{
+    install_target_name, is_git_install_source, parse_git_install_spec, sanitize_git_locator,
+    validate_git_reference, validate_git_repo_locator, GitInstallSpec,
 };
-use crate::skill_package::{detect_skill_package, DetectedSkill, PackageDetection};
+use crate::skill_package::{
+    detect_skill_package, DetectedSkill, PackageDetection, SkillPackageSource,
+};
 use crate::skill_structure::{
     analyze_skill_structure, inspect_skill_for_inventory, SkillStructureInfo,
 };
@@ -15,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
 
@@ -96,15 +97,161 @@ pub struct GitSnapshotProbeRequest {
     pub tracking_ref: String,
 }
 
-struct SourceAnalysis {
+const MAX_INSTALL_FILES: usize = 10_000;
+const MAX_INSTALL_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_INSTALL_DEPTH: usize = 32;
+
+pub struct PreparedGitInstall {
+    spec: GitInstallSpec,
+    checkout: TempGitSource,
     package_detection: PackageDetection,
     source_digest: String,
     resolved_ref: String,
 }
 
-const MAX_INSTALL_FILES: usize = 10_000;
-const MAX_INSTALL_BYTES: u64 = 256 * 1024 * 1024;
-const MAX_INSTALL_DEPTH: usize = 32;
+struct TempGitSource {
+    temp_root: PathBuf,
+    repo_path: PathBuf,
+    source_path: PathBuf,
+}
+
+impl TempGitSource {
+    fn prepare(spec: &GitInstallSpec) -> Result<Self, String> {
+        let temp_root =
+            std::env::temp_dir().join(format!("skillmate-git-source-{}", generate_id()));
+        let repo_path = temp_root.join(&spec.target_name);
+        let mut checkout = Self {
+            temp_root,
+            repo_path,
+            source_path: PathBuf::new(),
+        };
+        fs::create_dir_all(&checkout.temp_root).map_err(|error| error.to_string())?;
+        clone_git_install_spec(spec, &checkout.repo_path)?;
+        checkout.source_path =
+            resolve_git_source_path(&checkout.repo_path, spec.subdir.as_deref())?;
+        Ok(checkout)
+    }
+
+    fn source_path(&self) -> &Path {
+        &self.source_path
+    }
+
+    fn repo_path(&self) -> &Path {
+        &self.repo_path
+    }
+}
+
+impl Drop for TempGitSource {
+    fn drop(&mut self) {
+        if self.temp_root.exists() {
+            let _ = fs::remove_dir_all(&self.temp_root);
+        }
+    }
+}
+
+impl PreparedGitInstall {
+    pub fn prepare(package: &str) -> Result<Self, String> {
+        Self::from_spec(parse_git_install_spec(package)?)
+    }
+
+    fn from_spec(spec: GitInstallSpec) -> Result<Self, String> {
+        ensure_git_available()?;
+        let checkout = TempGitSource::prepare(&spec)?;
+        let package_detection = detect_skill_package(checkout.source_path());
+        let source_digest =
+            package_content_fingerprint(checkout.source_path(), &package_detection)?;
+        let resolved_ref = git_output(checkout.repo_path(), &["rev-parse", "HEAD"])?;
+        Ok(Self {
+            spec,
+            checkout,
+            package_detection,
+            source_digest,
+            resolved_ref,
+        })
+    }
+
+    pub fn preview(&self, target_root: &Path, fallback_name: &str) -> InstallPreview {
+        build_install_preview_with_source(
+            self.package_detection.clone(),
+            target_root,
+            fallback_name,
+            "git",
+            target_root.join(fallback_name).exists(),
+            self.source_digest.clone(),
+            self.resolved_ref.clone(),
+        )
+    }
+
+    pub fn apply(
+        self,
+        target_root: &Path,
+        fallback_name: &str,
+        assistant_name: &str,
+        expected_resolved_ref: Option<&str>,
+        save_origin: impl Fn(&Path, &GitInstallSpec, &GitInstallOutcome) -> Result<(), String>,
+    ) -> Result<GitInstallOutcome, String> {
+        verify_resolved_ref(expected_resolved_ref, &self.resolved_ref)?;
+        verify_source_digest(
+            Some(&self.source_digest),
+            &package_content_fingerprint(self.checkout.source_path(), &self.package_detection)?,
+        )?;
+        let preview = self.preview(target_root, fallback_name);
+        if !preview.can_apply {
+            return Err(preview.message);
+        }
+        let source = SkillPackageSource::open(self.checkout.source_path())?;
+        let mut created_targets = Vec::new();
+        let result = (|| {
+            let mut first_outcome = None;
+            for skill in &self.package_detection.detected_skills {
+                let source_skill_path = source.resolve_detected_skill(skill)?;
+                let target_path =
+                    target_root.join(target_name_for_detected_skill(skill, fallback_name));
+                copy_dir_recursive(&source_skill_path, &target_path)?;
+                created_targets.push(target_path.clone());
+                let structure = analyze_skill_structure(&target_path);
+                if structure.structure_status != "complete" {
+                    return Err(format!(
+                        "复制后的 Skill 结构无效: {}",
+                        target_path.to_string_lossy()
+                    ));
+                }
+                let mut skill_spec = spec_for_detected_skill(&self.spec, skill);
+                skill_spec.target_name = target_path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_else(|| fallback_name.to_string());
+                let outcome = GitInstallOutcome {
+                    structure: structure.clone(),
+                    installed_ref: self.resolved_ref.clone(),
+                };
+                save_origin(&target_path, &skill_spec, &outcome)?;
+                mark_managed_skill(
+                    target_root,
+                    assistant_name,
+                    &target_path,
+                    &sanitize_git_locator(&skill_spec.original),
+                )?;
+                if first_outcome.is_none() {
+                    first_outcome = Some(outcome);
+                }
+            }
+            verify_source_digest(
+                Some(&self.source_digest),
+                &package_content_fingerprint(self.checkout.source_path(), &self.package_detection)?,
+            )?;
+            first_outcome.ok_or_else(|| "未识别到可安装的 Skill".to_string())
+        })();
+        if result.is_err() {
+            for target in created_targets {
+                if target.exists() {
+                    let _ = remove_existing_path(&target);
+                }
+            }
+        }
+        result
+    }
+}
 
 #[derive(Default)]
 struct InstallBudget {
@@ -181,11 +328,15 @@ fn package_content_fingerprint(
     let mut budget = InstallBudget::default();
     let mut skills = package.detected_skills.iter().collect::<Vec<_>>();
     skills.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    if skills.is_empty() {
+        return Ok(format!("sha256:{}", hash.finish()));
+    }
+    let source = SkillPackageSource::open(source_root)?;
     for skill in skills {
         hash.update(skill.relative_path.as_bytes());
         hash.update(&[0]);
-        let source = source_for_detected_skill(source_root, skill);
-        fingerprint_installable_tree(&source, &source, 0, &mut budget, &mut hash)?;
+        let skill_path = source.resolve_detected_skill(skill)?;
+        fingerprint_installable_tree(&skill_path, &skill_path, 0, &mut budget, &mut hash)?;
     }
     Ok(format!("sha256:{}", hash.finish()))
 }
@@ -206,6 +357,17 @@ fn verify_source_digest(expected: Option<&str>, actual: &str) -> Result<(), Stri
         Ok(())
     } else {
         Err("安装来源在预览后发生变化，请重新检查结构".to_string())
+    }
+}
+
+fn verify_resolved_ref(expected: Option<&str>, actual: &str) -> Result<(), String> {
+    let Some(expected) = expected.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(());
+    };
+    if expected == actual {
+        Ok(())
+    } else {
+        Err("Git 来源在预览后发生变化，请重新检查结构".to_string())
     }
 }
 
@@ -344,34 +506,29 @@ pub fn preview_install_source(package: &str, source: &str, target_root: &Path) -
         source
     };
 
-    let package_result = match source {
-        source_kind if is_git_install_source(source_kind) => {
-            parse_git_install_spec(package).and_then(|spec| analyze_git_source_package(&spec))
-        }
+    let preview_result = match source {
+        source_kind if is_git_install_source(source_kind) => PreparedGitInstall::prepare(package)
+            .map(|prepared| prepared.preview(target_root, &skill_name)),
         "local" => {
             let source_path = expand_path(package.trim());
             let package_detection = detect_skill_package(&source_path);
             package_content_fingerprint(&source_path, &package_detection).map(|source_digest| {
-                SourceAnalysis {
+                build_install_preview_with_source(
                     package_detection,
+                    target_root,
+                    &skill_name,
+                    source_kind,
+                    target_exists,
                     source_digest,
-                    resolved_ref: String::new(),
-                }
+                    String::new(),
+                )
             })
         }
         _ => Err("当前版本仅支持 Git 仓库和本地目录安装".to_string()),
     };
 
-    match package_result {
-        Ok(analysis) => build_install_preview_with_source(
-            analysis.package_detection,
-            target_root,
-            &skill_name,
-            source_kind,
-            target_exists,
-            analysis.source_digest,
-            analysis.resolved_ref,
-        ),
+    match preview_result {
+        Ok(preview) => preview,
         Err(err) => install_preview(InstallPreviewDraft {
             can_install: false,
             can_apply: false,
@@ -413,6 +570,7 @@ pub fn install_local_package_at_digest(
     let package = detect_skill_package(source_path);
     let source_digest = package_content_fingerprint(source_path, &package)?;
     verify_source_digest(expected_source_digest, &source_digest)?;
+    let source = SkillPackageSource::open(source_path)?;
     let preview =
         build_install_preview(package.clone(), target_root, fallback_name, "local", false);
     if !preview.can_apply {
@@ -422,7 +580,8 @@ pub fn install_local_package_at_digest(
     let result = (|| {
         let mut first_structure = None;
         for skill in &package.detected_skills {
-            let source_skill_path = source_for_detected_skill(source_path, skill);
+            let source_skill_path = source.resolve_detected_skill(skill)?;
+            let logical_source_path = source_for_detected_skill(source_path, skill);
             let target_path =
                 target_root.join(target_name_for_detected_skill(skill, fallback_name));
             copy_dir_recursive(&source_skill_path, &target_path)?;
@@ -431,7 +590,7 @@ pub fn install_local_package_at_digest(
                 target_root,
                 assistant_name,
                 &target_path,
-                &format!("local:{}", source_skill_path.to_string_lossy()),
+                &format!("local:{}", logical_source_path.to_string_lossy()),
             )?;
             let structure = analyze_skill_structure(&target_path);
             if structure.structure_status != "complete" {
@@ -519,6 +678,7 @@ pub fn install_local_symlink_package_at_digest(
     let package = detect_skill_package(source_path);
     let source_digest = package_content_fingerprint(source_path, &package)?;
     verify_source_digest(expected_source_digest, &source_digest)?;
+    let source = SkillPackageSource::open(source_path)?;
     let preview =
         build_symlink_install_preview(package.clone(), source_path, target_root, fallback_name);
     if !preview.can_apply {
@@ -529,7 +689,8 @@ pub fn install_local_symlink_package_at_digest(
     let result = (|| {
         let mut first_structure = None;
         for skill in &package.detected_skills {
-            let source_skill_path = source_for_detected_skill(source_path, skill);
+            let source_skill_path = source.resolve_detected_skill(skill)?;
+            let logical_source_path = source_for_detected_skill(source_path, skill);
             let target_path =
                 target_root.join(target_name_for_detected_skill(skill, fallback_name));
             create_dir_symlink(&source_skill_path, &target_path)?;
@@ -538,7 +699,7 @@ pub fn install_local_symlink_package_at_digest(
                 target_root,
                 assistant_name,
                 &target_path,
-                &format!("symlink:{}", source_skill_path.to_string_lossy()),
+                &format!("symlink:{}", logical_source_path.to_string_lossy()),
             )?;
             let structure = analyze_skill_structure(&source_skill_path);
             if first_structure.is_none() {
@@ -587,77 +748,13 @@ pub fn install_git_package_at_ref(
     expected_resolved_ref: Option<&str>,
     save_origin: impl Fn(&Path, &GitInstallSpec, &GitInstallOutcome) -> Result<(), String>,
 ) -> Result<GitInstallOutcome, String> {
-    ensure_git_available()?;
-    let mut clone_spec = spec.clone();
-    if let Some(expected_ref) = expected_resolved_ref
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        clone_spec.reference = Some(expected_ref.to_string());
-    }
-    with_temp_git_source(&clone_spec, |source_path, repo_path| {
-        let package = detect_skill_package(source_path);
-        let preview =
-            build_install_preview(package.clone(), target_root, fallback_name, "git", false);
-        if !preview.can_apply {
-            return Err(preview.message);
-        }
-        let installed_ref = git_output(repo_path, &["rev-parse", "HEAD"])?;
-        if let Some(expected_ref) = expected_resolved_ref
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            if installed_ref != expected_ref {
-                return Err("Git 来源在预览后发生变化，请重新检查结构".to_string());
-            }
-        }
-        let mut created_targets = Vec::new();
-        let result = (|| {
-            let mut first_outcome = None;
-            for skill in package.detected_skills {
-                let source_skill_path = source_for_detected_skill(source_path, &skill);
-                let target_path =
-                    target_root.join(target_name_for_detected_skill(&skill, fallback_name));
-                copy_dir_recursive(&source_skill_path, &target_path)?;
-                created_targets.push(target_path.clone());
-                let structure = analyze_skill_structure(&target_path);
-                if structure.structure_status != "complete" {
-                    return Err(format!(
-                        "复制后的 Skill 结构无效: {}",
-                        target_path.to_string_lossy()
-                    ));
-                }
-                let mut skill_spec = spec_for_detected_skill(&spec, &skill);
-                skill_spec.target_name = target_path
-                    .file_name()
-                    .map(|name| name.to_string_lossy().to_string())
-                    .unwrap_or_else(|| fallback_name.to_string());
-                let outcome = GitInstallOutcome {
-                    structure: structure.clone(),
-                    installed_ref: installed_ref.clone(),
-                };
-                save_origin(&target_path, &skill_spec, &outcome)?;
-                mark_managed_skill(
-                    target_root,
-                    assistant_name,
-                    &target_path,
-                    &sanitize_git_locator(&skill_spec.original),
-                )?;
-                if first_outcome.is_none() {
-                    first_outcome = Some(outcome);
-                }
-            }
-            first_outcome.ok_or_else(|| "未识别到可安装的 Skill".to_string())
-        })();
-        if result.is_err() {
-            for target in created_targets {
-                if target.exists() {
-                    let _ = remove_existing_path(&target);
-                }
-            }
-        }
-        result
-    })
+    PreparedGitInstall::from_spec(spec)?.apply(
+        target_root,
+        fallback_name,
+        assistant_name,
+        expected_resolved_ref,
+        save_origin,
+    )
 }
 
 #[cfg(unix)]
@@ -707,88 +804,21 @@ pub fn sync_git_snapshot_skill_checked(
     }
     ensure_git_available()?;
     with_temp_git_source(&spec, |source_path, repo_path| {
-        let parent = target_path
-            .parent()
-            .ok_or_else(|| "目标路径缺少父目录".to_string())?;
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        let staging_root = parent.join(format!(".skillmate-sync-{}", generate_id()));
-        let staging = staging_root.join(
-            target_path
-                .file_name()
-                .ok_or_else(|| "目标路径缺少目录名".to_string())?,
-        );
-        let copy_result = (|| {
-            copy_dir_recursive(source_path, &staging)?;
-            let structure = inspect_skill_for_inventory(&staging).structure;
-            if structure.structure_status != "complete" {
-                return Err("上游版本不再符合 Agent Skills 规范，已拒绝更新".to_string());
-            }
-            validate(&structure)?;
-            replace_path_with_staging(&staging, target_path)?;
-            let installed_ref = git_output(repo_path, &["rev-parse", "HEAD"]).unwrap_or_default();
-            Ok(GitInstallOutcome {
-                structure,
-                installed_ref,
-            })
-        })();
-        if staging_root.exists() {
-            let _ = fs::remove_dir_all(&staging_root);
+        if target_path.exists() || fs::symlink_metadata(target_path).is_ok() {
+            return Err("更新目标尚未由受管事务暂存，已拒绝覆盖".to_string());
         }
-        copy_result
+        copy_dir_recursive(source_path, target_path)?;
+        let structure = inspect_skill_for_inventory(target_path).structure;
+        if structure.structure_status != "complete" {
+            return Err("上游版本不再符合 Agent Skills 规范，已拒绝更新".to_string());
+        }
+        validate(&structure)?;
+        let installed_ref = git_output(repo_path, &["rev-parse", "HEAD"]).unwrap_or_default();
+        Ok(GitInstallOutcome {
+            structure,
+            installed_ref,
+        })
     })
-}
-
-fn replace_path_with_staging(staging: &Path, target_path: &Path) -> Result<(), String> {
-    let backup = target_path.with_file_name(format!(
-        ".{}.skillmate-backup-{}",
-        target_path
-            .file_name()
-            .map(|name| name.to_string_lossy())
-            .unwrap_or_else(|| "skill".into()),
-        generate_id()
-    ));
-    replace_path_with_staging_at(
-        staging,
-        target_path,
-        &backup,
-        |from, to| fs::rename(from, to).map_err(|e| e.to_string()),
-        remove_existing_path,
-    )
-}
-
-fn replace_path_with_staging_at(
-    staging: &Path,
-    target_path: &Path,
-    backup: &Path,
-    mut rename_path: impl FnMut(&Path, &Path) -> Result<(), String>,
-    mut remove_path: impl FnMut(&Path) -> Result<(), String>,
-) -> Result<(), String> {
-    if !staging.exists() {
-        return Err("临时更新目录不存在".to_string());
-    }
-    let had_target = target_path.exists();
-
-    if had_target {
-        if backup.exists() {
-            remove_path(backup)?;
-        }
-        rename_path(target_path, backup)?;
-    }
-
-    match rename_path(staging, target_path) {
-        Ok(_) => {
-            if backup.exists() {
-                let _ = remove_path(backup);
-            }
-            Ok(())
-        }
-        Err(err) => {
-            if had_target && backup.exists() && !target_path.exists() {
-                let _ = rename_path(backup, target_path);
-            }
-            Err(err)
-        }
-    }
 }
 
 pub fn probe_git_snapshot(
@@ -839,20 +869,11 @@ pub fn probe_git_snapshots(
             let probes = group
                 .iter()
                 .map(|(key, spec)| {
-                    let source_path = spec
-                        .subdir
-                        .as_deref()
-                        .map(|subdir| repo_path.join(subdir))
-                        .unwrap_or_else(|| repo_path.to_path_buf());
-                    if !source_path.is_dir() {
-                        return (
-                            key.clone(),
-                            Err(format!(
-                                "仓库子目录不存在: {}",
-                                spec.subdir.as_deref().unwrap_or(".")
-                            )),
-                        );
-                    }
+                    let source_path =
+                        match resolve_git_source_path(repo_path, spec.subdir.as_deref()) {
+                            Ok(path) => path,
+                            Err(error) => return (key.clone(), Err(error)),
+                        };
                     (
                         key.clone(),
                         installable_content_fingerprint(&source_path).map(|source_digest| {
@@ -935,20 +956,6 @@ fn install_preview(draft: InstallPreviewDraft) -> InstallPreview {
         source_digest: draft.source_digest,
         resolved_ref: draft.resolved_ref,
     }
-}
-
-fn analyze_git_source_package(spec: &GitInstallSpec) -> Result<SourceAnalysis, String> {
-    ensure_git_available()?;
-    with_temp_git_source(spec, |source_path, repo_path| {
-        let package_detection = detect_skill_package(source_path);
-        let source_digest = package_content_fingerprint(source_path, &package_detection)?;
-        let resolved_ref = git_output(repo_path, &["rev-parse", "HEAD"])?;
-        Ok(SourceAnalysis {
-            package_detection,
-            source_digest,
-            resolved_ref,
-        })
-    })
 }
 
 fn build_install_preview(
@@ -1118,6 +1125,8 @@ fn build_symlink_install_preview_with_source(
     let mut actions = Vec::new();
     let mut conflicts = Vec::new();
     let mut planned_targets = HashSet::new();
+    let source_boundary = SkillPackageSource::open(source_root);
+    let mut unsafe_source = false;
     if package_detection.detected_skills.is_empty() {
         conflicts.push(PreviewConflict {
             target: target_root.to_string_lossy().to_string(),
@@ -1125,7 +1134,31 @@ fn build_symlink_install_preview_with_source(
         });
     }
     for skill in &package_detection.detected_skills {
-        let source = source_for_detected_skill(source_root, skill);
+        let resolved_source = match &source_boundary {
+            Ok(source) => source.resolve_detected_skill(skill),
+            Err(error) => Err(error.clone()),
+        };
+        let source = match resolved_source {
+            Ok(source) => source,
+            Err(error) => {
+                unsafe_source = true;
+                let source = source_for_detected_skill(source_root, skill);
+                let source_string = source.to_string_lossy().to_string();
+                let target = target_root.join(target_name_for_detected_skill(skill, fallback_name));
+                let target_string = target.to_string_lossy().to_string();
+                conflicts.push(PreviewConflict {
+                    target: source_string.clone(),
+                    reason: "unsafe_paths".to_string(),
+                });
+                actions.push(PreviewAction {
+                    action: "skip".to_string(),
+                    source: source_string,
+                    target: target_string,
+                    reason: error,
+                });
+                continue;
+            }
+        };
         let target = target_root.join(target_name_for_detected_skill(skill, fallback_name));
         let source_string = source.to_string_lossy().to_string();
         let target_string = target.to_string_lossy().to_string();
@@ -1181,6 +1214,14 @@ fn build_symlink_install_preview_with_source(
                 reason: "创建项目级软连接".to_string(),
             });
         }
+    }
+    if unsafe_source
+        && !package_detection
+            .warnings
+            .iter()
+            .any(|warning| warning == "unsafe_paths")
+    {
+        package_detection.warnings.push("unsafe_paths".to_string());
     }
     let can_apply = conflicts.is_empty() && !actions.is_empty();
     if !can_apply
@@ -1329,27 +1370,13 @@ fn clone_git_install_spec(spec: &GitInstallSpec, clone_path: &Path) -> Result<()
         if clone_path.exists() {
             remove_existing_path(clone_path)?;
         }
-
-        let full = run_git(
-            &[
-                "clone",
-                "--no-recurse-submodules",
-                "--",
-                spec.repo_url.as_str(),
-                clone_target.as_str(),
-            ],
-            None,
-            120,
-        )?;
-        if !full.status.success() {
-            return Err(format_git_error(&full));
-        }
-        let checkout = run_git(&["checkout", reference], Some(clone_path), 30)?;
-        if checkout.status.success() {
-            Ok(())
-        } else {
-            Err(format_git_error(&checkout))
-        }
+        fetch_git_reference_shallow(spec, clone_path, reference).map_err(|fetch_error| {
+            format!(
+                "无法浅克隆 Git 引用：{}；{}",
+                format_git_error(&shallow),
+                fetch_error
+            )
+        })
     } else {
         let out = run_git(
             &[
@@ -1372,28 +1399,97 @@ fn clone_git_install_spec(spec: &GitInstallSpec, clone_path: &Path) -> Result<()
     }
 }
 
+fn fetch_git_reference_shallow(
+    spec: &GitInstallSpec,
+    clone_path: &Path,
+    reference: &str,
+) -> Result<(), String> {
+    let clone_target = clone_path.to_string_lossy().to_string();
+    let init = run_git(&["init", "--quiet", "--", clone_target.as_str()], None, 10)?;
+    if !init.status.success() {
+        return Err(format_git_error(&init));
+    }
+    let fetch = run_git(
+        &[
+            "fetch",
+            "--depth",
+            "1",
+            "--no-tags",
+            "--no-recurse-submodules",
+            "--",
+            spec.repo_url.as_str(),
+            reference,
+        ],
+        Some(clone_path),
+        90,
+    )?;
+    if !fetch.status.success() {
+        return Err(format_git_error(&fetch));
+    }
+    let checkout = run_git(
+        &["checkout", "--detach", "FETCH_HEAD"],
+        Some(clone_path),
+        30,
+    )?;
+    if checkout.status.success() {
+        Ok(())
+    } else {
+        Err(format_git_error(&checkout))
+    }
+}
+
+fn resolve_git_source_path(repo_path: &Path, subdir: Option<&str>) -> Result<PathBuf, String> {
+    let repo_metadata = fs::symlink_metadata(repo_path).map_err(|error| {
+        format!(
+            "无法检查 Git checkout 目录 {}: {error}",
+            repo_path.to_string_lossy()
+        )
+    })?;
+    if repo_metadata.file_type().is_symlink() || !repo_metadata.is_dir() {
+        return Err("Git checkout 根目录不是安全的目录".to_string());
+    }
+    let canonical_repo = repo_path.canonicalize().map_err(|error| {
+        format!(
+            "无法解析 Git checkout 目录 {}: {error}",
+            repo_path.to_string_lossy()
+        )
+    })?;
+    let Some(subdir) = subdir.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(canonical_repo);
+    };
+
+    let mut candidate = repo_path.to_path_buf();
+    for component in Path::new(subdir).components() {
+        match component {
+            Component::CurDir => continue,
+            Component::Normal(name) => candidate.push(name),
+            _ => return Err("Git 子目录不能包含绝对路径或上级目录".to_string()),
+        }
+        let metadata = fs::symlink_metadata(&candidate)
+            .map_err(|_| format!("仓库子目录不存在: {}", subdir))?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!("Git 子目录不能经过软连接: {}", subdir));
+        }
+        if !metadata.is_dir() {
+            return Err(format!("仓库子目录不存在: {}", subdir));
+        }
+    }
+
+    let resolved = candidate
+        .canonicalize()
+        .map_err(|_| format!("仓库子目录不存在: {}", subdir))?;
+    if !resolved.starts_with(&canonical_repo) {
+        return Err(format!("Git 子目录越过了 checkout 根目录: {}", subdir));
+    }
+    Ok(resolved)
+}
+
 fn with_temp_git_source<T>(
     spec: &GitInstallSpec,
     action: impl FnOnce(&Path, &Path) -> Result<T, String>,
 ) -> Result<T, String> {
-    let temp_root = std::env::temp_dir().join(format!("skillmate-git-source-{}", generate_id()));
-    fs::create_dir_all(&temp_root).map_err(|e| e.to_string())?;
-    let clone_path = temp_root.join(&spec.target_name);
-    let result = (|| {
-        clone_git_install_spec(spec, &clone_path)?;
-        let source_path = if let Some(subdir) = spec.subdir.as_deref() {
-            let path = clone_path.join(subdir);
-            if !path.is_dir() {
-                return Err(format!("仓库子目录不存在: {}", subdir));
-            }
-            path
-        } else {
-            clone_path.clone()
-        };
-        action(&source_path, &clone_path)
-    })();
-    let _ = fs::remove_dir_all(&temp_root);
-    result
+    let checkout = TempGitSource::prepare(spec)?;
+    action(checkout.source_path(), checkout.repo_path())
 }
 
 fn run_git(args: &[&str], current_dir: Option<&Path>, timeout_secs: u64) -> Result<Output, String> {
@@ -1441,6 +1537,7 @@ fn format_git_error(out: &Output) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skill_install_source::detect_install_source_rules;
     use std::path::{Path, PathBuf};
 
     fn test_dir(name: &str) -> PathBuf {
@@ -1642,10 +1739,129 @@ mod tests {
             return;
         }
 
+        let detection = detect_skill_package(&src);
+        assert!(detection.detected_skills[0]
+            .warnings
+            .contains(&"unsafe_paths".to_string()));
+
         copy_dir_recursive(&src, &dst).unwrap();
 
         assert_eq!(fs::read_to_string(dst.join("SKILL.md")).unwrap(), "skill");
         assert!(!dst.join("outside-link").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_preview_rejects_symlinked_skill_root_outside_source() {
+        let root = test_dir("outside-skill-link");
+        let source_root = root.join("trusted/bundle");
+        let outside_skill = root.join("untrusted/writer");
+        let target_root = root.join("installed");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::create_dir_all(&outside_skill).unwrap();
+        fs::write(
+            outside_skill.join("SKILL.md"),
+            "---\nname: writer\ndescription: 外部 Skill\n---\n",
+        )
+        .unwrap();
+        if !dir_symlink_supported_or_skip(&outside_skill, &source_root.join("__probe")) {
+            let _ = fs::remove_dir_all(root);
+            return;
+        }
+        create_dir_symlink_for_test(&outside_skill, &source_root.join("writer")).unwrap();
+
+        let preview = preview_install_source(
+            source_root.to_string_lossy().as_ref(),
+            "local",
+            &target_root,
+        );
+
+        assert!(!preview.can_apply);
+        assert!(preview.package_detection.detected_skills.is_empty());
+        assert!(preview
+            .package_detection
+            .warnings
+            .contains(&"unsafe_paths".to_string()));
+        let install =
+            install_local_package_at_digest(&source_root, &target_root, "writer", "Codex", None);
+        assert!(install.is_err());
+        assert!(!target_root.join("writer").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_preview_rejects_symlinked_bundle_root_outside_source() {
+        let root = test_dir("outside-bundle-link");
+        let outside_bundle = root.join("untrusted/bundle");
+        let outside_skill = outside_bundle.join("writer");
+        let source_root = root.join("trusted/bundle");
+        let target_root = root.join("installed");
+        fs::create_dir_all(source_root.parent().unwrap()).unwrap();
+        fs::create_dir_all(&outside_skill).unwrap();
+        fs::write(
+            outside_skill.join("SKILL.md"),
+            "---\nname: writer\ndescription: 外部 Skill\n---\n",
+        )
+        .unwrap();
+        if !dir_symlink_supported_or_skip(&outside_bundle, &source_root) {
+            let _ = fs::remove_dir_all(root);
+            return;
+        }
+        create_dir_symlink_for_test(&outside_bundle, &source_root).unwrap();
+
+        let preview = preview_install_source(
+            source_root.to_string_lossy().as_ref(),
+            "local",
+            &target_root,
+        );
+
+        assert!(!preview.can_apply);
+        assert!(preview.package_detection.detected_skills.is_empty());
+        assert!(preview
+            .package_detection
+            .warnings
+            .contains(&"unsafe_paths".to_string()));
+        let install =
+            install_local_package_at_digest(&source_root, &target_root, "writer", "Codex", None);
+        assert!(install.is_err());
+        assert!(!target_root.join("writer").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_preview_rejects_skill_beneath_symlinked_parent_outside_source() {
+        let root = test_dir("outside-parent-link");
+        let source_root = root.join("trusted/bundle");
+        let outside_category = root.join("untrusted/writing");
+        let outside_skill = outside_category.join("writer");
+        let target_root = root.join("installed");
+        fs::create_dir_all(source_root.join("skills")).unwrap();
+        fs::create_dir_all(&outside_skill).unwrap();
+        fs::write(
+            outside_skill.join("SKILL.md"),
+            "---\nname: writer\ndescription: 外部 Skill\n---\n",
+        )
+        .unwrap();
+        if !dir_symlink_supported_or_skip(&outside_category, &source_root.join("skills/__probe")) {
+            let _ = fs::remove_dir_all(root);
+            return;
+        }
+        create_dir_symlink_for_test(&outside_category, &source_root.join("skills/writing"))
+            .unwrap();
+
+        let preview = preview_install_source(
+            source_root.to_string_lossy().as_ref(),
+            "local",
+            &target_root,
+        );
+
+        assert!(!preview.can_apply);
+        assert!(preview.package_detection.detected_skills.is_empty());
+        assert!(preview
+            .package_detection
+            .warnings
+            .contains(&"unsafe_paths".to_string()));
+        assert!(!target_root.join("writer").exists());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1699,77 +1915,6 @@ mod tests {
     }
 
     #[test]
-    fn replace_path_with_staging_restores_existing_target_on_failure() {
-        use std::cell::Cell;
-
-        let root = test_dir("restore-target");
-        let target = root.join("skill");
-        let staging = root.join("staging");
-        let backup = root.join(".skill.backup");
-        fs::create_dir_all(&target).unwrap();
-        fs::create_dir_all(&staging).unwrap();
-        fs::write(target.join("SKILL.md"), "old").unwrap();
-        fs::write(staging.join("SKILL.md"), "new").unwrap();
-
-        let calls = Cell::new(0);
-        let result = replace_path_with_staging_at(
-            &staging,
-            &target,
-            &backup,
-            |from, to| {
-                let call = calls.get() + 1;
-                calls.set(call);
-                if call == 2 {
-                    return Err("模拟 staging 落位失败".to_string());
-                }
-                fs::rename(from, to).map_err(|e| e.to_string())
-            },
-            remove_existing_path,
-        );
-
-        assert!(result.is_err());
-        assert_eq!(fs::read_to_string(target.join("SKILL.md")).unwrap(), "old");
-        assert!(staging.exists());
-        assert!(!backup.exists());
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn replace_path_with_staging_ignores_backup_cleanup_failure_after_success() {
-        use std::cell::Cell;
-
-        let root = test_dir("cleanup-failure");
-        let target = root.join("skill");
-        let staging = root.join("staging");
-        let backup = root.join(".skill.backup");
-        fs::create_dir_all(&target).unwrap();
-        fs::create_dir_all(&staging).unwrap();
-        fs::write(target.join("SKILL.md"), "old").unwrap();
-        fs::write(staging.join("SKILL.md"), "new").unwrap();
-
-        let cleanup_calls = Cell::new(0);
-        let result = replace_path_with_staging_at(
-            &staging,
-            &target,
-            &backup,
-            |from, to| fs::rename(from, to).map_err(|e| e.to_string()),
-            |path| {
-                let call = cleanup_calls.get() + 1;
-                cleanup_calls.set(call);
-                if call == 1 {
-                    return Err("模拟 backup 清理失败".to_string());
-                }
-                remove_existing_path(path)
-            },
-        );
-
-        assert!(result.is_ok());
-        assert_eq!(fs::read_to_string(target.join("SKILL.md")).unwrap(), "new");
-        assert!(backup.exists());
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn local_symlink_install_creates_project_link() {
         let root = test_dir("project-symlink");
         let source = root.join("writer");
@@ -1801,6 +1946,103 @@ mod tests {
         assert_eq!(
             fs::read_to_string(target.join("SKILL.md")).unwrap(),
             "---\nname: writer\ndescription: 写作 Skill\n---\n\n# Writer\n\n说明"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prepared_git_install_reuses_checkout_and_cleans_it() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let root = test_dir("prepared-git-reuse");
+        let repo = root.join("writer");
+        let target_root = root.join("installed");
+        fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let output = run_git(args, Some(&repo), 10).unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.name", "SkillMate Test"]);
+        git(&["config", "user.email", "skillmate-test@example.com"]);
+        fs::write(
+            repo.join("SKILL.md"),
+            "---\nname: writer\ndescription: 准备后复用 checkout\n---\n",
+        )
+        .unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "initial"]);
+
+        let prepared = PreparedGitInstall::prepare(repo.to_string_lossy().as_ref()).unwrap();
+        let checkout_root = prepared.checkout.temp_root.clone();
+        let preview = prepared.preview(&target_root, "writer");
+        assert!(preview.can_apply, "{preview:?}");
+        fs::remove_dir_all(&repo).unwrap();
+
+        let outcome = prepared
+            .apply(
+                &target_root,
+                "writer",
+                "Codex",
+                Some(&preview.resolved_ref),
+                |_, _, _| Ok(()),
+            )
+            .unwrap();
+
+        assert_eq!(outcome.installed_ref, preview.resolved_ref);
+        assert!(target_root.join("writer/SKILL.md").exists());
+        assert!(!checkout_root.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn prepared_git_install_rejects_symlinked_subdir_component() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let root = test_dir("git-subdir-symlink");
+        let repo = root.join("source");
+        let outside_skill = root.join("outside/writer");
+        fs::create_dir_all(&repo).unwrap();
+        fs::create_dir_all(&outside_skill).unwrap();
+        fs::write(
+            outside_skill.join("SKILL.md"),
+            "---\nname: writer\ndescription: checkout 外部 Skill\n---\n",
+        )
+        .unwrap();
+        if !dir_symlink_supported_or_skip(&root.join("outside"), &repo.join("__probe")) {
+            let _ = fs::remove_dir_all(root);
+            return;
+        }
+        create_dir_symlink_for_test(&root.join("outside"), &repo.join("link")).unwrap();
+        let git = |args: &[&str]| {
+            let output = run_git(args, Some(&repo), 10).unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.name", "SkillMate Test"]);
+        git(&["config", "user.email", "skillmate-test@example.com"]);
+        git(&["add", "link"]);
+        git(&["commit", "-m", "symlink"]);
+        let package = format!("{}#main:link/writer", repo.to_string_lossy());
+
+        let error = match PreparedGitInstall::prepare(&package) {
+            Ok(_) => panic!("不应接受经过软连接的 Git 子目录"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.contains("软连接") || error.contains("仓库子目录不存在"),
+            "{error}"
         );
         let _ = fs::remove_dir_all(root);
     }
@@ -1848,10 +2090,13 @@ mod tests {
         .unwrap();
         git(&["add", "."]);
         git(&["commit", "-m", "update"]);
+        let previous = root.join("previous-writer");
+        fs::rename(&installed, &previous).unwrap();
         sync_git_snapshot_skill_checked(&spec.original, &spec.repo_url, "main", &installed, |_| {
             Ok(())
         })
         .unwrap();
+        fs::remove_dir_all(&previous).unwrap();
 
         assert!(fs::read_to_string(installed.join("SKILL.md"))
             .unwrap()
@@ -1865,6 +2110,7 @@ mod tests {
         .unwrap();
         git(&["add", "."]);
         git(&["commit", "-m", "blocked"]);
+        fs::rename(&installed, &previous).unwrap();
         let error = sync_git_snapshot_skill_checked(
             &spec.original,
             &spec.repo_url,
@@ -1873,11 +2119,64 @@ mod tests {
             |_| Err("安装策略阻止更新".to_string()),
         )
         .unwrap_err();
+        fs::remove_dir_all(&installed).unwrap();
+        fs::rename(&previous, &installed).unwrap();
 
         assert_eq!(error, "安装策略阻止更新");
         assert!(fs::read_to_string(installed.join("SKILL.md"))
             .unwrap()
             .contains("更新版本"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn commit_reference_uses_shallow_fetch_instead_of_full_clone() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let root = test_dir("commit-shallow-fetch");
+        let repo = root.join("source");
+        let clone = root.join("clone");
+        fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let output = run_git(args, Some(&repo), 10).unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.name", "SkillMate Test"]);
+        git(&["config", "user.email", "skillmate-test@example.com"]);
+        fs::write(repo.join("SKILL.md"), "first").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "first"]);
+        let first_ref = git_output(&repo, &["rev-parse", "HEAD"]).unwrap();
+        for content in ["second", "third"] {
+            fs::write(repo.join("SKILL.md"), content).unwrap();
+            git(&["add", "."]);
+            git(&["commit", "-m", content]);
+        }
+        let spec = GitInstallSpec {
+            original: repo.to_string_lossy().to_string(),
+            repo_url: repo.to_string_lossy().to_string(),
+            reference: Some(first_ref.clone()),
+            subdir: None,
+            target_name: "writer".to_string(),
+        };
+
+        clone_git_install_spec(&spec, &clone).unwrap();
+
+        assert_eq!(
+            git_output(&clone, &["rev-parse", "HEAD"]).unwrap(),
+            first_ref
+        );
+        assert_eq!(
+            git_output(&clone, &["rev-list", "--count", "HEAD"]).unwrap(),
+            "1"
+        );
+        assert!(clone.join(".git/shallow").exists());
         let _ = fs::remove_dir_all(root);
     }
 }

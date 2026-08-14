@@ -27,6 +27,12 @@ chrono = "0.4"
 rusqlite = { version = "0.31", features = ["bundled"] }
 toml = "1.1"
 
+[profile.dev]
+debug = 1
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 strip = true
 lto = true

@@ -29,14 +29,15 @@ function SummaryList({ lines }) {
 }
 
 function BackupSettings({ value }) {
+  const busy = value.saving || value.syncing;
   return (
     <div className="settings-card">
       <div className="settings-head"><Icon name="lock" size={20} /><h3>Git 备份</h3></div>
       <div className="settings-body">
-        <div className="form"><label htmlFor="backup-repo-path">本地仓库路径</label><input id="backup-repo-path" value={value.repoPath} onChange={event => value.setRepoPath(event.target.value)} placeholder="~/skillmate-backup" /></div>
-        <div className="form"><label htmlFor="backup-branch">分支</label><input id="backup-branch" value={value.branch} onChange={event => value.setBranch(event.target.value)} placeholder="main" /></div>
-        <div className="form"><label htmlFor="backup-remote-url">远程仓库 URL</label><input id="backup-remote-url" value={value.remoteUrl} onChange={event => value.setRemoteUrl(event.target.value)} placeholder="git@github.com:user/skill-backup.git" /></div>
-        <div className="git-meta">保存后可手动生成本地 Skill 快照；配置远端时会在同步后推送。</div>
+        <div className="form"><label htmlFor="backup-repo-path">本地仓库路径</label><input id="backup-repo-path" value={value.repoPath} onChange={event => value.setRepoPath(event.target.value)} placeholder="~/skillmate-backup" disabled={busy} /></div>
+        <div className="form"><label htmlFor="backup-branch">分支</label><input id="backup-branch" value={value.branch} onChange={event => value.setBranch(event.target.value)} placeholder="main" disabled={busy} /></div>
+        <div className="form"><label htmlFor="backup-remote-url">远程仓库 URL</label><input id="backup-remote-url" value={value.remoteUrl} onChange={event => value.setRemoteUrl(event.target.value)} placeholder="git@github.com:user/skill-backup.git" disabled={busy} /></div>
+        <div className="git-meta">只快照 SkillMate 明确受管的实体 Skill 目录，并尽力排除常见敏感文件；配置远端时会在同步后推送。</div>
         {value.dirty && <div className="install-compact warn" role="status"><span>设置未保存</span><strong>保存后才能同步，避免使用旧配置。</strong></div>}
         <div className="git-meta">上次同步：{value.lastSync || "从未"}</div>
         <ActionRow>
