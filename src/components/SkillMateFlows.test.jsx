@@ -6,9 +6,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SkillsView } from "./InventoryViews.jsx";
 import { InstallModal, PreviewModal } from "./SkillMateModals.jsx";
 import SettingsView from "./SettingsView.jsx";
+import { useInstallFlow } from "../lib/useInstallFlow.js";
 import { useInstallPolicyFlow } from "../lib/useInstallPolicyFlow.js";
 import { useGitBackupFlow } from "../lib/useGitBackupFlow.js";
 import { useScenarioFlow } from "../lib/useScenarioFlow.js";
+import { useSearchFlow } from "../lib/useSearchFlow.js";
 import { skillmateApi } from "../lib/skillmateApi.js";
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
@@ -133,6 +135,45 @@ describe("Dashboard 数据加载", () => {
 });
 
 describe("安装流程交互", () => {
+  it("手动选择来源后不再被自动识别结果覆盖", async () => {
+    vi.useFakeTimers();
+    const detection = {
+      detector: "rules",
+      source_kind: "git",
+      normalized_source: "git",
+      original_input: "owner/repo",
+      confidence: "high",
+      warnings: [],
+      needs_model: false,
+    };
+    invoke.mockImplementation(async (command) => {
+      if (command === "detect_install_source") return detection;
+      throw new Error(`未处理命令: ${command}`);
+    });
+    const { result, unmount } = renderHook(() => useInstallFlow({
+      installOpen: true,
+      assistants: [],
+      setInstallOpen: vi.fn(),
+      showToast: vi.fn(),
+      loadData: vi.fn(),
+      setLoading: vi.fn(),
+    }));
+
+    try {
+      act(() => result.current.source.setPackage("owner/repo"));
+      await act(async () => vi.advanceTimersByTimeAsync(250));
+      expect(result.current.source.kind).toBe("git");
+
+      act(() => result.current.source.setKind("local"));
+      await act(async () => vi.advanceTimersByTimeAsync(250));
+
+      expect(result.current.source.kind).toBe("local");
+    } finally {
+      unmount();
+      vi.useRealTimers();
+    }
+  });
+
   it("在执行信息中展示安装策略阻止原因", async () => {
     const user = userEvent.setup();
     const flow = installFlow();
@@ -312,5 +353,47 @@ describe("场景与 Git 备份流程", () => {
       "Git 备份设置尚未保存，请先保存后再同步",
       "warn"
     );
+  });
+
+  it("刷新已保存配置时保留未保存的 Git 备份草稿", () => {
+    const { result } = renderHook(() => useGitBackupFlow({
+      saved: { repo_path: "/tmp/old", remote_url: "", branch: "main" },
+      showToast: vi.fn(),
+      loadData: vi.fn(),
+    }));
+
+    act(() => result.current.setRepoPath("/tmp/draft"));
+    act(() => result.current.hydrate({
+      repo_path: "/tmp/refreshed",
+      remote_url: "git@example.com:skills.git",
+      branch: "stable",
+    }));
+
+    expect(result.current.repoPath).toBe("/tmp/draft");
+    expect(result.current.branch).toBe("main");
+    expect(result.current.dirty).toBe(true);
+  });
+});
+
+describe("搜索流程", () => {
+  it("清空搜索时取消尚未执行的防抖更新", () => {
+    vi.useFakeTimers();
+    const { result, unmount } = renderHook(() => useSearchFlow());
+
+    try {
+      act(() => result.current.update("writer"));
+      act(() => vi.advanceTimersByTime(200));
+      expect(result.current.query).toBe("writer");
+
+      act(() => result.current.update("reader"));
+      act(() => result.current.clear());
+      act(() => vi.advanceTimersByTime(200));
+
+      expect(result.current.input).toBe("");
+      expect(result.current.query).toBe("");
+    } finally {
+      unmount();
+      vi.useRealTimers();
+    }
   });
 });

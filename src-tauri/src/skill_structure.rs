@@ -470,6 +470,9 @@ fn inspect_skill_content(path: &Path) -> SkillContentInspection {
     if report.incomplete {
         warnings.push("safety_scan_incomplete".to_string());
     }
+    if has_unsafe_paths(path) {
+        warnings.push("unsafe_paths".to_string());
+    }
     SkillContentInspection {
         size: report.total_size,
         warnings,

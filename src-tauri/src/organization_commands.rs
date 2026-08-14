@@ -1,5 +1,6 @@
 use crate::app_core::generate_id;
 use crate::database::parse_legacy_list;
+use crate::operation_coordinator::run_exclusive_operation;
 use crate::{lock_app_db, AppState};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -45,36 +46,30 @@ pub fn get_all_tags_from_db(db: &Connection) -> Result<Vec<Tag>, String> {
 }
 
 #[tauri::command]
-pub fn add_tag(
-    state: tauri::State<'_, AppState>,
-    name: String,
-    color: String,
-) -> Result<Tag, String> {
-    let db = lock_app_db(&state)?;
-    let id = generate_id();
-    db.execute(
-        "INSERT INTO tags (id, name, color) VALUES (?, ?, ?)",
-        params![id, name, color],
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(Tag { id, name, color })
+pub fn add_tag(name: String, color: String) -> Result<Tag, String> {
+    run_exclusive_operation(move |db| {
+        let id = generate_id();
+        db.execute(
+            "INSERT INTO tags (id, name, color) VALUES (?, ?, ?)",
+            params![id, name, color],
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(Tag { id, name, color })
+    })
 }
 
 #[tauri::command]
-pub fn update_skill_tags(
-    state: tauri::State<'_, AppState>,
-    skill_path: String,
-    tags: Vec<String>,
-) -> Result<String, String> {
-    let db = lock_app_db(&state)?;
-    let tags_json = serde_json::to_string(&tags).map_err(|error| error.to_string())?;
-    db.execute(
-        "INSERT INTO skill_tags (skill_path, tags, tags_json) VALUES (?, '', ?)
-         ON CONFLICT(skill_path) DO UPDATE SET tags = '', tags_json = excluded.tags_json",
-        params![skill_path, tags_json],
-    )
-    .map_err(|error| error.to_string())?;
-    Ok("已更新".to_string())
+pub fn update_skill_tags(skill_path: String, tags: Vec<String>) -> Result<String, String> {
+    run_exclusive_operation(move |db| {
+        let tags_json = serde_json::to_string(&tags).map_err(|error| error.to_string())?;
+        db.execute(
+            "INSERT INTO skill_tags (skill_path, tags, tags_json) VALUES (?, '', ?)
+             ON CONFLICT(skill_path) DO UPDATE SET tags = '', tags_json = excluded.tags_json",
+            params![skill_path, tags_json],
+        )
+        .map_err(|error| error.to_string())?;
+        Ok("已更新".to_string())
+    })
 }
 
 #[tauri::command]
@@ -124,32 +119,31 @@ pub fn get_scenarios_from_db(db: &Connection) -> Result<Vec<Scenario>, String> {
 
 #[tauri::command]
 pub fn create_scenario(
-    state: tauri::State<'_, AppState>,
     name: String,
     description: String,
     skill_ids: Vec<String>,
 ) -> Result<Scenario, String> {
-    let db = lock_app_db(&state)?;
-    let id = generate_id();
-    let created_at = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let skill_ids_json = serde_json::to_string(&skill_ids).map_err(|error| error.to_string())?;
-    db.execute("INSERT INTO scenarios (id, name, description, skill_ids, skill_ids_json, created_at) VALUES (?, ?, ?, '', ?, ?)", params![id, name, description, skill_ids_json, created_at]).map_err(|error| error.to_string())?;
-    Ok(Scenario {
-        id,
-        name,
-        description,
-        skill_ids,
-        created_at,
+    run_exclusive_operation(move |db| {
+        let id = generate_id();
+        let created_at = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let skill_ids_json =
+            serde_json::to_string(&skill_ids).map_err(|error| error.to_string())?;
+        db.execute("INSERT INTO scenarios (id, name, description, skill_ids, skill_ids_json, created_at) VALUES (?, ?, ?, '', ?, ?)", params![id, name, description, skill_ids_json, created_at]).map_err(|error| error.to_string())?;
+        Ok(Scenario {
+            id,
+            name,
+            description,
+            skill_ids,
+            created_at,
+        })
     })
 }
 
 #[tauri::command]
-pub fn delete_scenario(
-    state: tauri::State<'_, AppState>,
-    scenario_id: String,
-) -> Result<String, String> {
-    let db = lock_app_db(&state)?;
-    db.execute("DELETE FROM scenarios WHERE id = ?", params![scenario_id])
-        .map_err(|error| error.to_string())?;
-    Ok("已删除".to_string())
+pub fn delete_scenario(scenario_id: String) -> Result<String, String> {
+    run_exclusive_operation(move |db| {
+        db.execute("DELETE FROM scenarios WHERE id = ?", params![scenario_id])
+            .map_err(|error| error.to_string())?;
+        Ok("已删除".to_string())
+    })
 }

@@ -14,15 +14,14 @@ import {
   buildUniqueSkillInventory,
   filterSkillsByScenario,
 } from "./lib/skillmate.mjs";
-import {
-  useAppUpdateFlow,
-  useGitBackupFlow,
-  useImportExportFlow,
-  useInstallFlow,
-  useInstallPolicyFlow,
-  useScenarioFlow,
-  useUpdateFlow,
-} from "./lib/skillmateFlows.js";
+import { useAppUpdateFlow } from "./lib/useAppUpdateFlow.js";
+import { useGitBackupFlow } from "./lib/useGitBackupFlow.js";
+import { useImportExportFlow } from "./lib/useImportExportFlow.js";
+import { useInstallFlow } from "./lib/useInstallFlow.js";
+import { useInstallPolicyFlow } from "./lib/useInstallPolicyFlow.js";
+import { useScenarioFlow } from "./lib/useScenarioFlow.js";
+import { useSearchFlow } from "./lib/useSearchFlow.js";
+import { useUpdateFlow } from "./lib/useUpdateFlow.js";
 import { createResettableTimer } from "./lib/toastTimer.mjs";
 import { skillmateApi } from "./lib/skillmateApi.js";
 
@@ -107,8 +106,6 @@ function getStatePriority(state) {
 function App() {
   const [data, setData] = useState(EMPTY_DATA);
   const [view, setView] = useState("skills");
-  const [searchInput, setSearchInput] = useState("");
-  const [search, setSearch] = useState("");
   const [tags, setTags] = useState([]);
   const [confirmState, setConfirmState] = useState({ open: false, title: "", message: "", confirmLabel: "确认", tone: "danger", onConfirm: null });
   const [sort, setSort] = useState("name");
@@ -124,10 +121,15 @@ function App() {
   const [newTagColor, setNewTagColor] = useState("#58a6ff");
   const [settingsTab, setSettingsTab] = useState("backup");
   const [loadError, setLoadError] = useState("");
+  const {
+    input: searchInput,
+    query: search,
+    update: handleSearchInput,
+    clear: clearSearch,
+  } = useSearchFlow();
 
   const [sysTheme, setSysTheme] = useState(getSystemTheme);
   const searchRef = useRef(null);
-  const searchTimerRef = useRef(null);
   const toastTimerRef = useRef(null);
   const mountedRef = useRef(false);
   const loadRequestRef = useRef(0);
@@ -136,13 +138,6 @@ function App() {
   }
 
   const resolved = theme === "system" ? sysTheme : theme;
-
-  // 搜索防抖：延迟 200ms 后再应用过滤
-  const handleSearchInput = useCallback((value) => {
-    setSearchInput(value);
-    clearTimeout(searchTimerRef.current);
-    searchTimerRef.current = setTimeout(() => setSearch(value), 200);
-  }, []);
 
   // 快捷键：Alt+1~5 切换视图
   useEffect(() => {
@@ -164,7 +159,6 @@ function App() {
     return () => {
       mountedRef.current = false;
       loadRequestRef.current += 1;
-      clearTimeout(searchTimerRef.current);
       toastTimerRef.current?.dispose();
     };
   }, []);
@@ -477,7 +471,7 @@ function App() {
             <div className="search-box">
               <Icon name="search" size={16} />
               <input ref={searchRef} type="text" aria-label={view === "updates" ? "搜索更新" : "搜索 Skills"} placeholder={view === "updates" ? "搜索更新..." : `搜索 Skills... (${typeof navigator !== "undefined" && navigator.platform?.startsWith("Mac") ? "⌘K" : "Ctrl+K"})`} value={searchInput} onChange={e => handleSearchInput(e.target.value)} />
-              {search && <button className="search-x" aria-label="清除搜索" onClick={() => { setSearchInput(""); setSearch(""); }}><Icon name="x" size={14} /></button>}
+              {search && <button className="search-x" aria-label="清除搜索" onClick={clearSearch}><Icon name="x" size={14} /></button>}
             </div>
           )}
         </div>
@@ -565,8 +559,7 @@ function App() {
               tags={tags}
               onInstall={() => setInstallOpen(true)}
               onClearFilters={() => {
-                setSearchInput("");
-                setSearch("");
+                clearSearch();
                 setTags(current => current.map(tag => ({ ...tag, selected: false })));
                 scenarioFlow.setActiveId("");
               }}

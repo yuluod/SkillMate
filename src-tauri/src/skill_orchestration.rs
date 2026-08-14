@@ -3,7 +3,7 @@ use crate::install_policy::{evaluate_install_policy, load_install_policy, Instal
 use crate::managed_installation::{
     cleanup_skill_metadata, find_managed_installation, is_explicitly_managed,
     list_managed_installations, record_managed_root, refresh_managed_installation,
-    register_managed_root, verify_managed_content_unchanged, ManagedMetadataCheckpoint,
+    verify_managed_content_unchanged,
 };
 use crate::managed_state::{content_fingerprint, managed_state_origin};
 use crate::operation_plan::{operation_plan_token, verify_operation_plan};
@@ -15,9 +15,9 @@ use crate::skill_install::{
 use crate::skill_inventory::scan_all_assistants;
 use crate::skill_origin::{load_origin_meta, save_installed_git_meta};
 use crate::skill_profile::{
-    previous_active_profile_id, read_skill_profiles, rollback_active_profile, set_active_profile,
-    upsert_skill_profile, validate_skill_profile, SkillSetProfileDiff, SkillSetProfilePreview,
-    SkillSetProfileStore,
+    activate_profile_store, profiles_path, read_skill_profiles, rollback_profile_store,
+    upsert_skill_profile, validate_skill_profile, write_skill_profiles, SkillSetProfileDiff,
+    SkillSetProfilePreview, SkillSetProfileStore,
 };
 use crate::skill_reconcile::ReconcileTransaction;
 use crate::skillmate_manifest::{
@@ -253,12 +253,13 @@ pub fn preview_manifest(
     Ok(preview)
 }
 
+#[cfg(test)]
 pub fn apply_manifest(
     db: &Connection,
     manifest: &SkillMateManifest,
 ) -> Result<ManifestApplySummary, String> {
     let preview = preview_manifest(db, manifest)?;
-    apply_manifest_previewed(db, manifest, preview)
+    apply_manifest_previewed(db, manifest, preview, None)
 }
 
 pub fn apply_manifest_with_plan(
@@ -268,13 +269,14 @@ pub fn apply_manifest_with_plan(
 ) -> Result<ManifestApplySummary, String> {
     let preview = preview_manifest(db, manifest)?;
     verify_operation_plan(&preview.plan_token, plan_token)?;
-    apply_manifest_previewed(db, manifest, preview)
+    apply_manifest_previewed(db, manifest, preview, None)
 }
 
 fn apply_manifest_previewed(
     db: &Connection,
     manifest: &SkillMateManifest,
     preview: SkillMateManifestPreview,
+    profile_store: Option<&SkillSetProfileStore>,
 ) -> Result<ManifestApplySummary, String> {
     if !preview.can_apply {
         return Err(format!(
@@ -317,24 +319,13 @@ fn apply_manifest_previewed(
     );
     removal_paths.sort();
     removal_paths.dedup();
-    for (skill, install_preview) in manifest.skills.iter().zip(&preview.install_previews) {
-        let target = PathBuf::from(&install_preview.target_path);
-        let root = target
-            .parent()
-            .ok_or_else(|| "manifest 目标路径缺少父目录".to_string())?;
-        register_managed_root(
-            db,
-            root,
-            skill.scope.as_deref().unwrap_or("global"),
-            skill.project_path.as_deref(),
-        )?;
-    }
-    let mut metadata_paths = install_targets.clone();
-    metadata_paths.extend(pure_removals.iter().map(|removal| removal.path.clone()));
-    metadata_paths.sort();
-    metadata_paths.dedup();
-    let metadata_checkpoint = ManagedMetadataCheckpoint::capture(db, &metadata_paths)?;
-    let mut transaction = ReconcileTransaction::prepare(&removal_paths, &install_targets)?;
+    let profile_path = profile_store.map(|_| profiles_path());
+    let mut transaction = ReconcileTransaction::prepare_managed_with_files(
+        db,
+        &removal_paths,
+        &install_targets,
+        profile_path.as_slice(),
+    )?;
     let mut summary = ManifestApplySummary::default();
 
     for (skill, install_preview) in manifest.skills.iter().zip(&preview.install_previews) {
@@ -354,9 +345,6 @@ fn apply_manifest_previewed(
         }
         if let Err(error) = apply_manifest_skill(db, skill.clone(), install_preview) {
             return Err(rollback_manifest_attempt(
-                db,
-                &metadata_checkpoint,
-                &install_targets,
                 &mut transaction,
                 "应用 manifest 失败",
                 &error,
@@ -369,9 +357,6 @@ fn apply_manifest_previewed(
             skill.project_path.as_deref(),
         ) {
             return Err(rollback_manifest_attempt(
-                db,
-                &metadata_checkpoint,
-                &install_targets,
                 &mut transaction,
                 "记录受管安装失败",
                 &error,
@@ -384,9 +369,6 @@ fn apply_manifest_previewed(
                 .then_some(install_preview.resolved_ref.as_str()),
         ) {
             return Err(rollback_manifest_attempt(
-                db,
-                &metadata_checkpoint,
-                &install_targets,
                 &mut transaction,
                 "刷新受管安装状态失败",
                 &error,
@@ -398,17 +380,23 @@ fn apply_manifest_previewed(
     for removal in &pure_removals {
         if let Err(error) = cleanup_skill_metadata(db, &removal.path) {
             return Err(rollback_manifest_attempt(
-                db,
-                &metadata_checkpoint,
-                &install_targets,
                 &mut transaction,
                 "清理 manifest 移除项失败",
                 &error,
             ));
         }
     }
-    if let Err(error) = transaction.commit() {
-        summary.warnings.push(error);
+    if let Some(store) = profile_store {
+        if let Err(error) = write_skill_profiles(store) {
+            return Err(rollback_manifest_attempt(
+                &mut transaction,
+                "保存 Profile 激活状态失败",
+                &error,
+            ));
+        }
+    }
+    if let Some(warning) = transaction.commit()? {
+        summary.warnings.push(warning);
     }
     summary.removed = pure_removals.len();
     Ok(summary)
@@ -428,6 +416,14 @@ pub fn preview_profile(
     profile_id: &str,
 ) -> Result<SkillSetProfilePreview, String> {
     let store = read_skill_profiles()?;
+    preview_profile_in_store(db, profile_id, &store)
+}
+
+fn preview_profile_in_store(
+    db: &Connection,
+    profile_id: &str,
+    store: &SkillSetProfileStore,
+) -> Result<SkillSetProfilePreview, String> {
     let profile = store
         .profiles
         .iter()
@@ -466,64 +462,17 @@ pub fn apply_profile_with_plan(
     profile_id: &str,
     plan_token: Option<&str>,
 ) -> Result<String, String> {
-    let preview = preview_profile(db, profile_id)?;
+    let store = read_skill_profiles()?;
+    let preview = preview_profile_in_store(db, profile_id, &store)?;
     verify_operation_plan(&preview.plan_token, plan_token)?;
-    apply_profile_previewed(db, profile_id, preview)
+    let target_store = activate_profile_store(store, profile_id)?;
+    apply_profile_previewed(db, preview, target_store)
 }
 
 fn apply_profile_previewed(
     db: &Connection,
-    profile_id: &str,
     preview: SkillSetProfilePreview,
-) -> Result<String, String> {
-    let previous_manifest = build_current_manifest(db)?;
-    apply_then_persist(
-        || apply_profile_preview_contents(db, preview),
-        || set_active_profile(profile_id).map(|_| ()),
-        || apply_manifest(db, &previous_manifest).map(|_| ()),
-    )
-}
-
-pub fn rollback_profile(db: &Connection) -> Result<String, String> {
-    let previous_profile_id = previous_active_profile_id()?;
-    let previous_manifest = build_current_manifest(db)?;
-    let result = apply_then_persist(
-        || apply_profile_contents(db, &previous_profile_id),
-        || rollback_active_profile().map(|_| ()),
-        || apply_manifest(db, &previous_manifest).map(|_| ()),
-    )?;
-    Ok(format!("{}；已回滚到上一个 Profile", result))
-}
-
-fn apply_then_persist(
-    apply: impl FnOnce() -> Result<String, String>,
-    persist: impl FnOnce() -> Result<(), String>,
-    restore: impl FnOnce() -> Result<(), String>,
-) -> Result<String, String> {
-    let result = apply()?;
-    if let Err(error) = persist() {
-        return match restore() {
-            Ok(()) => Err(format!(
-                "保存 Profile 激活状态失败，已恢复原组合: {}",
-                error
-            )),
-            Err(restore_error) => Err(format!(
-                "保存 Profile 激活状态失败: {}；恢复原组合失败: {}",
-                error, restore_error
-            )),
-        };
-    }
-    Ok(result)
-}
-
-fn apply_profile_contents(db: &Connection, profile_id: &str) -> Result<String, String> {
-    let preview = preview_profile(db, profile_id)?;
-    apply_profile_preview_contents(db, preview)
-}
-
-fn apply_profile_preview_contents(
-    db: &Connection,
-    preview: SkillSetProfilePreview,
+    target_store: SkillSetProfileStore,
 ) -> Result<String, String> {
     if !preview.profile_issues.is_empty() {
         return Err("Profile 格式存在问题，请先处理预览".to_string());
@@ -540,9 +489,17 @@ fn apply_profile_preview_contents(
         skills: preview.profile.skills,
     };
     Ok(
-        apply_manifest_with_plan(db, &manifest, Some(&preview.manifest_preview.plan_token))?
+        apply_manifest_previewed(db, &manifest, preview.manifest_preview, Some(&target_store))?
             .message("Profile"),
     )
+}
+
+pub fn rollback_profile(db: &Connection) -> Result<String, String> {
+    let store = read_skill_profiles()?;
+    let (target_store, previous_profile_id) = rollback_profile_store(store)?;
+    let preview = preview_profile_in_store(db, &previous_profile_id, &target_store)?;
+    let result = apply_profile_previewed(db, preview, target_store)?;
+    Ok(format!("{}；已回滚到上一个 Profile", result))
 }
 
 #[derive(Debug, Clone)]
@@ -835,41 +792,25 @@ fn apply_manifest_skill(
     Ok(())
 }
 
-fn cleanup_targets(db: &Connection, targets: &[PathBuf]) -> Vec<String> {
-    targets
-        .iter()
-        .filter_map(|target| {
-            cleanup_skill_metadata(db, target)
-                .err()
-                .map(|error| format!("{}: {}", target.to_string_lossy(), error))
-        })
-        .collect()
-}
-
 fn rollback_manifest_attempt(
-    db: &Connection,
-    metadata_checkpoint: &ManagedMetadataCheckpoint,
-    install_targets: &[PathBuf],
-    transaction: &mut ReconcileTransaction,
+    transaction: &mut ReconcileTransaction<'_>,
     subject: &str,
     error: &str,
 ) -> String {
-    let mut cleanup_errors = cleanup_targets(db, install_targets);
-    if let Err(rollback_error) = transaction.rollback() {
-        cleanup_errors.push(format!("文件回滚失败: {}", rollback_error));
-    }
-    if let Err(metadata_error) = metadata_checkpoint.restore(db) {
-        cleanup_errors.push(format!("元数据回滚失败: {}", metadata_error));
-    }
-    rollback_error(subject, error, cleanup_errors)
+    let rollback_errors = transaction
+        .rollback()
+        .err()
+        .map(|rollback_error| vec![rollback_error])
+        .unwrap_or_default();
+    rollback_error(subject, error, rollback_errors)
 }
 
 fn rollback_error(subject: &str, error: &str, cleanup_errors: Vec<String>) -> String {
     if cleanup_errors.is_empty() {
-        format!("{}，已回滚文件变更: {}", subject, error)
+        format!("{}，已回滚事务变更: {}", subject, error)
     } else {
         format!(
-            "{}，文件已回滚但元数据清理不完整: {}；{}",
+            "{}，事务回滚不完整: {}；{}",
             subject,
             error,
             cleanup_errors.join("；")
@@ -880,7 +821,6 @@ fn rollback_error(subject: &str, error: &str, cleanup_errors: Vec<String>) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
 
     fn manifest_skill(source: &str, reference: &str) -> SkillMateManifestSkill {
         SkillMateManifestSkill {
@@ -903,24 +843,6 @@ mod tests {
 
         assert_ne!(manifest_skill_key(&main), manifest_skill_key(&release));
         assert_ne!(manifest_skill_key(&main), manifest_skill_key(&fork));
-    }
-
-    #[test]
-    fn profile_transition_restores_content_when_state_persist_fails() {
-        let restored = Cell::new(false);
-
-        let error = apply_then_persist(
-            || Ok("已应用".to_string()),
-            || Err("磁盘已满".to_string()),
-            || {
-                restored.set(true);
-                Ok(())
-            },
-        )
-        .unwrap_err();
-
-        assert!(restored.get());
-        assert!(error.contains("已恢复原组合"));
     }
 
     #[test]

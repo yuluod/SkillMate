@@ -353,6 +353,33 @@ pub fn run_command_with_timeout(
     timeout: Duration,
     envs: &[(&str, &str)],
 ) -> Result<Output, String> {
+    run_command_with_options(
+        cmd,
+        args,
+        current_dir,
+        timeout,
+        CommandOptions {
+            envs,
+            ..CommandOptions::default()
+        },
+    )
+}
+
+#[derive(Default)]
+pub struct CommandOptions<'a> {
+    pub envs: &'a [(&'a str, &'a str)],
+    pub removed_envs: &'a [&'a str],
+    pub removed_env_prefixes: &'a [&'a str],
+    pub stdin: Option<&'a [u8]>,
+}
+
+pub fn run_command_with_options(
+    cmd: &str,
+    args: &[&str],
+    current_dir: Option<&Path>,
+    timeout: Duration,
+    options: CommandOptions<'_>,
+) -> Result<Output, String> {
     static CAPTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
     let capture_id = CAPTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let capture_root = std::env::temp_dir().join(format!(
@@ -366,15 +393,38 @@ pub fn run_command_with_timeout(
     let stderr_path = capture_root.join("stderr");
     let stdout_file = fs::File::create(&stdout_path).map_err(|error| error.to_string())?;
     let stderr_file = fs::File::create(&stderr_path).map_err(|error| error.to_string())?;
+    let stdin_file = match options.stdin {
+        Some(input) => {
+            let path = capture_root.join("stdin");
+            fs::write(&path, input).map_err(|error| error.to_string())?;
+            Some(fs::File::open(path).map_err(|error| error.to_string())?)
+        }
+        None => None,
+    };
     let mut command = Command::new(cmd);
     command
         .args(args)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
+    if let Some(stdin_file) = stdin_file {
+        command.stdin(Stdio::from(stdin_file));
+    }
     if let Some(dir) = current_dir {
         command.current_dir(dir);
     }
-    for (key, value) in envs {
+    for key in options.removed_envs {
+        command.env_remove(key);
+    }
+    for (key, _) in std::env::vars_os() {
+        if options
+            .removed_env_prefixes
+            .iter()
+            .any(|prefix| key.to_string_lossy().starts_with(prefix))
+        {
+            command.env_remove(key);
+        }
+    }
+    for (key, value) in options.envs {
         command.env(key, value);
     }
 

@@ -26,7 +26,7 @@ pub struct ManagedSkillState {
     pub last_seen_hash: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManagedStateCheckpoint {
     state: SkillMateState,
     state_file_existed: bool,
