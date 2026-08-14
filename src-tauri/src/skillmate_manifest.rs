@@ -2,9 +2,10 @@ use crate::app_core::{
     assistant_root_by_name, atomic_write, expand_path, project_skill_root_by_name,
 };
 use crate::skill_install::{
-    install_target_name, is_git_install_source, parse_git_install_spec, preview_install_source,
-    preview_local_symlink_install, InstallPreview, PreviewConflict,
+    preview_install_source, preview_local_symlink_install, InstallPreview, PreviewConflict,
 };
+use crate::skill_install_source::{install_target_name, is_git_install_source, parse_git_install_spec};
+use crate::skill_model::SkillDescriptor;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
@@ -15,29 +16,7 @@ pub struct SkillMateManifest {
     pub version: u32,
     #[serde(default)]
     pub reconcile: bool,
-    pub skills: Vec<SkillMateManifestSkill>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
-pub struct SkillMateManifestSkill {
-    pub assistant: String,
-    pub source: String,
-    pub source_kind: String,
-    pub target_name: Option<String>,
-    #[serde(default)]
-    pub scope: Option<String>,
-    #[serde(default)]
-    pub install_mode: Option<String>,
-    #[serde(default)]
-    pub project_path: Option<String>,
-    #[serde(default)]
-    pub reference: Option<String>,
-    #[serde(default)]
-    pub subdir: Option<String>,
-    #[serde(default)]
-    pub resolved_ref: Option<String>,
-    #[serde(default)]
-    pub content_hash: Option<String>,
+    pub skills: Vec<SkillDescriptor>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -120,12 +99,12 @@ pub fn write_skillmate_manifest(
     Ok(format!("已导出到 {}", path.to_string_lossy()))
 }
 
-pub fn sort_manifest_skills(skills: &mut [SkillMateManifestSkill]) {
+pub fn sort_manifest_skills(skills: &mut [SkillDescriptor]) {
     skills.sort_by(|left, right| manifest_sort_key(left).cmp(&manifest_sort_key(right)));
 }
 
 fn manifest_sort_key(
-    skill: &SkillMateManifestSkill,
+    skill: &SkillDescriptor,
 ) -> (&str, &str, &str, &str, &str, &str, &str, &str) {
     (
         skill.assistant.as_str(),
@@ -193,7 +172,7 @@ fn portable_manifest_path(base: &Path, value: &str) -> String {
 pub fn preview_skillmate_manifest_with_existing(
     manifest: &SkillMateManifest,
     existing_target: impl Fn(
-        &SkillMateManifestSkill,
+        &SkillDescriptor,
         &Path,
     ) -> Result<ExistingTargetDisposition, String>,
 ) -> Result<SkillMateManifestPreview, String> {
@@ -360,7 +339,7 @@ pub fn preview_skillmate_manifest_with_existing(
     })
 }
 
-pub fn manifest_target_root(skill: &SkillMateManifestSkill) -> Result<std::path::PathBuf, String> {
+pub fn manifest_target_root(skill: &SkillDescriptor) -> Result<std::path::PathBuf, String> {
     match skill.scope.as_deref().filter(|scope| !scope.is_empty()) {
         None | Some("global") => assistant_root_by_name(&skill.assistant),
         Some("project") => {
@@ -379,7 +358,7 @@ pub fn manifest_target_root(skill: &SkillMateManifestSkill) -> Result<std::path:
     }
 }
 
-pub fn resolved_manifest_source(skill: &SkillMateManifestSkill) -> Result<String, String> {
+pub fn resolved_manifest_source(skill: &SkillDescriptor) -> Result<String, String> {
     if !is_git_install_source(&skill.source_kind)
         || skill.source.contains('#')
         || (skill.reference.is_none() && skill.resolved_ref.is_none() && skill.subdir.is_none())
@@ -536,7 +515,7 @@ target_name = "writer"
             version: 2,
             reconcile: true,
             skills: vec![
-                SkillMateManifestSkill {
+                SkillDescriptor {
                     assistant: "Gemini CLI".to_string(),
                     source: source.to_string_lossy().to_string(),
                     source_kind: "local".to_string(),
@@ -545,7 +524,7 @@ target_name = "writer"
                     project_path: Some(root.to_string_lossy().to_string()),
                     ..Default::default()
                 },
-                SkillMateManifestSkill {
+                SkillDescriptor {
                     assistant: "Codex".to_string(),
                     source: "owner/repo".to_string(),
                     source_kind: "git".to_string(),
@@ -578,7 +557,7 @@ target_name = "writer"
         let manifest = SkillMateManifest {
             version: 1,
             reconcile: false,
-            skills: vec![SkillMateManifestSkill {
+            skills: vec![SkillDescriptor {
                 assistant: "".to_string(),
                 source: "/definitely/missing/skill".to_string(),
                 source_kind: "local".to_string(),
@@ -638,7 +617,7 @@ target_name = "writer"
         let manifest = SkillMateManifest {
             version: 2,
             reconcile: false,
-            skills: vec![SkillMateManifestSkill {
+            skills: vec![SkillDescriptor {
                 assistant: "Codex".to_string(),
                 source: source.to_string_lossy().to_string(),
                 source_kind: "local".to_string(),
@@ -684,7 +663,7 @@ target_name = "writer"
         let manifest = SkillMateManifest {
             version: 2,
             reconcile: false,
-            skills: vec![SkillMateManifestSkill {
+            skills: vec![SkillDescriptor {
                 assistant: "Codex".to_string(),
                 source: root.to_string_lossy().to_string(),
                 source_kind: "local".to_string(),
@@ -719,7 +698,7 @@ target_name = "writer"
         let manifest = SkillMateManifest {
             version: 2,
             reconcile: false,
-            skills: vec![SkillMateManifestSkill {
+            skills: vec![SkillDescriptor {
                 assistant: "Codex".to_string(),
                 source: source.to_string_lossy().to_string(),
                 source_kind: "local".to_string(),

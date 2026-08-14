@@ -7,11 +7,13 @@ mod install_policy;
 mod library_manifest;
 mod managed_installation;
 mod managed_state;
+mod operation_coordinator;
 mod operation_plan;
 mod organization_commands;
 mod scenario_manifest;
 mod skill_install;
 mod skill_install_source;
+mod skill_model;
 mod skill_inventory;
 mod skill_orchestration;
 mod skill_origin;
@@ -38,11 +40,13 @@ use library_manifest::{
     write_library_export, ImportPreview,
 };
 use managed_installation::{
-    backfill_managed_roots, cleanup_skill_metadata, find_managed_installation,
-    is_explicitly_managed, list_managed_installations, list_managed_roots,
-    prune_missing_managed_installations, record_managed_path, record_managed_root,
-    refresh_managed_installation, register_managed_root, verify_managed_content_unchanged,
-    ManagedMetadataCheckpoint,
+    cleanup_skill_metadata, find_managed_installation, is_explicitly_managed,
+    list_managed_installations, record_managed_path, refresh_managed_installation,
+    verify_managed_content_unchanged,
+};
+use operation_coordinator::{
+    check_skill_update, check_skill_updates, is_known_skill_path, run_exclusive_operation,
+    run_startup_maintenance,
 };
 use operation_plan::verify_operation_plan;
 use organization_commands::{
@@ -56,10 +60,12 @@ use scenario_manifest::{
 };
 use serde::{Deserialize, Serialize};
 use skill_install::{
-    detect_install_source_rules, install_git_package_at_ref, install_local_package_at_digest,
-    install_local_symlink_package_at_digest, install_target_name, is_git_install_source,
-    parse_git_install_spec, preview_install_source, preview_local_symlink_install,
-    seal_install_preview, InstallDetection, InstallPreview, InstallResult,
+    install_local_package_at_digest, install_local_symlink_package_at_digest,
+    preview_install_source, preview_local_symlink_install, seal_install_preview, InstallPreview,
+    InstallResult, PreparedGitInstall,
+};
+use skill_install_source::{
+    detect_install_source_rules, install_target_name, is_git_install_source, InstallDetection,
 };
 use skill_inventory::{collect_known_skill_paths, scan_all_assistants};
 use skill_orchestration::{
@@ -68,8 +74,8 @@ use skill_orchestration::{
     save_current_profile,
 };
 use skill_origin::{
-    load_origin_meta, probe_skill_state, probe_skill_states,
-    save_installed_git_meta as save_git_origin_meta, sync_info_json, update_skill_from_upstream,
+    load_origin_meta, save_installed_git_meta as save_git_origin_meta, sync_info_json,
+    update_skill_from_upstream,
 };
 use skill_package::PackageDetection;
 use skill_profile::{read_skill_profiles, SkillSetProfilePreview, SkillSetProfileStore};
@@ -82,21 +88,11 @@ use skillmate_manifest::{
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{LockResult, Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard};
 use tauri::Manager;
-
-static SYNC_LOCK: Mutex<()> = Mutex::new(());
 
 pub(crate) struct AppState {
     db: Option<Mutex<Connection>>,
-}
-
-fn map_sync_lock<T>(lock: LockResult<T>) -> Result<T, String> {
-    lock.map_err(|_| "同步锁已中毒，请重启应用后重试".to_string())
-}
-
-fn acquire_sync_lock() -> Result<MutexGuard<'static, ()>, String> {
-    map_sync_lock(SYNC_LOCK.lock())
 }
 
 pub(crate) fn lock_app_db<'a>(
@@ -206,15 +202,19 @@ pub struct AIAssistant {
     pub exists: bool,
 }
 
-#[tauri::command(async)]
-fn export_library(path: String) -> Result<String, String> {
-    let db = open_db_connection()?;
-    let export = build_library_export(
-        get_all_tags_from_db(&db)?,
-        get_scenarios_from_db(&db)?,
-        scan_all_assistants(&db)?,
-    );
-    write_library_export(path, &export)
+#[tauri::command]
+async fn export_library(path: String) -> Result<String, String> {
+    run_blocking_task(move || {
+        run_exclusive_operation(|db| {
+            let export = build_library_export(
+                get_all_tags_from_db(db)?,
+                get_scenarios_from_db(db)?,
+                scan_all_assistants(db)?,
+            );
+            write_library_export(path, &export)
+        })
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -231,37 +231,35 @@ fn preview_import_library(
 
 #[tauri::command]
 fn import_library(
-    state: tauri::State<'_, AppState>,
     path: String,
     mode: Option<String>,
     plan_token: Option<String>,
 ) -> Result<String, String> {
     let export = read_library_export(path)?;
-    let db = lock_app_db(&state)?;
     let replace_existing = matches!(mode.as_deref(), Some("replace"));
-    let current_preview = preview_imported_library(&db, &export, replace_existing)?;
-    verify_operation_plan(&current_preview.plan_token, plan_token.as_deref())?;
-    let (tag_count, scenario_count) = merge_imported_library(&db, export, replace_existing)?;
-    Ok(format!(
-        "{}导入 {} 个标签，{} 个场景",
-        if replace_existing {
-            "已替换并"
-        } else {
-            "已"
-        },
-        tag_count,
-        scenario_count
-    ))
+    run_exclusive_operation(move |db| {
+        let current_preview = preview_imported_library(db, &export, replace_existing)?;
+        verify_operation_plan(&current_preview.plan_token, plan_token.as_deref())?;
+        let (tag_count, scenario_count) = merge_imported_library(db, export, replace_existing)?;
+        Ok(format!(
+            "{}导入 {} 个标签，{} 个场景",
+            if replace_existing {
+                "已替换并"
+            } else {
+                "已"
+            },
+            tag_count,
+            scenario_count
+        ))
+    })
 }
 
 #[tauri::command]
-fn export_scenario_manifest(
-    state: tauri::State<'_, AppState>,
-    path: String,
-) -> Result<String, String> {
-    let db = lock_app_db(&state)?;
-    let manifest = build_scenario_manifest(get_scenarios_from_db(&db)?);
-    write_scenario_manifest(path, &manifest)
+fn export_scenario_manifest(path: String) -> Result<String, String> {
+    run_exclusive_operation(move |db| {
+        let manifest = build_scenario_manifest(get_scenarios_from_db(db)?);
+        write_scenario_manifest(path, &manifest)
+    })
 }
 
 #[tauri::command(async)]
@@ -283,69 +281,87 @@ fn preview_import_scenario_manifest(
 
 #[tauri::command(async)]
 fn import_scenario_manifest(
-    state: tauri::State<'_, AppState>,
     path: String,
     mode: Option<String>,
     plan_token: Option<String>,
 ) -> Result<String, String> {
     let manifest = read_scenario_manifest(path)?;
-    let db = lock_app_db(&state)?;
     let replace_existing = matches!(mode.as_deref(), Some("replace"));
-    let current_preview = preview_scenario_manifest(
-        &db,
-        &manifest,
-        replace_existing,
-        &collect_known_skill_paths(&db)?,
-    )?;
-    verify_operation_plan(&current_preview.plan_token, plan_token.as_deref())?;
-    let scenario_count = merge_scenario_manifest(&db, manifest, replace_existing)?;
-    Ok(format!(
-        "{}导入 {} 个场景",
-        if replace_existing {
-            "已替换并"
-        } else {
-            "已"
-        },
-        scenario_count
-    ))
+    run_exclusive_operation(move |db| {
+        let current_preview = preview_scenario_manifest(
+            db,
+            &manifest,
+            replace_existing,
+            &collect_known_skill_paths(db)?,
+        )?;
+        verify_operation_plan(&current_preview.plan_token, plan_token.as_deref())?;
+        let scenario_count = merge_scenario_manifest(db, manifest, replace_existing)?;
+        Ok(format!(
+            "{}导入 {} 个场景",
+            if replace_existing {
+                "已替换并"
+            } else {
+                "已"
+            },
+            scenario_count
+        ))
+    })
 }
 
-#[tauri::command(async)]
-fn export_skillmate_manifest(path: String) -> Result<String, String> {
-    let db = open_db_connection()?;
-    let manifest = build_current_manifest(&db)?;
-    write_skillmate_manifest(expand_path(path.trim()), &manifest)
+#[tauri::command]
+async fn export_skillmate_manifest(path: String) -> Result<String, String> {
+    run_blocking_task(move || {
+        run_exclusive_operation(|db| {
+            let manifest = build_current_manifest(db)?;
+            write_skillmate_manifest(expand_path(path.trim()), &manifest)
+        })
+    })
+    .await?
 }
 
-#[tauri::command(async)]
-fn export_project_skillmate_manifest(project_path: String) -> Result<String, String> {
-    let project = expand_path(project_path.trim());
-    if !project.is_dir() {
-        return Err("项目路径不存在或不是目录".to_string());
-    }
-    let db = open_db_connection()?;
-    let manifest = build_project_manifest(&db, &project)?;
-    if manifest.skills.is_empty() {
-        return Err("该项目没有 SkillMate 受管的 Skill".to_string());
-    }
-    let target = project.join("skillmate.toml");
-    write_skillmate_manifest(&target, &manifest)?;
-    Ok(target.to_string_lossy().to_string())
+#[tauri::command]
+async fn export_project_skillmate_manifest(project_path: String) -> Result<String, String> {
+    run_blocking_task(move || {
+        run_exclusive_operation(|db| {
+            let project = expand_path(project_path.trim());
+            if !project.is_dir() {
+                return Err("项目路径不存在或不是目录".to_string());
+            }
+            let manifest = build_project_manifest(db, &project)?;
+            if manifest.skills.is_empty() {
+                return Err("该项目没有 SkillMate 受管的 Skill".to_string());
+            }
+            let target = project.join("skillmate.toml");
+            write_skillmate_manifest(&target, &manifest)?;
+            Ok(target.to_string_lossy().to_string())
+        })
+    })
+    .await?
 }
 
-#[tauri::command(async)]
-fn preview_apply_skillmate_manifest(path: String) -> Result<SkillMateManifestPreview, String> {
-    let manifest = read_skillmate_manifest(expand_path(path.trim()))?;
-    let db = open_db_connection()?;
-    preview_manifest(&db, &manifest)
+#[tauri::command]
+async fn preview_apply_skillmate_manifest(
+    path: String,
+) -> Result<SkillMateManifestPreview, String> {
+    run_blocking_task(move || {
+        let manifest = read_skillmate_manifest(expand_path(path.trim()))?;
+        run_exclusive_operation(|db| preview_manifest(db, &manifest))
+    })
+    .await?
 }
 
-#[tauri::command(async)]
-fn apply_skillmate_manifest(path: String, plan_token: Option<String>) -> Result<String, String> {
-    let _guard = acquire_sync_lock()?;
-    let manifest = read_skillmate_manifest(expand_path(path.trim()))?;
-    let db = open_db_connection()?;
-    Ok(apply_manifest_with_plan(&db, &manifest, plan_token.as_deref())?.message("manifest"))
+#[tauri::command]
+async fn apply_skillmate_manifest(
+    path: String,
+    plan_token: Option<String>,
+) -> Result<String, String> {
+    run_blocking_task(move || {
+        let manifest = read_skillmate_manifest(expand_path(path.trim()))?;
+        run_exclusive_operation(|db| {
+            Ok(apply_manifest_with_plan(db, &manifest, plan_token.as_deref())?.message("manifest"))
+        })
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -353,42 +369,44 @@ fn get_skill_profiles() -> Result<SkillSetProfileStore, String> {
     read_skill_profiles()
 }
 
-#[tauri::command(async)]
-fn save_current_skill_profile(
+#[tauri::command]
+async fn save_current_skill_profile(
     name: String,
     description: String,
 ) -> Result<SkillSetProfileStore, String> {
-    let db = open_db_connection()?;
-    save_current_profile(&db, &name, &description)
+    run_blocking_task(move || {
+        run_exclusive_operation(|db| save_current_profile(db, &name, &description))
+    })
+    .await?
 }
 
-#[tauri::command(async)]
-fn preview_apply_skill_profile(profile_id: String) -> Result<SkillSetProfilePreview, String> {
-    let db = open_db_connection()?;
-    preview_profile(&db, &profile_id)
+#[tauri::command]
+async fn preview_apply_skill_profile(profile_id: String) -> Result<SkillSetProfilePreview, String> {
+    run_blocking_task(move || run_exclusive_operation(|db| preview_profile(db, &profile_id)))
+        .await?
 }
 
-#[tauri::command(async)]
-fn apply_skill_profile(profile_id: String, plan_token: Option<String>) -> Result<String, String> {
-    let _guard = acquire_sync_lock()?;
-    let db = open_db_connection()?;
-    apply_profile_with_plan(&db, &profile_id, plan_token.as_deref())
+#[tauri::command]
+async fn apply_skill_profile(
+    profile_id: String,
+    plan_token: Option<String>,
+) -> Result<String, String> {
+    run_blocking_task(move || {
+        run_exclusive_operation(|db| {
+            apply_profile_with_plan(db, &profile_id, plan_token.as_deref())
+        })
+    })
+    .await?
 }
 
-#[tauri::command(async)]
-fn rollback_skill_profile() -> Result<String, String> {
-    let _guard = acquire_sync_lock()?;
-    let db = open_db_connection()?;
-    rollback_profile(&db)
+#[tauri::command]
+async fn rollback_skill_profile() -> Result<String, String> {
+    run_blocking_task(move || run_exclusive_operation(rollback_profile)).await?
 }
 
 #[tauri::command]
 async fn get_all_assistants() -> Result<Vec<AIAssistant>, String> {
-    run_blocking_task(|| {
-        let db = open_db_connection()?;
-        scan_all_assistants(&db)
-    })
-    .await?
+    run_blocking_task(|| run_exclusive_operation(scan_all_assistants)).await?
 }
 
 #[tauri::command]
@@ -399,14 +417,14 @@ fn get_git_backup(state: tauri::State<'_, AppState>) -> Result<GitBackup, String
 
 #[tauri::command]
 fn setup_git_backup(
-    state: tauri::State<'_, AppState>,
     repo_path: String,
     remote_url: String,
     branch: String,
 ) -> Result<String, String> {
-    let db = lock_app_db(&state)?;
-    git_backup::configure(&db, &repo_path, &remote_url, &branch)?;
-    Ok("已配置".to_string())
+    run_exclusive_operation(move |db| {
+        git_backup::configure(db, &repo_path, &remote_url, &branch)?;
+        Ok("已配置".to_string())
+    })
 }
 
 #[tauri::command]
@@ -416,22 +434,13 @@ fn get_install_policy(state: tauri::State<'_, AppState>) -> Result<InstallPolicy
 }
 
 #[tauri::command]
-fn set_install_policy(
-    state: tauri::State<'_, AppState>,
-    config: InstallPolicyConfig,
-) -> Result<InstallPolicyConfig, String> {
-    let db = lock_app_db(&state)?;
-    save_install_policy(&db, config)
+fn set_install_policy(config: InstallPolicyConfig) -> Result<InstallPolicyConfig, String> {
+    run_exclusive_operation(move |db| save_install_policy(db, config))
 }
 
 #[tauri::command]
 async fn sync_to_git(message: String) -> Result<String, String> {
-    run_blocking_task(move || {
-        let _guard = acquire_sync_lock()?;
-        let db = open_db_connection()?;
-        git_backup::sync(&db, &message)
-    })
-    .await?
+    run_blocking_task(move || run_exclusive_operation(|db| git_backup::sync(db, &message))).await?
 }
 
 fn install_result(
@@ -453,24 +462,51 @@ fn install_result(
     }
 }
 
-#[tauri::command(async)]
-fn preview_install_skill(
+#[tauri::command]
+async fn preview_install_skill(
     package: String,
     source: String,
     assistant_name: String,
     install_mode: Option<String>,
     project_path: Option<String>,
 ) -> InstallPreview {
-    let mode = install_mode.unwrap_or_else(|| "copy".to_string());
-    let policy = open_db_connection().and_then(|db| load_install_policy(&db));
-    build_install_request_preview(
-        &package,
-        &source,
-        &assistant_name,
-        &mode,
-        project_path.as_deref(),
-        policy.as_ref().map_err(Clone::clone),
-    )
+    let task_package = package.clone();
+    let task_source = source.clone();
+    let task_assistant_name = assistant_name.clone();
+    let task_install_mode = install_mode.clone();
+    let task_project_path = project_path.clone();
+    match run_blocking_task(move || {
+        let mode = task_install_mode.unwrap_or_else(|| "copy".to_string());
+        let policy = open_db_connection().and_then(|db| load_install_policy(&db));
+        build_install_request_preview(
+            &task_package,
+            &task_source,
+            &task_assistant_name,
+            &mode,
+            task_project_path.as_deref(),
+            policy.as_ref().map_err(Clone::clone),
+        )
+    })
+    .await
+    {
+        Ok(preview) => preview,
+        Err(error) => {
+            let mode = install_mode.unwrap_or_else(|| "copy".to_string());
+            finalize_install_request_preview(
+                install_preview_error(
+                    format!("无法生成安装预览: {error}"),
+                    source.clone(),
+                    String::new(),
+                ),
+                &package,
+                &source,
+                &assistant_name,
+                &mode,
+                project_path.as_deref(),
+                Err(format!("安装预览后台任务失败: {error}")),
+            )
+        }
+    }
 }
 
 fn build_install_request_preview(
@@ -484,9 +520,15 @@ fn build_install_request_preview(
     let target_root = match install_target_root(assistant_name, mode, project_path) {
         Ok(path) => path,
         Err(err) => {
-            let mut preview = install_preview_error(err, source.to_string(), String::new());
-            apply_policy_to_preview(&mut preview, package, source, policy);
-            return seal_install_preview(preview, package, assistant_name, mode, project_path);
+            return finalize_install_request_preview(
+                install_preview_error(err, source.to_string(), String::new()),
+                package,
+                source,
+                assistant_name,
+                mode,
+                project_path,
+                policy,
+            );
         }
     };
     let preview = if mode == "symlink" {
@@ -503,7 +545,26 @@ fn build_install_request_preview(
     } else {
         preview_install_source(package, source, &target_root)
     };
-    let mut preview = preview;
+    finalize_install_request_preview(
+        preview,
+        package,
+        source,
+        assistant_name,
+        mode,
+        project_path,
+        policy,
+    )
+}
+
+fn finalize_install_request_preview(
+    mut preview: InstallPreview,
+    package: &str,
+    source: &str,
+    assistant_name: &str,
+    mode: &str,
+    project_path: Option<&str>,
+    policy: Result<&InstallPolicyConfig, String>,
+) -> InstallPreview {
     apply_policy_to_preview(&mut preview, package, source, policy);
     seal_install_preview(preview, package, assistant_name, mode, project_path)
 }
@@ -585,28 +646,92 @@ fn install_skill_blocking(
     project_path: Option<String>,
     plan_token: Option<String>,
 ) -> InstallResult {
-    let _guard = match acquire_sync_lock() {
-        Ok(guard) => guard,
-        Err(error) => return install_result(false, error, "", None),
-    };
+    match run_exclusive_operation(move |db| {
+        Ok(install_skill_exclusive(
+            db,
+            package,
+            source,
+            assistant_name,
+            install_mode,
+            project_path,
+            plan_token,
+        ))
+    }) {
+        Ok(result) => result,
+        Err(error) => install_result(false, error, "", None),
+    }
+}
+
+fn install_skill_exclusive(
+    db: &Connection,
+    package: String,
+    source: String,
+    assistant_name: String,
+    install_mode: Option<String>,
+    project_path: Option<String>,
+    plan_token: Option<String>,
+) -> InstallResult {
     let mode = install_mode.unwrap_or_else(|| "copy".to_string());
-    let db = match open_db_connection() {
-        Ok(db) => db,
-        Err(err) => return install_result(false, err, "", None),
-    };
-    let policy = load_install_policy(&db);
+    let policy = load_install_policy(db);
     let target_root = match install_target_root(&assistant_name, &mode, project_path.as_deref()) {
         Ok(path) => path,
         Err(err) => return install_result(false, err, "", None),
     };
-    let current_preview = build_install_request_preview(
-        &package,
-        &source,
-        &assistant_name,
-        &mode,
-        project_path.as_deref(),
-        policy.as_ref().map_err(Clone::clone),
-    );
+    let skill_name = match install_target_name(&package, &source) {
+        Ok(name) => name,
+        Err(err) => return install_result(false, err, "", None),
+    };
+    let (prepared_git, current_preview) = if mode != "symlink" && is_git_install_source(&source) {
+        match PreparedGitInstall::prepare(&package) {
+            Ok(prepared) => {
+                let preview = prepared.preview(&target_root, &skill_name);
+                (
+                    Some(prepared),
+                    finalize_install_request_preview(
+                        preview,
+                        &package,
+                        &source,
+                        &assistant_name,
+                        &mode,
+                        project_path.as_deref(),
+                        policy.as_ref().map_err(Clone::clone),
+                    ),
+                )
+            }
+            Err(error) => {
+                let mut preview = install_preview_error(
+                    error,
+                    "git".to_string(),
+                    target_root.join(&skill_name).to_string_lossy().to_string(),
+                );
+                preview.target_name = skill_name.clone();
+                (
+                    None,
+                    finalize_install_request_preview(
+                        preview,
+                        &package,
+                        &source,
+                        &assistant_name,
+                        &mode,
+                        project_path.as_deref(),
+                        policy.as_ref().map_err(Clone::clone),
+                    ),
+                )
+            }
+        }
+    } else {
+        (
+            None,
+            build_install_request_preview(
+                &package,
+                &source,
+                &assistant_name,
+                &mode,
+                project_path.as_deref(),
+                policy.as_ref().map_err(Clone::clone),
+            ),
+        )
+    };
     if let Err(error) = verify_operation_plan(&current_preview.plan_token, plan_token.as_deref()) {
         return install_result(false, error, "", None);
     }
@@ -617,18 +742,11 @@ fn install_skill_blocking(
         return install_result(false, format!("无法创建目标目录: {}", err), "", None);
     }
 
-    let skill_name = match install_target_name(&package, &source) {
-        Ok(name) => name,
-        Err(err) => return install_result(false, err, "", None),
-    };
     let scope = if mode == "symlink" {
         "project"
     } else {
         "global"
     };
-    if let Err(error) = register_managed_root(&db, &target_root, scope, project_path.as_deref()) {
-        return install_result(false, "无法登记受管目标目录", error, None);
-    }
     let planned_targets = current_preview
         .target_actions
         .iter()
@@ -638,15 +756,9 @@ fn install_skill_blocking(
     if planned_targets.is_empty() {
         return install_result(false, "安装计划没有可执行目标", "", None);
     }
-    let metadata_checkpoint = match ManagedMetadataCheckpoint::capture(&db, &planned_targets) {
-        Ok(checkpoint) => checkpoint,
-        Err(error) => {
-            return install_result(false, "无法建立安装元数据检查点", error, None);
-        }
-    };
-    let mut file_transaction = match ReconcileTransaction::prepare(&[], &planned_targets) {
+    let mut transaction = match ReconcileTransaction::prepare_managed(db, &[], &planned_targets) {
         Ok(transaction) => transaction,
-        Err(error) => return install_result(false, "无法建立安装文件检查点", error, None),
+        Err(error) => return install_result(false, "无法建立安装事务", error, None),
     };
 
     let operation = if mode == "symlink" {
@@ -669,23 +781,20 @@ fn install_skill_blocking(
         })
     } else {
         match source.as_str() {
-            source_kind if is_git_install_source(source_kind) => {
-                let spec = match parse_git_install_spec(&package) {
-                    Ok(spec) => spec,
-                    Err(err) => return install_result(false, err, "", None),
-                };
-                install_git_package_at_ref(
-                    spec.clone(),
-                    &target_root,
-                    &skill_name,
-                    &assistant_name,
-                    Some(&current_preview.resolved_ref),
-                    |target_path, spec, outcome| {
-                        save_git_origin_meta(&db, target_path, spec, outcome)
-                    },
-                )
-                .map(|outcome| (format!("已安装到 {}", assistant_name), outcome.structure))
-            }
+            source_kind if is_git_install_source(source_kind) => prepared_git
+                .ok_or_else(|| "Git 安装来源尚未准备完成".to_string())
+                .and_then(|prepared| {
+                    prepared.apply(
+                        &target_root,
+                        &skill_name,
+                        &assistant_name,
+                        Some(&current_preview.resolved_ref),
+                        |target_path, spec, outcome| {
+                            save_git_origin_meta(db, target_path, spec, outcome)
+                        },
+                    )
+                })
+                .map(|outcome| (format!("已安装到 {}", assistant_name), outcome.structure)),
             "local" => {
                 let source_path = expand_path(package.trim());
                 install_local_package_at_digest(
@@ -703,34 +812,21 @@ fn install_skill_blocking(
 
     let (message, structure) = match operation {
         Ok(result) => result,
-        Err(error) => {
-            return rollback_install_result(
-                &db,
-                &metadata_checkpoint,
-                &mut file_transaction,
-                "安装失败",
-                error,
-            )
-        }
+        Err(error) => return rollback_install_result(&mut transaction, "安装失败", error),
     };
     if let Err(error) = finalize_install_registration(
-        &db,
+        db,
         &target_root,
         scope,
         project_path.as_deref(),
         &planned_targets,
     ) {
-        return rollback_install_result(
-            &db,
-            &metadata_checkpoint,
-            &mut file_transaction,
-            "记录受管状态失败",
-            error,
-        );
+        return rollback_install_result(&mut transaction, "记录受管状态失败", error);
     }
-    match file_transaction.commit() {
-        Ok(()) => install_result(true, message, "", Some(structure)),
-        Err(warning) => install_result(true, message, warning, Some(structure)),
+    match transaction.commit() {
+        Ok(None) => install_result(true, message, "", Some(structure)),
+        Ok(Some(warning)) => install_result(true, message, warning, Some(structure)),
+        Err(error) => install_result(false, "提交安装事务失败", error, None),
     }
 }
 
@@ -754,13 +850,11 @@ fn finalize_install_registration(
 }
 
 fn rollback_install_result(
-    db: &Connection,
-    metadata_checkpoint: &ManagedMetadataCheckpoint,
-    file_transaction: &mut ReconcileTransaction,
+    transaction: &mut ReconcileTransaction<'_>,
     message: &str,
     error: String,
 ) -> InstallResult {
-    match rollback_install_attempt(db, metadata_checkpoint, file_transaction) {
+    match rollback_install_attempt(transaction) {
         Ok(()) => install_result(false, message, format!("{}；已回滚安装变更", error), None),
         Err(rollback_error) => install_result(
             false,
@@ -771,23 +865,8 @@ fn rollback_install_result(
     }
 }
 
-fn rollback_install_attempt(
-    db: &Connection,
-    metadata_checkpoint: &ManagedMetadataCheckpoint,
-    file_transaction: &mut ReconcileTransaction,
-) -> Result<(), String> {
-    let mut errors = Vec::new();
-    if let Err(error) = file_transaction.rollback() {
-        errors.push(format!("文件回滚失败: {}", error));
-    }
-    if let Err(error) = metadata_checkpoint.restore(db) {
-        errors.push(format!("元数据回滚失败: {}", error));
-    }
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors.join("；"))
-    }
+fn rollback_install_attempt(transaction: &mut ReconcileTransaction<'_>) -> Result<(), String> {
+    transaction.rollback()
 }
 
 fn install_target_root(
@@ -838,72 +917,87 @@ fn install_preview_error(
     }
 }
 
-#[tauri::command(async)]
-fn delete_skill(path: String) -> Result<String, String> {
-    let _guard = acquire_sync_lock()?;
-    let p = PathBuf::from(&path);
-    if !p.exists() {
-        return Err("路径不存在".to_string());
-    }
-    let db = open_db_connection()?;
-    let registry_managed = find_managed_installation(&db, &p)?;
-    if !app_core::is_managed_skill_path(&p, &managed_skill_roots()) && registry_managed.is_none() {
-        return Err("不允许删除".to_string());
-    }
-    if !is_explicitly_managed(&db, &p)? {
-        return Err("只允许删除 SkillMate 管理的 Skill".to_string());
-    }
-    verify_managed_content_unchanged(&db, &p)?;
-    let mut transaction = ReconcileTransaction::prepare(std::slice::from_ref(&p), &[])?;
-    if let Err(error) = cleanup_skill_metadata(&db, &p) {
-        return match transaction.rollback() {
-            Ok(()) => Err(error),
-            Err(rollback_error) => Err(format!(
-                "{}；恢复 Skill 文件失败: {}",
-                error, rollback_error
-            )),
-        };
-    }
-    match transaction.commit() {
-        Ok(()) => Ok("已删除".to_string()),
-        Err(warning) => Ok(format!("已删除；{}", warning)),
-    }
+#[tauri::command]
+async fn delete_skill(path: String) -> Result<String, String> {
+    run_blocking_task(move || {
+        run_exclusive_operation(|db| {
+            let p = PathBuf::from(&path);
+            if !p.exists() {
+                return Err("路径不存在".to_string());
+            }
+            let registry_managed = find_managed_installation(db, &p)?;
+            if !app_core::is_managed_skill_path(&p, &managed_skill_roots())
+                && registry_managed.is_none()
+            {
+                return Err("不允许删除".to_string());
+            }
+            if !is_explicitly_managed(db, &p)? {
+                return Err("只允许删除 SkillMate 管理的 Skill".to_string());
+            }
+            verify_managed_content_unchanged(db, &p)?;
+            let mut transaction =
+                ReconcileTransaction::prepare_managed(db, std::slice::from_ref(&p), &[])?;
+            if let Err(error) = cleanup_skill_metadata(db, &p) {
+                return match transaction.rollback() {
+                    Ok(()) => Err(error),
+                    Err(rollback_error) => Err(format!(
+                        "{}；恢复 Skill 文件失败: {}",
+                        error, rollback_error
+                    )),
+                };
+            }
+            match transaction.commit() {
+                Ok(None) => Ok("已删除".to_string()),
+                Ok(Some(warning)) => Ok(format!("已删除；{}", warning)),
+                Err(error) => Err(error),
+            }
+        })
+    })
+    .await?
 }
 
-#[tauri::command(async)]
-fn unlink_symlink_skill(path: String) -> Result<String, String> {
-    let _guard = acquire_sync_lock()?;
-    let p = PathBuf::from(&path);
-    if !p.exists() && fs::symlink_metadata(&p).is_err() {
-        return Err("路径不存在".to_string());
-    }
-    let metadata = fs::symlink_metadata(&p).map_err(|e| e.to_string())?;
-    if !metadata.file_type().is_symlink() {
-        return Err("目标不是软连接".to_string());
-    }
-    let db = open_db_connection()?;
-    let registry_managed = find_managed_installation(&db, &p)?
-        .filter(|installation| installation.skill.install_mode.as_deref() == Some("symlink"));
-    if !app_core::is_managed_link_entry_path(&p, &managed_skill_roots())
-        && registry_managed.is_none()
-    {
-        return Err("不允许解除非受管路径".to_string());
-    }
-    if !is_explicitly_managed(&db, &p)? {
-        return Err("只允许解除 SkillMate 创建的软连接".to_string());
-    }
-    verify_managed_content_unchanged(&db, &p)?;
-    let mut transaction = ReconcileTransaction::prepare(std::slice::from_ref(&p), &[])?;
-    if let Err(error) = cleanup_skill_metadata(&db, &p) {
-        return match transaction.rollback() {
-            Ok(()) => Err(error),
-            Err(rollback_error) => Err(format!("{}；恢复软连接失败: {}", error, rollback_error)),
-        };
-    }
-    match transaction.commit() {
-        Ok(()) => Ok("已解除软连接".to_string()),
-        Err(warning) => Ok(format!("已解除软连接；{}", warning)),
-    }
+#[tauri::command]
+async fn unlink_symlink_skill(path: String) -> Result<String, String> {
+    run_blocking_task(move || {
+        run_exclusive_operation(|db| {
+            let p = PathBuf::from(&path);
+            if !p.exists() && fs::symlink_metadata(&p).is_err() {
+                return Err("路径不存在".to_string());
+            }
+            let metadata = fs::symlink_metadata(&p).map_err(|e| e.to_string())?;
+            if !metadata.file_type().is_symlink() {
+                return Err("目标不是软连接".to_string());
+            }
+            let registry_managed = find_managed_installation(db, &p)?.filter(|installation| {
+                installation.skill.install_mode.as_deref() == Some("symlink")
+            });
+            if !app_core::is_managed_link_entry_path(&p, &managed_skill_roots())
+                && registry_managed.is_none()
+            {
+                return Err("不允许解除非受管路径".to_string());
+            }
+            if !is_explicitly_managed(db, &p)? {
+                return Err("只允许解除 SkillMate 创建的软连接".to_string());
+            }
+            verify_managed_content_unchanged(db, &p)?;
+            let mut transaction =
+                ReconcileTransaction::prepare_managed(db, std::slice::from_ref(&p), &[])?;
+            if let Err(error) = cleanup_skill_metadata(db, &p) {
+                return match transaction.rollback() {
+                    Ok(()) => Err(error),
+                    Err(rollback_error) => {
+                        Err(format!("{}；恢复软连接失败: {}", error, rollback_error))
+                    }
+                };
+            }
+            match transaction.commit() {
+                Ok(None) => Ok("已解除软连接".to_string()),
+                Ok(Some(warning)) => Ok(format!("已解除软连接；{}", warning)),
+                Err(error) => Err(error),
+            }
+        })
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -965,87 +1059,47 @@ fn preview_project_skill_targets(
     Ok(previews)
 }
 
-#[tauri::command(async)]
-fn check_update(path: String, force: Option<bool>) -> serde_json::Value {
-    let db = match open_db_connection() {
-        Ok(db) => db,
-        Err(err) => {
-            return serde_json::json!({
-                "originKind": "unknown",
-                "originLocator": "",
-                "resolvedLocator": "",
-                "trackingRef": "",
-                "installedRef": "",
-                "latestRef": "",
-                "syncState": "failed",
-                "message": format!("检查失败: {}", err),
-                "lagCount": 0,
-                "lastProbeAt": now_ms(),
-                "lastSyncAt": null,
-                "managedByApp": false,
-                "canSync": false,
-                "hasUpdate": false,
-                "behindCount": 0,
-                "remoteUrl": ""
-            })
+#[tauri::command]
+async fn check_update(path: String, force: Option<bool>) -> serde_json::Value {
+    match run_blocking_task(move || {
+        let target = expand_path(path.trim());
+        match check_skill_update(&target, force.unwrap_or(false)) {
+            Ok(info) => sync_info_json(&info),
+            Err(err) => failed_sync_info(&format!("检查失败: {}", err)),
         }
-    };
-    let target = expand_path(path.trim());
-    match is_known_skill_path(&db, &target) {
-        Ok(true) => {}
-        Ok(false) => {
-            return failed_sync_info("只允许检查已发现或受管的 Skill");
-        }
-        Err(error) => return failed_sync_info(&format!("检查受管路径失败: {}", error)),
-    }
-    match probe_skill_state(&db, &target, force.unwrap_or(false)) {
-        Ok(info) => sync_info_json(&info),
-        Err(err) => failed_sync_info(&format!("检查失败: {}", err)),
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => failed_sync_info(&format!("检查任务异常终止: {}", error)),
     }
 }
 
-#[tauri::command(async)]
-fn check_updates(
+#[tauri::command]
+async fn check_updates(
     paths: Vec<String>,
     force: Option<bool>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let db = open_db_connection()?;
-    let mut valid_paths = Vec::new();
-    let mut invalid = std::collections::HashMap::new();
-    for raw_path in paths {
-        let path = expand_path(raw_path.trim());
-        let key = path.to_string_lossy().to_string();
-        match is_known_skill_path(&db, &path) {
-            Ok(true) => valid_paths.push(path),
-            Ok(false) => {
-                invalid.insert(key, "只允许检查已发现或受管的 Skill".to_string());
-            }
-            Err(error) => {
-                invalid.insert(key, format!("检查受管路径失败: {}", error));
-            }
-        }
-    }
-    let mut results = probe_skill_states(&db, &valid_paths, force.unwrap_or(false))
-        .into_iter()
-        .map(|(path, result)| {
-            let mut value = match result {
-                Ok(info) => sync_info_json(&info),
-                Err(error) => failed_sync_info(&format!("检查失败: {}", error)),
-            };
-            if let Some(object) = value.as_object_mut() {
-                object.insert("path".to_string(), serde_json::Value::String(path));
-            }
-            value
-        })
-        .collect::<Vec<_>>();
-    for (path, error) in invalid {
-        let mut value = failed_sync_info(&error);
-        if let Some(object) = value.as_object_mut() {
-            object.insert("path".to_string(), serde_json::Value::String(path));
-        }
-        results.push(value);
-    }
-    Ok(results)
+    run_blocking_task(move || {
+        let paths = paths
+            .into_iter()
+            .map(|path| expand_path(path.trim()))
+            .collect::<Vec<_>>();
+        Ok(check_skill_updates(&paths, force.unwrap_or(false))?
+            .into_iter()
+            .map(|(path, result)| {
+                let mut value = match result {
+                    Ok(info) => sync_info_json(&info),
+                    Err(error) => failed_sync_info(&format!("检查失败: {}", error)),
+                };
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("path".to_string(), serde_json::Value::String(path));
+                }
+                value
+            })
+            .collect())
+    })
+    .await?
 }
 
 fn failed_sync_info(message: &str) -> serde_json::Value {
@@ -1069,19 +1123,22 @@ fn failed_sync_info(message: &str) -> serde_json::Value {
     })
 }
 
-#[tauri::command(async)]
-fn update_from_upstream(path: String) -> Result<String, String> {
-    let _guard = acquire_sync_lock()?;
-    let db = open_db_connection()?;
-    let p = expand_path(path.trim());
-    if !is_known_skill_path(&db, &p)? {
-        return Err("只允许更新已发现或受管的 Skill".to_string());
-    }
-    if !is_explicitly_managed(&db, &p)? {
-        return Err("只允许更新 SkillMate 管理的 Git 快照".to_string());
-    }
-    verify_managed_content_unchanged(&db, &p)?;
-    update_skill_from_upstream(&db, &p)
+#[tauri::command]
+async fn update_from_upstream(path: String) -> Result<String, String> {
+    run_blocking_task(move || {
+        run_exclusive_operation(|db| {
+            let p = expand_path(path.trim());
+            if !is_known_skill_path(db, &p)? {
+                return Err("只允许更新已发现或受管的 Skill".to_string());
+            }
+            if !is_explicitly_managed(db, &p)? {
+                return Err("只允许更新 SkillMate 管理的 Git 快照".to_string());
+            }
+            verify_managed_content_unchanged(db, &p)?;
+            update_skill_from_upstream(db, &p)
+        })
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -1127,13 +1184,6 @@ fn is_openable_managed_folder(db: &Connection, path: &Path) -> Result<bool, Stri
         .map(|installation| installation.path)
         .collect::<Vec<_>>();
     Ok(is_openable_registered_folder(path, &managed_paths))
-}
-
-fn is_known_skill_path(db: &Connection, path: &Path) -> Result<bool, String> {
-    if app_core::is_managed_skill_path(path, &managed_skill_roots()) {
-        return Ok(true);
-    }
-    Ok(find_managed_installation(db, path)?.is_some())
 }
 
 fn is_openable_managed_folder_with_roots(path: &Path, roots: &[PathBuf]) -> bool {
@@ -1182,41 +1232,32 @@ fn initialize_database_state() -> Option<Connection> {
             return None;
         }
     };
-    for assistant in app_core::assistant_definitions() {
-        for root in assistant.global_discovery_roots() {
-            if let Err(error) = register_managed_root(&db, &root, "global", None) {
-                eprintln!("受管根目录登记失败 {}: {}", root.to_string_lossy(), error);
+    match run_startup_maintenance(&db) {
+        Ok(report) => {
+            if report.recovered_transactions > 0 {
+                eprintln!(
+                    "已恢复 {} 个未完成的文件事务",
+                    report.recovered_transactions
+                );
+            }
+            for warning in report.warnings {
+                eprintln!("{}", warning);
             }
         }
-    }
-    if let Err(error) = backfill_managed_roots(&db) {
-        eprintln!("受管根目录迁移失败: {}", error);
-    }
-    match list_managed_roots(&db) {
-        Ok(roots) => {
-            for root in roots {
-                if let Err(error) =
-                    record_managed_root(&db, &root.path, &root.scope, root.project_path.as_deref())
-                {
-                    eprintln!(
-                        "受管安装索引恢复失败 {}: {}",
-                        root.path.to_string_lossy(),
-                        error
-                    );
-                }
-            }
+        Err(error) => {
+            let message = remember_database_initialization_error(&format!(
+                "启动文件事务恢复失败，已跳过后续受管状态维护: {}",
+                error
+            ));
+            eprintln!("{}", message);
+            return None;
         }
-        Err(error) => eprintln!("读取受管根目录失败: {}", error),
-    }
-    if let Err(error) = prune_missing_managed_installations(&db) {
-        eprintln!("清理失效受管安装索引失败: {}", error);
     }
     Some(db)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let db = initialize_database_state();
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
@@ -1225,8 +1266,11 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
-        .manage(AppState {
-            db: db.map(Mutex::new),
+        .setup(|app| {
+            app.manage(AppState {
+                db: initialize_database_state().map(Mutex::new),
+            });
+            Ok(())
         })
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -1282,7 +1326,8 @@ mod tests {
     use crate::library_manifest::{LibraryExport, LibrarySkillRecord};
     use crate::scenario_manifest::ScenarioManifest;
     use crate::skill_orchestration::apply_manifest;
-    use crate::skillmate_manifest::{SkillMateManifest, SkillMateManifestSkill};
+    use crate::skill_model::SkillDescriptor;
+    use crate::skillmate_manifest::SkillMateManifest;
     use rusqlite::params;
 
     fn test_db() -> Connection {
@@ -1354,7 +1399,7 @@ mod tests {
         let manifest = SkillMateManifest {
             version: 2,
             reconcile: false,
-            skills: vec![SkillMateManifestSkill {
+            skills: vec![SkillDescriptor {
                 assistant: "Codex".to_string(),
                 source: source.to_string_lossy().to_string(),
                 source_kind: "local".to_string(),
@@ -1425,7 +1470,7 @@ mod tests {
         let manifest = SkillMateManifest {
             version: 2,
             reconcile: false,
-            skills: vec![SkillMateManifestSkill {
+            skills: vec![SkillDescriptor {
                 assistant: "Codex".to_string(),
                 source: source.to_string_lossy().to_string(),
                 source_kind: "local".to_string(),
@@ -1470,10 +1515,8 @@ mod tests {
         let root = test_dir("install-rollback");
         fs::create_dir_all(&root).unwrap();
         let target = root.join("writer");
-        let metadata_checkpoint =
-            ManagedMetadataCheckpoint::capture(&db, std::slice::from_ref(&target)).unwrap();
-        let mut file_transaction =
-            ReconcileTransaction::prepare(&[], std::slice::from_ref(&target)).unwrap();
+        let mut transaction =
+            ReconcileTransaction::prepare_managed(&db, &[], std::slice::from_ref(&target)).unwrap();
         fs::create_dir_all(&target).unwrap();
         fs::write(
             target.join("SKILL.md"),
@@ -1481,14 +1524,14 @@ mod tests {
         )
         .unwrap();
         managed_state::mark_managed_skill(&root, "Codex", &target, "local:/tmp/writer").unwrap();
-        record_managed_root(&db, &root, "global", None).unwrap();
+        managed_installation::record_managed_root(&db, &root, "global", None).unwrap();
         db.execute(
             "INSERT INTO skill_origin_meta (skill_path, managed_by_app) VALUES (?, 1)",
             params![target.to_string_lossy().to_string()],
         )
         .unwrap();
 
-        rollback_install_attempt(&db, &metadata_checkpoint, &mut file_transaction).unwrap();
+        rollback_install_attempt(&mut transaction).unwrap();
 
         assert!(!target.exists());
         assert!(managed_state::read_managed_state(&root)
@@ -1504,6 +1547,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(origin_count, 0);
+        let root_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM managed_roots WHERE root_path = ?",
+                params![root.to_string_lossy().to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(root_count, 0);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1513,10 +1564,8 @@ mod tests {
         let root = test_dir("install-origin-before-sidecar");
         fs::create_dir_all(&root).unwrap();
         let target = root.join("writer");
-        let metadata_checkpoint =
-            ManagedMetadataCheckpoint::capture(&db, std::slice::from_ref(&target)).unwrap();
-        let mut file_transaction =
-            ReconcileTransaction::prepare(&[], std::slice::from_ref(&target)).unwrap();
+        let mut transaction =
+            ReconcileTransaction::prepare_managed(&db, &[], std::slice::from_ref(&target)).unwrap();
         fs::create_dir_all(&target).unwrap();
         fs::write(target.join("SKILL.md"), "writer").unwrap();
         db.execute(
@@ -1525,7 +1574,7 @@ mod tests {
         )
         .unwrap();
 
-        rollback_install_attempt(&db, &metadata_checkpoint, &mut file_transaction).unwrap();
+        rollback_install_attempt(&mut transaction).unwrap();
 
         assert!(!target.exists());
         assert!(!root.join(managed_state::STATE_FILE_NAME).exists());
@@ -1546,10 +1595,8 @@ mod tests {
         let root = test_dir("install-refresh-failure");
         fs::create_dir_all(&root).unwrap();
         let target = root.join("writer");
-        let metadata_checkpoint =
-            ManagedMetadataCheckpoint::capture(&db, std::slice::from_ref(&target)).unwrap();
-        let mut file_transaction =
-            ReconcileTransaction::prepare(&[], std::slice::from_ref(&target)).unwrap();
+        let mut transaction =
+            ReconcileTransaction::prepare_managed(&db, &[], std::slice::from_ref(&target)).unwrap();
         fs::create_dir_all(&target).unwrap();
         fs::write(target.join("SKILL.md"), "writer").unwrap();
         managed_state::mark_managed_skill(&root, "Codex", &target, "local:/tmp/writer").unwrap();
@@ -1570,7 +1617,7 @@ mod tests {
             std::slice::from_ref(&target),
         )
         .unwrap_err();
-        rollback_install_attempt(&db, &metadata_checkpoint, &mut file_transaction).unwrap();
+        rollback_install_attempt(&mut transaction).unwrap();
 
         assert!(error.contains("未能刷新受管安装记录"));
         assert!(!target.exists());
@@ -1706,19 +1753,6 @@ mod tests {
         ));
 
         std::fs::remove_dir_all(base).ok();
-    }
-
-    #[test]
-    fn poisoned_sync_lock_maps_to_recoverable_error() {
-        let lock = Mutex::new(());
-        let _ = std::panic::catch_unwind(|| {
-            let _guard = lock.lock().unwrap();
-            panic!("poison test lock");
-        });
-
-        let err = map_sync_lock(lock.lock()).unwrap_err();
-
-        assert_eq!(err, "同步锁已中毒，请重启应用后重试");
     }
 
     #[test]

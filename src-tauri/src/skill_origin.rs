@@ -4,15 +4,13 @@ use crate::app_core::{
 };
 use crate::install_policy::{evaluate_install_policy, load_install_policy, InstallPolicyInput};
 use crate::managed_installation::{is_explicitly_managed, refresh_managed_installation};
-use crate::managed_state::{
-    is_managed_by_state, refresh_managed_skill_fingerprint, ManagedStateCheckpoint,
-};
+use crate::managed_state::{is_managed_by_state, refresh_managed_skill_fingerprint};
 use crate::skill_install::{
     has_git_snapshot_spec, installable_content_fingerprint, probe_git_snapshot,
-    probe_git_snapshots, sanitize_git_locator, sanitize_git_remote_url,
-    sync_git_snapshot_skill_checked, GitInstallOutcome, GitInstallSpec, GitSnapshotProbe,
+    probe_git_snapshots, sync_git_snapshot_skill_checked, GitInstallOutcome, GitSnapshotProbe,
     GitSnapshotProbeRequest,
 };
+use crate::skill_install_source::{sanitize_git_locator, sanitize_git_remote_url, GitInstallSpec};
 use crate::skill_reconcile::ReconcileTransaction;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
@@ -21,7 +19,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillOriginMeta {
     pub skill_path: String,
     pub origin_kind: String,
@@ -43,6 +41,26 @@ pub struct SkillSyncInfo {
     pub meta: SkillOriginMeta,
     pub can_sync: bool,
     pub has_update: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OriginRecord {
+    row_id: i64,
+    meta: SkillOriginMeta,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedSkillProbe {
+    path: PathBuf,
+    baseline: Option<OriginRecord>,
+    info: SkillSyncInfo,
+    should_persist: bool,
+}
+
+impl PreparedSkillProbe {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 #[derive(Default)]
@@ -90,24 +108,31 @@ pub fn load_origin_meta(
     db: &Connection,
     skill_path: &str,
 ) -> Result<Option<SkillOriginMeta>, String> {
+    Ok(load_origin_record(db, skill_path)?.map(|record| record.meta))
+}
+
+fn load_origin_record(db: &Connection, skill_path: &str) -> Result<Option<OriginRecord>, String> {
     db.query_row(
-        "SELECT skill_path, origin_kind, origin_locator, resolved_locator, tracking_ref, installed_ref, latest_ref, sync_state, sync_message, lag_count, last_probe_at, last_sync_at, managed_by_app FROM skill_origin_meta WHERE skill_path = ?",
+        "SELECT rowid, skill_path, origin_kind, origin_locator, resolved_locator, tracking_ref, installed_ref, latest_ref, sync_state, sync_message, lag_count, last_probe_at, last_sync_at, managed_by_app FROM skill_origin_meta WHERE skill_path = ?",
         [skill_path],
         |row| {
-            Ok(SkillOriginMeta {
-                skill_path: row.get(0)?,
-                origin_kind: row.get(1)?,
-                origin_locator: row.get(2)?,
-                resolved_locator: row.get(3)?,
-                tracking_ref: row.get(4)?,
-                installed_ref: row.get(5)?,
-                latest_ref: row.get(6)?,
-                sync_state: row.get(7)?,
-                sync_message: row.get(8)?,
-                lag_count: row.get::<_, i64>(9)?.max(0) as u32,
-                last_probe_at: row.get(10)?,
-                last_sync_at: row.get(11)?,
-                managed_by_app: row.get::<_, i32>(12)? != 0,
+            Ok(OriginRecord {
+                row_id: row.get(0)?,
+                meta: SkillOriginMeta {
+                    skill_path: row.get(1)?,
+                    origin_kind: row.get(2)?,
+                    origin_locator: row.get(3)?,
+                    resolved_locator: row.get(4)?,
+                    tracking_ref: row.get(5)?,
+                    installed_ref: row.get(6)?,
+                    latest_ref: row.get(7)?,
+                    sync_state: row.get(8)?,
+                    sync_message: row.get(9)?,
+                    lag_count: row.get::<_, i64>(10)?.max(0) as u32,
+                    last_probe_at: row.get(11)?,
+                    last_sync_at: row.get(12)?,
+                    managed_by_app: row.get::<_, i32>(13)? != 0,
+                },
             })
         },
     )
@@ -625,33 +650,56 @@ pub fn probe_skill_state(
     path: &Path,
     force: bool,
 ) -> Result<SkillSyncInfo, String> {
-    let mut cache = OriginInferenceCache::default();
-    let mut meta = infer_origin_meta_with_cache(
-        path,
-        load_origin_meta(db, &path.to_string_lossy())?,
-        &mut cache,
-    );
-    meta.managed_by_app = is_explicitly_managed(db, path)?;
-    probe_prepared_skill_state(db, path, force, meta, &mut cache)
+    persist_prepared_skill_probe(db, prepare_skill_probe(db, path, force)?)
 }
 
-fn probe_prepared_skill_state(
+pub(crate) fn prepare_skill_probe(
     db: &Connection,
     path: &Path,
     force: bool,
-    mut meta: SkillOriginMeta,
+) -> Result<PreparedSkillProbe, String> {
+    let mut cache = OriginInferenceCache::default();
+    let baseline = load_origin_record(db, &path.to_string_lossy())?;
+    let mut meta = infer_origin_meta_with_cache(
+        path,
+        baseline.as_ref().map(|record| record.meta.clone()),
+        &mut cache,
+    );
+    meta.managed_by_app = is_explicitly_managed(db, path)?;
+    prepare_probe_from_meta(path, force, baseline, meta, &mut cache)
+}
+
+fn prepare_probe_from_meta(
+    path: &Path,
+    force: bool,
+    baseline: Option<OriginRecord>,
+    meta: SkillOriginMeta,
     cache: &mut OriginInferenceCache,
-) -> Result<SkillSyncInfo, String> {
+) -> Result<PreparedSkillProbe, String> {
     if should_skip_probe(&meta, force) {
         let can_sync_now = can_sync_with_cache(&meta, path, cache);
         let has_update = meta.sync_state == "behind" || meta.lag_count > 0;
-        return Ok(SkillSyncInfo {
-            meta,
-            can_sync: can_sync_now,
-            has_update,
+        return Ok(PreparedSkillProbe {
+            path: path.to_path_buf(),
+            baseline,
+            info: SkillSyncInfo {
+                meta,
+                can_sync: can_sync_now,
+                has_update,
+            },
+            should_persist: false,
         });
     }
 
+    Ok(probe_meta(path, baseline, meta, cache))
+}
+
+fn probe_meta(
+    path: &Path,
+    baseline: Option<OriginRecord>,
+    mut meta: SkillOriginMeta,
+    cache: &mut OriginInferenceCache,
+) -> PreparedSkillProbe {
     match meta.origin_kind.as_str() {
         "git" => probe_git_meta(path, &mut meta),
         "npm" | "legacy_npm" => probe_legacy_package_meta(path, &mut meta, false),
@@ -665,99 +713,129 @@ fn probe_prepared_skill_state(
         }
     }
 
-    save_origin_meta(db, &meta)?;
     let can_sync_now = can_sync_with_cache(&meta, path, cache);
     let has_update = meta.sync_state == "behind" || meta.lag_count > 0;
-    Ok(SkillSyncInfo {
-        meta,
-        can_sync: can_sync_now,
-        has_update,
-    })
+    PreparedSkillProbe {
+        path: path.to_path_buf(),
+        baseline,
+        info: SkillSyncInfo {
+            meta,
+            can_sync: can_sync_now,
+            has_update,
+        },
+        should_persist: true,
+    }
 }
 
-pub fn probe_skill_states(
+pub(crate) fn prepare_skill_probes(
     db: &Connection,
     paths: &[PathBuf],
     force: bool,
-) -> Vec<(String, Result<SkillSyncInfo, String>)> {
-    let mut completed = HashMap::<String, Result<SkillSyncInfo, String>>::new();
-    let mut snapshot_meta = HashMap::<String, (PathBuf, SkillOriginMeta)>::new();
+) -> Vec<(String, Result<PreparedSkillProbe, String>)> {
+    let mut completed = HashMap::<String, Result<PreparedSkillProbe, String>>::new();
+    let mut snapshot_meta =
+        HashMap::<String, (PathBuf, Option<OriginRecord>, SkillOriginMeta)>::new();
     let mut requests = Vec::new();
     let mut inference_cache = OriginInferenceCache::default();
 
-    for path in paths {
-        let key = path.to_string_lossy().to_string();
+    for (index, path) in paths.iter().enumerate() {
+        let path_key = path.to_string_lossy().to_string();
+        let probe_key = format!("{}:{}", index, path_key);
         let prepared = (|| {
+            let baseline = load_origin_record(db, &path_key)?;
             let mut meta = infer_origin_meta_with_cache(
                 path,
-                load_origin_meta(db, &key)?,
+                baseline.as_ref().map(|record| record.meta.clone()),
                 &mut inference_cache,
             );
             meta.managed_by_app = is_explicitly_managed(db, path)?;
             if should_skip_probe(&meta, force) {
-                let can_sync_now = can_sync_with_cache(&meta, path, &mut inference_cache);
-                let has_update = meta.sync_state == "behind" || meta.lag_count > 0;
-                return Ok(Some(SkillSyncInfo {
-                    meta,
-                    can_sync: can_sync_now,
-                    has_update,
-                }));
+                return prepare_probe_from_meta(path, force, baseline, meta, &mut inference_cache)
+                    .map(Some);
             }
             if meta.origin_kind == "git"
                 && find_git_repo_root(path).is_none()
                 && has_git_snapshot_spec(&meta.origin_locator, &meta.resolved_locator)
             {
                 requests.push(GitSnapshotProbeRequest {
-                    key: key.clone(),
+                    key: probe_key.clone(),
                     origin_locator: meta.origin_locator.clone(),
                     resolved_locator: meta.resolved_locator.clone(),
                     tracking_ref: meta.tracking_ref.clone(),
                 });
-                snapshot_meta.insert(key.clone(), (path.clone(), meta));
+                snapshot_meta.insert(probe_key.clone(), (path.clone(), baseline, meta));
                 Ok(None)
             } else {
-                probe_prepared_skill_state(db, path, force, meta, &mut inference_cache).map(Some)
+                Ok(Some(probe_meta(path, baseline, meta, &mut inference_cache)))
             }
         })();
         match prepared {
             Ok(Some(info)) => {
-                completed.insert(key, Ok(info));
+                completed.insert(probe_key, Ok(info));
             }
             Ok(None) => {}
             Err(error) => {
-                completed.insert(key, Err(error));
+                completed.insert(probe_key, Err(error));
             }
         }
     }
 
     for (key, probe) in probe_git_snapshots(&requests) {
-        let Some((path, mut meta)) = snapshot_meta.remove(&key) else {
+        let Some((path, baseline, mut meta)) = snapshot_meta.remove(&key) else {
             completed.insert(key, Err("批量检查结果缺少对应 Skill".to_string()));
             continue;
         };
         apply_snapshot_probe(&path, &mut meta, probe);
-        let result = save_origin_meta(db, &meta).map(|_| {
-            let can_sync_now = can_sync_with_cache(&meta, &path, &mut inference_cache);
-            let has_update = meta.sync_state == "behind" || meta.lag_count > 0;
-            SkillSyncInfo {
-                meta,
-                can_sync: can_sync_now,
-                has_update,
-            }
-        });
-        completed.insert(key, result);
+        let can_sync_now = can_sync_with_cache(&meta, &path, &mut inference_cache);
+        let has_update = meta.sync_state == "behind" || meta.lag_count > 0;
+        completed.insert(
+            key,
+            Ok(PreparedSkillProbe {
+                path,
+                baseline,
+                info: SkillSyncInfo {
+                    meta,
+                    can_sync: can_sync_now,
+                    has_update,
+                },
+                should_persist: true,
+            }),
+        );
     }
 
     paths
         .iter()
-        .map(|path| {
-            let key = path.to_string_lossy().to_string();
+        .enumerate()
+        .map(|(index, path)| {
+            let path_key = path.to_string_lossy().to_string();
+            let probe_key = format!("{}:{}", index, path_key);
             let result = completed
-                .remove(&key)
+                .remove(&probe_key)
                 .unwrap_or_else(|| Err("未生成 Skill 检查结果".to_string()));
-            (key, result)
+            (path_key, result)
         })
         .collect()
+}
+
+pub(crate) fn persist_prepared_skill_probe(
+    db: &Connection,
+    prepared: PreparedSkillProbe,
+) -> Result<SkillSyncInfo, String> {
+    if !prepared.path.is_dir() {
+        return Err("检查期间 Skill 已被删除或不再是目录，请刷新后重试".to_string());
+    }
+    let transaction = db
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let current = load_origin_record(&transaction, &prepared.path.to_string_lossy())?;
+    if current != prepared.baseline {
+        return Err("检查期间 Skill 状态已变化，请重新检查".to_string());
+    }
+    if prepared.should_persist {
+        save_origin_meta(&transaction, &prepared.info.meta)?;
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(prepared.info)
 }
 
 pub fn save_installed_git_meta(
@@ -815,11 +893,8 @@ pub fn update_skill_from_upstream(db: &Connection, path: &Path) -> Result<String
         &sync_info.meta.origin_locator,
         &sync_info.meta.resolved_locator,
     ) {
-        let root = path
-            .parent()
-            .ok_or_else(|| "受管 Skill 缺少父目录".to_string())?;
-        let state_checkpoint = ManagedStateCheckpoint::capture(root)?;
-        let mut file_transaction = ReconcileTransaction::prepare(
+        let mut transaction = ReconcileTransaction::prepare_managed(
+            db,
             std::slice::from_ref(&path.to_path_buf()),
             std::slice::from_ref(&path.to_path_buf()),
         )?;
@@ -853,7 +928,7 @@ pub fn update_skill_from_upstream(db: &Connection, path: &Path) -> Result<String
         ) {
             Ok(outcome) => outcome,
             Err(error) => {
-                return match file_transaction.rollback() {
+                return match transaction.rollback() {
                     Ok(()) => Err(error),
                     Err(rollback_error) => {
                         Err(format!("{}；文件回滚失败: {}", error, rollback_error))
@@ -869,15 +944,16 @@ pub fn update_skill_from_upstream(db: &Connection, path: &Path) -> Result<String
         sync_info.meta.lag_count = 0;
         sync_info.meta.last_probe_at = Some(now);
         sync_info.meta.last_sync_at = Some(now);
-        if let Err(error) = persist_managed_update(db, path, &sync_info.meta, &state_checkpoint) {
-            return match file_transaction.rollback() {
+        if let Err(error) = persist_managed_update(db, path, &sync_info.meta) {
+            return match transaction.rollback() {
                 Ok(()) => Err(error),
                 Err(rollback_error) => Err(format!("{}；文件回滚失败: {}", error, rollback_error)),
             };
         }
-        match file_transaction.commit() {
-            Ok(()) => Ok("更新成功".to_string()),
-            Err(warning) => Ok(format!("更新成功；{}", warning)),
+        match transaction.commit() {
+            Ok(None) => Ok("更新成功".to_string()),
+            Ok(Some(warning)) => Ok(format!("更新成功；{}", warning)),
+            Err(error) => Err(error),
         }
     } else {
         Err("当前 Git 来源缺少可重建的快照信息，已拒绝修改本地仓库".to_string())
@@ -888,7 +964,6 @@ fn persist_managed_update(
     db: &Connection,
     path: &Path,
     meta: &SkillOriginMeta,
-    state_checkpoint: &ManagedStateCheckpoint,
 ) -> Result<(), String> {
     let root = path
         .parent()
@@ -898,21 +973,12 @@ fn persist_managed_update(
         refresh_managed_skill_fingerprint(root, path)?;
     }
 
-    let database_result = (|| {
-        let transaction = db
-            .unchecked_transaction()
-            .map_err(|error| error.to_string())?;
-        save_origin_meta(&transaction, meta)?;
-        refresh_managed_installation(&transaction, path, Some(&meta.installed_ref))?;
-        transaction.commit().map_err(|error| error.to_string())
-    })();
-    if let Err(error) = database_result {
-        return match state_checkpoint.restore(root) {
-            Ok(()) => Err(error),
-            Err(restore_error) => Err(format!("{}；恢复受管指纹失败: {}", error, restore_error)),
-        };
-    }
-    Ok(())
+    let transaction = db
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    save_origin_meta(&transaction, meta)?;
+    refresh_managed_installation(&transaction, path, Some(&meta.installed_ref))?;
+    transaction.commit().map_err(|error| error.to_string())
 }
 
 fn npm_latest_version(package: &str) -> Result<String, String> {
@@ -987,6 +1053,140 @@ mod tests {
 
     fn test_dir(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("skillmate-origin-test-{}-{}", name, now_ms()))
+    }
+
+    fn origin_database() -> Connection {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE skill_origin_meta (
+                skill_path TEXT PRIMARY KEY,
+                origin_kind TEXT NOT NULL DEFAULT 'unknown',
+                origin_locator TEXT NOT NULL DEFAULT '',
+                resolved_locator TEXT NOT NULL DEFAULT '',
+                tracking_ref TEXT NOT NULL DEFAULT '',
+                installed_ref TEXT NOT NULL DEFAULT '',
+                latest_ref TEXT NOT NULL DEFAULT '',
+                sync_state TEXT NOT NULL DEFAULT 'unprobed',
+                sync_message TEXT NOT NULL DEFAULT '',
+                lag_count INTEGER NOT NULL DEFAULT 0,
+                last_probe_at INTEGER,
+                last_sync_at INTEGER,
+                managed_by_app INTEGER NOT NULL DEFAULT 0
+            );",
+        )
+        .unwrap();
+        db
+    }
+
+    fn local_meta(path: &Path) -> SkillOriginMeta {
+        SkillOriginMeta {
+            skill_path: path.to_string_lossy().to_string(),
+            origin_kind: "local".into(),
+            origin_locator: path.to_string_lossy().to_string(),
+            resolved_locator: path.to_string_lossy().to_string(),
+            tracking_ref: String::new(),
+            installed_ref: "installed-before-probe".into(),
+            latest_ref: String::new(),
+            sync_state: "unprobed".into(),
+            sync_message: String::new(),
+            lag_count: 0,
+            last_probe_at: None,
+            last_sync_at: None,
+            managed_by_app: false,
+        }
+    }
+
+    fn prepared_probe(
+        db: &Connection,
+        path: &Path,
+        mut meta: SkillOriginMeta,
+    ) -> PreparedSkillProbe {
+        meta.sync_state = "current".into();
+        meta.sync_message = "探测结果".into();
+        meta.last_probe_at = Some(now_ms());
+        PreparedSkillProbe {
+            path: path.to_path_buf(),
+            baseline: load_origin_record(db, &path.to_string_lossy()).unwrap(),
+            info: SkillSyncInfo {
+                meta,
+                can_sync: false,
+                has_update: false,
+            },
+            should_persist: true,
+        }
+    }
+
+    #[test]
+    fn stale_probe_does_not_overwrite_newer_origin_state() {
+        let root = test_dir("stale-cas");
+        let path = root.join("writer");
+        fs::create_dir_all(&path).unwrap();
+        let db = origin_database();
+        let original = local_meta(&path);
+        save_origin_meta(&db, &original).unwrap();
+        let prepared = prepared_probe(&db, &path, original);
+
+        db.execute(
+            "UPDATE skill_origin_meta SET installed_ref = 'installed-after-probe' WHERE skill_path = ?",
+            [path.to_string_lossy().to_string()],
+        )
+        .unwrap();
+
+        let error = persist_prepared_skill_probe(&db, prepared).unwrap_err();
+        assert!(error.contains("状态已变化"));
+        assert_eq!(
+            load_origin_meta(&db, &path.to_string_lossy())
+                .unwrap()
+                .unwrap()
+                .installed_ref,
+            "installed-after-probe"
+        );
+        db.execute(
+            "UPDATE skill_origin_meta SET sync_message = '事务已释放' WHERE skill_path = ?",
+            [path.to_string_lossy().to_string()],
+        )
+        .unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn deleted_origin_record_is_not_recreated_by_stale_probe() {
+        let root = test_dir("deleted-cas");
+        let path = root.join("writer");
+        fs::create_dir_all(&path).unwrap();
+        let db = origin_database();
+        let original = local_meta(&path);
+        save_origin_meta(&db, &original).unwrap();
+        let prepared = prepared_probe(&db, &path, original);
+        db.execute(
+            "DELETE FROM skill_origin_meta WHERE skill_path = ?",
+            [path.to_string_lossy().to_string()],
+        )
+        .unwrap();
+
+        let error = persist_prepared_skill_probe(&db, prepared).unwrap_err();
+        assert!(error.contains("状态已变化"));
+        assert!(load_origin_meta(&db, &path.to_string_lossy())
+            .unwrap()
+            .is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn probe_without_baseline_does_not_create_state_after_path_is_deleted() {
+        let root = test_dir("deleted-new-probe");
+        let path = root.join("writer");
+        fs::create_dir_all(&path).unwrap();
+        let db = origin_database();
+        let prepared = prepared_probe(&db, &path, local_meta(&path));
+        fs::remove_dir_all(&path).unwrap();
+
+        let error = persist_prepared_skill_probe(&db, prepared).unwrap_err();
+        assert!(error.contains("已被删除"));
+        assert!(load_origin_meta(&db, &path.to_string_lossy())
+            .unwrap()
+            .is_none());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

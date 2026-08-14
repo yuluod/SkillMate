@@ -1,5 +1,6 @@
 use crate::app_core::{atomic_write, generate_id};
-use crate::skillmate_manifest::{SkillMateManifestPreview, SkillMateManifestSkill};
+use crate::skill_model::SkillDescriptor;
+use crate::skillmate_manifest::SkillMateManifestPreview;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -20,7 +21,7 @@ pub struct SkillSetProfile {
     pub name: String,
     pub description: String,
     pub active: bool,
-    pub skills: Vec<SkillMateManifestSkill>,
+    pub skills: Vec<SkillDescriptor>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -75,7 +76,7 @@ pub fn write_skill_profiles(store: &SkillSetProfileStore) -> Result<(), String> 
 pub fn upsert_skill_profile(
     name: &str,
     description: &str,
-    skills: Vec<SkillMateManifestSkill>,
+    skills: Vec<SkillDescriptor>,
 ) -> Result<SkillSetProfileStore, String> {
     let trimmed_name = name.trim();
     if trimmed_name.is_empty() {
@@ -103,11 +104,13 @@ pub fn upsert_skill_profile(
         });
     }
     write_skill_profiles(&store)?;
-    read_skill_profiles()
+    Ok(normalize_store(store))
 }
 
-pub fn set_active_profile(profile_id: &str) -> Result<SkillSetProfileStore, String> {
-    let mut store = read_skill_profiles()?;
+pub(crate) fn activate_profile_store(
+    mut store: SkillSetProfileStore,
+    profile_id: &str,
+) -> Result<SkillSetProfileStore, String> {
     if !store
         .profiles
         .iter()
@@ -122,34 +125,10 @@ pub fn set_active_profile(profile_id: &str) -> Result<SkillSetProfileStore, Stri
     for profile in &mut store.profiles {
         profile.active = profile.id == profile_id;
     }
-    write_skill_profiles(&store)?;
-    read_skill_profiles()
+    Ok(normalize_store(store))
 }
 
-pub fn rollback_active_profile() -> Result<String, String> {
-    let store = read_skill_profiles()?;
-    let (store, previous_profile_id) = rollback_active_profile_store(store)?;
-    write_skill_profiles(&store)?;
-    Ok(previous_profile_id)
-}
-
-pub fn previous_active_profile_id() -> Result<String, String> {
-    let store = read_skill_profiles()?;
-    let previous_profile_id = store
-        .previous_active_profile_id
-        .ok_or_else(|| "没有可回滚的上一个 Profile".to_string())?;
-    if store
-        .profiles
-        .iter()
-        .any(|profile| profile.id == previous_profile_id)
-    {
-        Ok(previous_profile_id)
-    } else {
-        Err("上一个 Profile 不存在，无法回滚".to_string())
-    }
-}
-
-fn rollback_active_profile_store(
+pub(crate) fn rollback_profile_store(
     mut store: SkillSetProfileStore,
 ) -> Result<(SkillSetProfileStore, String), String> {
     let previous_profile_id = store
@@ -207,7 +186,7 @@ fn profile_issue(code: &str, message: &str) -> SkillSetProfileIssue {
     }
 }
 
-fn profiles_path() -> PathBuf {
+pub(crate) fn profiles_path() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("skillmate")
@@ -321,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn rollback_active_profile_store_restores_previous_profile() {
+    fn rollback_profile_store_restores_previous_profile() {
         let store = SkillSetProfileStore {
             version: 1,
             active_profile_id: Some("p2".to_string()),
@@ -341,7 +320,7 @@ mod tests {
             ],
         };
 
-        let (store, previous_id) = rollback_active_profile_store(store).unwrap();
+        let (store, previous_id) = rollback_profile_store(store).unwrap();
 
         assert_eq!(previous_id, "p1");
         assert_eq!(store.active_profile_id.as_deref(), Some("p1"));
@@ -351,8 +330,8 @@ mod tests {
     }
 
     #[test]
-    fn rollback_active_profile_store_requires_previous_profile() {
-        let err = rollback_active_profile_store(SkillSetProfileStore {
+    fn rollback_profile_store_requires_previous_profile() {
+        let err = rollback_profile_store(SkillSetProfileStore {
             version: 1,
             active_profile_id: Some("p1".to_string()),
             previous_active_profile_id: None,
@@ -368,8 +347,8 @@ mod tests {
     }
 
     #[test]
-    fn rollback_active_profile_store_rejects_missing_previous_profile() {
-        let err = rollback_active_profile_store(SkillSetProfileStore {
+    fn rollback_profile_store_rejects_missing_previous_profile() {
+        let err = rollback_profile_store(SkillSetProfileStore {
             version: 1,
             active_profile_id: Some("p2".to_string()),
             previous_active_profile_id: Some("missing".to_string()),
@@ -386,8 +365,8 @@ mod tests {
     }
 
     #[test]
-    fn rollback_active_profile_store_rejects_repeated_rollback() {
-        let (store, _) = rollback_active_profile_store(SkillSetProfileStore {
+    fn rollback_profile_store_rejects_repeated_rollback() {
+        let (store, _) = rollback_profile_store(SkillSetProfileStore {
             version: 1,
             active_profile_id: Some("p2".to_string()),
             previous_active_profile_id: Some("p1".to_string()),
@@ -407,7 +386,7 @@ mod tests {
         })
         .unwrap();
 
-        let err = rollback_active_profile_store(store).unwrap_err();
+        let err = rollback_profile_store(store).unwrap_err();
 
         assert_eq!(err, "没有可回滚的上一个 Profile");
     }

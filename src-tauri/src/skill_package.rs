@@ -4,7 +4,7 @@ use crate::skill_structure::{
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
 pub struct PackageDetection {
@@ -24,8 +24,129 @@ pub struct DetectedSkill {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SkillPackageSource {
+    source_root: PathBuf,
+    canonical_root: PathBuf,
+}
+
+impl SkillPackageSource {
+    pub fn open(source_root: &Path) -> Result<Self, String> {
+        let metadata = fs::symlink_metadata(source_root).map_err(|error| {
+            format!(
+                "无法检查 Skill 来源目录 {}: {error}",
+                source_root.to_string_lossy()
+            )
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "Skill 来源目录不能是软连接: {}",
+                source_root.to_string_lossy()
+            ));
+        }
+        if !metadata.is_dir() {
+            return Err(format!(
+                "Skill 来源不是目录: {}",
+                source_root.to_string_lossy()
+            ));
+        }
+        let canonical_root = source_root.canonicalize().map_err(|error| {
+            format!(
+                "无法解析 Skill 来源目录 {}: {error}",
+                source_root.to_string_lossy()
+            )
+        })?;
+        Ok(Self {
+            source_root: source_root.to_path_buf(),
+            canonical_root,
+        })
+    }
+
+    pub fn resolve_detected_skill(&self, skill: &DetectedSkill) -> Result<PathBuf, String> {
+        self.resolve_relative(Path::new(&skill.relative_path))
+    }
+
+    fn resolve_relative(&self, relative: &Path) -> Result<PathBuf, String> {
+        let candidate = if relative == Path::new(".") {
+            self.source_root.clone()
+        } else {
+            if relative.as_os_str().is_empty()
+                || relative.is_absolute()
+                || relative
+                    .components()
+                    .any(|component| !matches!(component, Component::Normal(_)))
+            {
+                return Err(format!(
+                    "Skill 候选路径不是安全的相对路径: {}",
+                    relative.to_string_lossy()
+                ));
+            }
+            self.canonical_root.join(relative)
+        };
+        self.resolve_directory(&candidate)
+    }
+
+    fn resolve_directory(&self, candidate: &Path) -> Result<PathBuf, String> {
+        let metadata = fs::symlink_metadata(candidate).map_err(|error| {
+            format!(
+                "无法检查 Skill 候选目录 {}: {error}",
+                candidate.to_string_lossy()
+            )
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "Skill 候选目录不能是软连接: {}",
+                candidate.to_string_lossy()
+            ));
+        }
+        if !metadata.is_dir() {
+            return Err(format!(
+                "Skill 候选路径不是目录: {}",
+                candidate.to_string_lossy()
+            ));
+        }
+        let resolved = candidate.canonicalize().map_err(|error| {
+            format!(
+                "无法解析 Skill 候选目录 {}: {error}",
+                candidate.to_string_lossy()
+            )
+        })?;
+        if !resolved.starts_with(&self.canonical_root) {
+            return Err(format!(
+                "Skill 候选目录越过了来源根目录: {}",
+                candidate.to_string_lossy()
+            ));
+        }
+        Ok(resolved)
+    }
+
+    fn relative_path(&self, candidate: &Path) -> Result<String, String> {
+        candidate
+            .strip_prefix(&self.canonical_root)
+            .map_err(|_| {
+                format!(
+                    "Skill 候选目录越过了来源根目录: {}",
+                    candidate.to_string_lossy()
+                )
+            })
+            .map(|relative| {
+                if relative.as_os_str().is_empty() {
+                    ".".to_string()
+                } else {
+                    normalized_relative_path(relative)
+                }
+            })
+    }
+}
+
+#[derive(Default)]
+struct CollectedSkills {
+    skills: Vec<DetectedSkill>,
+    unsafe_paths: bool,
+}
+
 pub fn detect_skill_package(path: &Path) -> PackageDetection {
-    if !path.exists() {
+    if fs::symlink_metadata(path).is_err() {
         return PackageDetection {
             package_kind: "unknown".to_string(),
             detected_skills: vec![],
@@ -34,21 +155,45 @@ pub fn detect_skill_package(path: &Path) -> PackageDetection {
         };
     }
 
-    let has_bundle_signal = has_assistant_bundle_signal(path);
-    let root_structure = analyze_skill_structure(path);
-    if has_standard_entry_document(path) {
+    let source = match SkillPackageSource::open(path) {
+        Ok(source) => source,
+        Err(_) => {
+            return PackageDetection {
+                package_kind: "unknown".to_string(),
+                detected_skills: vec![],
+                warnings: vec!["unsafe_paths".to_string()],
+                needs_model: false,
+            }
+        }
+    };
+
+    let scan_root = &source.canonical_root;
+    let has_bundle_signal = has_assistant_bundle_signal(scan_root);
+    let root_structure = analyze_skill_structure(scan_root);
+    if has_standard_entry_document(scan_root) {
+        let Ok(resolved) = source.resolve_relative(Path::new(".")) else {
+            return PackageDetection {
+                package_kind: "single_skill".to_string(),
+                detected_skills: vec![],
+                warnings: with_unsafe_path_warning(package_warnings(has_bundle_signal, false)),
+                needs_model: false,
+            };
+        };
         return PackageDetection {
             package_kind: "single_skill".to_string(),
-            detected_skills: vec![detected_skill(path, path, root_structure)],
+            detected_skills: vec![detected_skill(".".to_string(), &resolved, root_structure)],
             warnings: package_warnings(has_bundle_signal, false),
             needs_model: false,
         };
     }
 
-    let mut skills = collect_child_skills(path, false);
-    if skills.is_empty() {
-        skills = collect_child_skills(path, true);
+    let mut collected = collect_child_skills(&source, false);
+    if collected.skills.is_empty() {
+        let legacy = collect_child_skills(&source, true);
+        collected.unsafe_paths |= legacy.unsafe_paths;
+        collected.skills = legacy.skills;
     }
+    let mut skills = collected.skills;
     if skills.len() > 1 {
         skills.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
         return PackageDetection {
@@ -59,7 +204,7 @@ pub fn detect_skill_package(path: &Path) -> PackageDetection {
             }
             .to_string(),
             detected_skills: skills,
-            warnings: package_warnings(has_bundle_signal, false),
+            warnings: package_detection_warnings(has_bundle_signal, false, collected.unsafe_paths),
             needs_model: false,
         };
     }
@@ -73,16 +218,24 @@ pub fn detect_skill_package(path: &Path) -> PackageDetection {
             }
             .to_string(),
             detected_skills: skills,
-            warnings: package_warnings(has_bundle_signal, false),
+            warnings: package_detection_warnings(has_bundle_signal, false, collected.unsafe_paths),
             needs_model: false,
         };
     }
 
-    let mut warnings = package_warnings(has_bundle_signal, true);
+    let mut warnings = package_detection_warnings(has_bundle_signal, true, collected.unsafe_paths);
     if root_structure.structure_status == "partial" {
+        let Ok(resolved) = source.resolve_relative(Path::new(".")) else {
+            return PackageDetection {
+                package_kind: "single_skill".to_string(),
+                detected_skills: vec![],
+                warnings: with_unsafe_path_warning(warnings),
+                needs_model: false,
+            };
+        };
         return PackageDetection {
             package_kind: "single_skill".to_string(),
-            detected_skills: vec![detected_skill(path, path, root_structure)],
+            detected_skills: vec![detected_skill(".".to_string(), &resolved, root_structure)],
             warnings,
             needs_model: false,
         };
@@ -101,9 +254,11 @@ pub fn detect_skill_package(path: &Path) -> PackageDetection {
     }
 }
 
-fn collect_child_skills(root: &Path, include_legacy: bool) -> Vec<DetectedSkill> {
+fn collect_child_skills(source: &SkillPackageSource, include_legacy: bool) -> CollectedSkills {
     let mut skills = Vec::new();
-    let mut candidates = immediate_dirs(root);
+    let mut unsafe_paths = false;
+    let root = &source.canonical_root;
+    let mut candidates = safe_immediate_dirs(source, root, &mut unsafe_paths);
     for bundle_root in [
         ".codex/skills",
         ".claude/skills",
@@ -115,12 +270,16 @@ fn collect_child_skills(root: &Path, include_legacy: bool) -> Vec<DetectedSkill>
     ] {
         let path = root.join(bundle_root);
         if path.is_dir() {
-            let direct_candidates = immediate_dirs(&path);
+            let Ok(path) = source.resolve_directory(&path) else {
+                unsafe_paths = true;
+                continue;
+            };
+            let direct_candidates = safe_immediate_dirs(source, &path, &mut unsafe_paths);
             for candidate in &direct_candidates {
                 if !(has_standard_entry_document(candidate)
                     || include_legacy && has_legacy_entry_document(candidate))
                 {
-                    candidates.extend(immediate_dirs(candidate));
+                    candidates.extend(safe_immediate_dirs(source, candidate, &mut unsafe_paths));
                 }
             }
             candidates.extend(direct_candidates);
@@ -133,10 +292,35 @@ fn collect_child_skills(root: &Path, include_legacy: bool) -> Vec<DetectedSkill>
             || (include_legacy && has_legacy_entry_document(&candidate))
         {
             let structure = analyze_skill_structure(&candidate);
-            skills.push(detected_skill(root, &candidate, structure));
+            match source.relative_path(&candidate) {
+                Ok(relative_path) => {
+                    skills.push(detected_skill(relative_path, &candidate, structure));
+                }
+                Err(_) => unsafe_paths = true,
+            }
         }
     }
-    skills
+    CollectedSkills {
+        skills,
+        unsafe_paths,
+    }
+}
+
+fn safe_immediate_dirs(
+    source: &SkillPackageSource,
+    path: &Path,
+    unsafe_paths: &mut bool,
+) -> Vec<PathBuf> {
+    immediate_dirs(path)
+        .into_iter()
+        .filter_map(|candidate| match source.resolve_directory(&candidate) {
+            Ok(resolved) => Some(resolved),
+            Err(_) => {
+                *unsafe_paths = true;
+                None
+            }
+        })
+        .collect()
 }
 
 fn immediate_dirs(path: &Path) -> Vec<PathBuf> {
@@ -151,28 +335,24 @@ fn immediate_dirs(path: &Path) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-fn detected_skill(root: &Path, path: &Path, mut structure: SkillStructureInfo) -> DetectedSkill {
+fn detected_skill(
+    relative_path: String,
+    path: &Path,
+    mut structure: SkillStructureInfo,
+) -> DetectedSkill {
     for warning in analyze_skill_safety(path) {
         if !structure.structure_warnings.contains(&warning) {
             structure.structure_warnings.push(warning);
         }
     }
     DetectedSkill {
-        relative_path: relative_path(root, path),
+        relative_path,
         structure_status: structure.structure_status,
         title: structure.manifest_title,
         description: structure.manifest_description,
         features: structure.structure_features,
         warnings: structure.structure_warnings,
     }
-}
-
-fn relative_path(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .ok()
-        .filter(|relative| !relative.as_os_str().is_empty())
-        .map(normalized_relative_path)
-        .unwrap_or_else(|| ".".to_string())
 }
 
 fn normalized_relative_path(path: &Path) -> String {
@@ -215,6 +395,26 @@ fn package_warnings(has_bundle_signal: bool, no_skills: bool) -> Vec<String> {
     }
     if no_skills {
         warnings.push("missing_entry_document".to_string());
+    }
+    warnings
+}
+
+fn package_detection_warnings(
+    has_bundle_signal: bool,
+    no_skills: bool,
+    unsafe_paths: bool,
+) -> Vec<String> {
+    let warnings = package_warnings(has_bundle_signal, no_skills);
+    if unsafe_paths {
+        with_unsafe_path_warning(warnings)
+    } else {
+        warnings
+    }
+}
+
+fn with_unsafe_path_warning(mut warnings: Vec<String>) -> Vec<String> {
+    if !warnings.iter().any(|warning| warning == "unsafe_paths") {
+        warnings.push("unsafe_paths".to_string());
     }
     warnings
 }
