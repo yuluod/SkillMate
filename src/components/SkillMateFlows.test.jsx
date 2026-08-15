@@ -11,13 +11,23 @@ import { useInstallPolicyFlow } from "../lib/useInstallPolicyFlow.js";
 import { useGitBackupFlow } from "../lib/useGitBackupFlow.js";
 import { useScenarioFlow } from "../lib/useScenarioFlow.js";
 import { useSearchFlow } from "../lib/useSearchFlow.js";
+import { useAppUpdateFlow } from "../lib/useAppUpdateFlow.js";
 import { skillmateApi } from "../lib/skillmateApi.js";
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
+const updaterMocks = vi.hoisted(() => ({
+  app: { getVersion: vi.fn() },
+  updater: { check: vi.fn() },
+  process: { relaunch: vi.fn() },
+}));
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args) => invoke(...args),
 }));
+
+vi.mock("@tauri-apps/api/app", () => updaterMocks.app);
+vi.mock("@tauri-apps/plugin-updater", () => updaterMocks.updater);
+vi.mock("@tauri-apps/plugin-process", () => updaterMocks.process);
 
 function installFlow(overrides = {}) {
   return {
@@ -391,6 +401,97 @@ describe("搜索流程", () => {
 
       expect(result.current.input).toBe("");
       expect(result.current.query).toBe("");
+    } finally {
+      unmount();
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("应用更新流程", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    updaterMocks.app.getVersion.mockResolvedValue("0.0.7");
+  });
+
+  function renderAppUpdateFlow() {
+    const showToast = vi.fn();
+    const { result, unmount } = renderHook(() => useAppUpdateFlow({ showToast }));
+    return { showToast, result, unmount };
+  }
+
+  it("启动后自动静默检查,发现新版本时提示一次且不重复检查", async () => {
+    vi.useFakeTimers();
+    updaterMocks.updater.check.mockResolvedValue({
+      currentVersion: "0.0.7",
+      version: "0.1.0",
+      date: "2026-08-15",
+      body: "release notes",
+    });
+
+    const { showToast, unmount } = renderAppUpdateFlow();
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+
+      expect(updaterMocks.updater.check).toHaveBeenCalledTimes(1);
+      expect(showToast).toHaveBeenCalledTimes(1);
+      expect(showToast).toHaveBeenCalledWith("发现新版本 0.1.0,可在设置中更新", "success");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(updaterMocks.updater.check).toHaveBeenCalledTimes(1);
+    } finally {
+      unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it("启动自动检查已是最新或失败时保持静默", async () => {
+    vi.useFakeTimers();
+    updaterMocks.updater.check
+      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error("network down"));
+
+    const { showToast, unmount } = renderAppUpdateFlow();
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      expect(showToast).not.toHaveBeenCalled();
+
+      unmount();
+      const second = renderAppUpdateFlow();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      expect(second.showToast).not.toHaveBeenCalled();
+      second.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("启动检查失败不影响设置页手动检查展示错误", async () => {
+    vi.useFakeTimers();
+    updaterMocks.updater.check
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValueOnce(null);
+
+    const { result, showToast, unmount } = renderAppUpdateFlow();
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      expect(showToast).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await result.current.checkAppUpdate();
+      });
+      expect(result.current.appUpdateState.status).toBe("current");
+      expect(showToast).toHaveBeenCalledWith("当前已是最新版本", "success");
     } finally {
       unmount();
       vi.useRealTimers();
