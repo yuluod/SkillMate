@@ -13,8 +13,8 @@ mod organization_commands;
 mod scenario_manifest;
 mod skill_install;
 mod skill_install_source;
-mod skill_model;
 mod skill_inventory;
+mod skill_model;
 mod skill_orchestration;
 mod skill_origin;
 mod skill_package;
@@ -1325,8 +1325,8 @@ mod tests {
     use crate::app_core::generate_id;
     use crate::library_manifest::{LibraryExport, LibrarySkillRecord};
     use crate::scenario_manifest::ScenarioManifest;
-    use crate::skill_orchestration::apply_manifest;
     use crate::skill_model::SkillDescriptor;
+    use crate::skill_orchestration::apply_manifest;
     use crate::skillmate_manifest::SkillMateManifest;
     use rusqlite::params;
 

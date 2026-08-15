@@ -24,7 +24,9 @@ pub(super) fn write_backup_transaction_owner(
         .map_err(|error| format!("无法写入备份事务所有权标记: {}", error))
 }
 
-pub(super) fn read_backup_transaction_owner(transaction_root: &Path) -> Result<Option<String>, String> {
+pub(super) fn read_backup_transaction_owner(
+    transaction_root: &Path,
+) -> Result<Option<String>, String> {
     let owner_path = transaction_root.join(BACKUP_OWNER_FILE);
     let Some(payload) = read_bounded_regular_file(&owner_path, "备份事务所有权标记", 256)?
     else {
