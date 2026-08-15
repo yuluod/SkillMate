@@ -11,6 +11,7 @@ async function loadAppUpdateApis() {
 
 export function useAppUpdateFlow({ showToast }) {
   const updateRef = useRef(null);
+  const autoCheckRef = useRef(false);
   const [appUpdateState, setAppUpdateState] = useState({
     status: "idle",
     currentVersion: "",
@@ -93,6 +94,50 @@ export function useAppUpdateFlow({ showToast }) {
       return null;
     }
   }, [showToast]);
+
+  // 启动自动检查:静默模式,失败不打扰,发现新版本时提示一次。
+  // 不复用 checkAppUpdate,避免把"已是最新"的成功 toast 和错误 toast 打到启动流程里。
+  const runStartupUpdateCheck = useCallback(async () => {
+    if (autoCheckRef.current) {
+      return;
+    }
+    autoCheckRef.current = true;
+    try {
+      const { check } = await loadAppUpdateApis();
+      const update = await check();
+      updateRef.current = update;
+      if (!update) {
+        setAppUpdateState((current) => ({
+          ...current,
+          status: "current",
+          update: null,
+          lastCheckedAt: Date.now(),
+        }));
+        return;
+      }
+      setAppUpdateState((current) => ({
+        ...current,
+        status: "available",
+        update: {
+          currentVersion: update.currentVersion,
+          version: update.version,
+          date: update.date || "",
+          body: update.body || "",
+        },
+        lastCheckedAt: Date.now(),
+      }));
+      showToast(`发现新版本 ${update.version},可在设置中更新`, "success");
+    } catch {
+      // 启动静默检查失败不打扰用户;设置页手动检查会展示完整错误。
+    }
+  }, [showToast]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      runStartupUpdateCheck();
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [runStartupUpdateCheck]);
 
   const installAppUpdate = useCallback(async () => {
     let update = updateRef.current;
