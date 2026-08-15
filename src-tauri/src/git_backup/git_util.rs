@@ -1,4 +1,3 @@
-
 use crate::app_core::{run_command_with_options, CommandOptions};
 
 use std::path::Path;
@@ -71,7 +70,11 @@ pub(super) fn staged_git_tree(repo: &Path) -> Result<String, String> {
     }
 }
 
-pub(super) fn run_git(repo: &Path, args: &[&str], timeout: Duration) -> Result<std::process::Output, String> {
+pub(super) fn run_git(
+    repo: &Path,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
     run_git_with_optional_input(repo, args, None, timeout)
 }
 

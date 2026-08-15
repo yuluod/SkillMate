@@ -16,7 +16,10 @@ pub(super) fn validate_existing_snapshot_root(repo: &Path) -> Result<(), String>
     Ok(())
 }
 
-pub(super) fn read_managed_snapshot_marker(path: &Path, label: &str) -> Result<Option<String>, String> {
+pub(super) fn read_managed_snapshot_marker(
+    path: &Path,
+    label: &str,
+) -> Result<Option<String>, String> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),

@@ -13,13 +13,13 @@ use crate::skill_install::{
 };
 use crate::skill_install_source::{is_git_install_source, parse_git_install_spec};
 use crate::skill_inventory::scan_all_assistants;
+use crate::skill_model::SkillDescriptor;
 use crate::skill_origin::{load_origin_meta, save_installed_git_meta};
 use crate::skill_profile::{
     activate_profile_store, profiles_path, read_skill_profiles, rollback_profile_store,
     upsert_skill_profile, validate_skill_profile, write_skill_profiles, SkillSetProfileDiff,
     SkillSetProfilePreview, SkillSetProfileStore,
 };
-use crate::skill_model::SkillDescriptor;
 use crate::skill_reconcile::ReconcileTransaction;
 use crate::skillmate_manifest::{
     manifest_target_root, preview_skillmate_manifest_with_existing, resolved_manifest_source,

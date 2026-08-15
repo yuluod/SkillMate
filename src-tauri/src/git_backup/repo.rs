@@ -16,7 +16,10 @@ pub(super) fn normalized_branch(branch: &str) -> String {
     }
 }
 
-pub(super) fn validate_backup_repo_location(connection: &Connection, repo: &Path) -> Result<(), String> {
+pub(super) fn validate_backup_repo_location(
+    connection: &Connection,
+    repo: &Path,
+) -> Result<(), String> {
     let repo = canonicalize_for_comparison(repo)?;
     let mut protected_roots = Vec::new();
     for assistant in assistant_definitions() {

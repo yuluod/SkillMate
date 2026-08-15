@@ -4,7 +4,9 @@ use crate::app_core::{
 use crate::skill_install::{
     preview_install_source, preview_local_symlink_install, InstallPreview, PreviewConflict,
 };
-use crate::skill_install_source::{install_target_name, is_git_install_source, parse_git_install_spec};
+use crate::skill_install_source::{
+    install_target_name, is_git_install_source, parse_git_install_spec,
+};
 use crate::skill_model::SkillDescriptor;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -103,9 +105,7 @@ pub fn sort_manifest_skills(skills: &mut [SkillDescriptor]) {
     skills.sort_by(|left, right| manifest_sort_key(left).cmp(&manifest_sort_key(right)));
 }
 
-fn manifest_sort_key(
-    skill: &SkillDescriptor,
-) -> (&str, &str, &str, &str, &str, &str, &str, &str) {
+fn manifest_sort_key(skill: &SkillDescriptor) -> (&str, &str, &str, &str, &str, &str, &str, &str) {
     (
         skill.assistant.as_str(),
         skill.scope.as_deref().unwrap_or("global"),
@@ -171,10 +171,7 @@ fn portable_manifest_path(base: &Path, value: &str) -> String {
 
 pub fn preview_skillmate_manifest_with_existing(
     manifest: &SkillMateManifest,
-    existing_target: impl Fn(
-        &SkillDescriptor,
-        &Path,
-    ) -> Result<ExistingTargetDisposition, String>,
+    existing_target: impl Fn(&SkillDescriptor, &Path) -> Result<ExistingTargetDisposition, String>,
 ) -> Result<SkillMateManifestPreview, String> {
     let validation_issues = validate_skillmate_manifest(manifest);
     let mut actions = Vec::new();

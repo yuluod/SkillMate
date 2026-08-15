@@ -1,6 +1,5 @@
 use super::*;
 
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self};
 use std::path::Path;
@@ -371,7 +370,10 @@ pub(super) fn git_blob_chunks(blobs: &[ImmutableGitBlob]) -> Vec<&[ImmutableGitB
     chunks
 }
 
-pub(super) fn scan_immutable_git_blob_chunk(repo: &Path, blobs: &[ImmutableGitBlob]) -> Result<(), String> {
+pub(super) fn scan_immutable_git_blob_chunk(
+    repo: &Path,
+    blobs: &[ImmutableGitBlob],
+) -> Result<(), String> {
     let input = blobs
         .iter()
         .map(|blob| blob.oid.as_str())

@@ -192,7 +192,10 @@ pub(super) fn classify_backup_bytes(bytes: &[u8]) -> SensitiveScan {
     }
 }
 
-pub(super) fn write_scanned_backup_file(target: &Path, scanned: &ScannedBackupFile) -> Result<(), String> {
+pub(super) fn write_scanned_backup_file(
+    target: &Path,
+    scanned: &ScannedBackupFile,
+) -> Result<(), String> {
     fs::write(target, &scanned.bytes).map_err(|error| error.to_string())?;
     fs::set_permissions(target, scanned.permissions.clone()).map_err(|error| error.to_string())
 }

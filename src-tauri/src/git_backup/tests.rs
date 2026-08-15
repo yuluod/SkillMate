@@ -334,6 +334,10 @@ fn committed_snapshot_transaction_only_cleans_journal() {
     fs::remove_dir_all(base).ok();
 }
 
+// 故障注入依赖"把 journal.json 替换为同名目录使 rename 失败"的 Unix 语义;
+// Windows 上 atomic_write 会先挪开旧目标再写入,内容仍能落盘,
+// update_backup_snapshot_journal 的"已发布即成功"弹性检查会按设计返回 Ok。
+#[cfg(unix)]
 #[test]
 fn committed_journal_write_failure_preserves_transaction_directory() {
     if Command::new("git").arg("--version").output().is_err() {
@@ -386,8 +390,7 @@ fn prepared_marker_window_detects_commit_with_or_without_baseline_head() {
         initialize_test_git_repo(&repo);
         if has_baseline_head {
             fs::write(repo.join("README.md"), "baseline").unwrap();
-            run_git_checked(&repo, &["add", "--", "README.md"], Duration::from_secs(10))
-                .unwrap();
+            run_git_checked(&repo, &["add", "--", "README.md"], Duration::from_secs(10)).unwrap();
             run_git_checked(
                 &repo,
                 &["commit", "-m", "baseline"],
@@ -1321,7 +1324,10 @@ fn sensitive_scan_avoids_runtime_documentation_and_detects_known_tokens() {
         "sk-proj-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
         "AKIA1234567890ABCDEF",
         // Slack 令牌样本用转义拼接,避免触发托管平台密钥扫描误报
-        concat!("xox", "b-123456789012-123456789012-abcdefghijklmnopqrstuvwxyzABCD"),
+        concat!(
+            "xox",
+            "b-123456789012-123456789012-abcdefghijklmnopqrstuvwxyzABCD"
+        ),
         "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJlX3dpdGhfbGVuZ3Ro",
     ] {
         fs::write(&file, token).unwrap();
@@ -1528,8 +1534,7 @@ fn git_commands_ignore_redirecting_environment() {
     const CHILD_REPO: &str = "SKILLMATE_GIT_ENV_TEST_REPO";
     if let Some(repo) = std::env::var_os(CHILD_REPO) {
         let repo = PathBuf::from(repo);
-        let actual =
-            PathBuf::from(git_output(&repo, &["rev-parse", "--show-toplevel"]).unwrap());
+        let actual = PathBuf::from(git_output(&repo, &["rev-parse", "--show-toplevel"]).unwrap());
         assert_eq!(actual.canonicalize().unwrap(), repo.canonicalize().unwrap());
         fs::write(repo.join("target.txt"), "target").unwrap();
         run_git_checked(&repo, &["add", "--", "target.txt"], Duration::from_secs(10)).unwrap();
