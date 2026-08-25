@@ -562,4 +562,36 @@ describe("应用更新流程", () => {
       vi.useRealTimers();
     }
   });
+
+  it("忽略托盘或按钮重复触发的并发更新检查", async () => {
+    let finishCheck;
+    updaterMocks.updater.check.mockImplementation(() => new Promise((resolve) => {
+      finishCheck = resolve;
+    }));
+
+    const { result, unmount } = renderAppUpdateFlow();
+    try {
+      await waitFor(() => expect(result.current.appUpdateState.currentVersion).toBe("0.0.7"));
+      let firstCheck;
+      await act(async () => {
+        firstCheck = result.current.checkAppUpdate();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(result.current.appUpdateState.status).toBe("checking");
+      await waitFor(() => expect(updaterMocks.updater.check).toHaveBeenCalledTimes(1));
+
+      await act(async () => {
+        await result.current.checkAppUpdate();
+      });
+      expect(updaterMocks.updater.check).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        finishCheck(null);
+        await firstCheck;
+      });
+      expect(result.current.appUpdateState.status).toBe("current");
+    } finally {
+      unmount();
+    }
+  });
 });

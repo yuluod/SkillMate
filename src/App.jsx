@@ -323,6 +323,47 @@ function App() {
     restartApp,
   } = useAppUpdateFlow({ showToast });
 
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten = () => {};
+
+    import("@tauri-apps/api/event")
+      .then(({ listen }) => listen("skillmate:tray-action", ({ payload }) => {
+        if (payload === "settings") {
+          setView("settings");
+          return;
+        }
+        if (payload === "check-update") {
+          setView("settings");
+          setSettingsTab("app-update");
+          void checkAppUpdate();
+        }
+      }))
+      .then((stopListening) => {
+        if (cancelled) {
+          stopListening();
+        } else {
+          unlisten = stopListening;
+        }
+      })
+      .catch(() => {
+        // 浏览器预览环境没有 Tauri 事件桥，忽略即可。
+      });
+
+    return () => {
+      cancelled = true;
+      unlisten();
+    };
+  }, [checkAppUpdate]);
+
+  useEffect(() => {
+    import("@tauri-apps/api/event")
+      .then(({ emit }) => emit("skillmate:tray-language", language))
+      .catch(() => {
+        // 浏览器预览环境没有 Tauri 事件桥，忽略即可。
+      });
+  }, [language]);
+
   const installPolicyFlow = useInstallPolicyFlow({ showToast });
 
   const installFlow = useInstallFlow({

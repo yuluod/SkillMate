@@ -165,6 +165,31 @@ test("Windows 桌面程序不应打开控制台且 NSIS 必须使用产品图标
   assert.equal(tauriConfig.bundle.windows.nsis.uninstallerIcon, "icons/icon.ico");
 });
 
+test("桌面端必须注册可恢复主窗口并可退出的系统托盘", () => {
+  const cargoToml = readText("src-tauri/Cargo.toml");
+  const appEntry = readText("src-tauri/src/lib.rs");
+  const trayModule = readText("src-tauri/src/tray.rs");
+  const frontendEntry = readText("src/App.jsx");
+
+  assert.match(cargoToml, /features\s*=\s*\["tray-icon"\]/);
+  assert.match(appEntry, /#\[cfg\(desktop\)\]\s+tray::setup\(app\)\?/);
+  assert.match(trayModule, /TrayIconBuilder::with_id\("skillmate-tray"\)/);
+  assert.match(trayModule, /OPEN_MENU_ID => show_main_window\(app\)/);
+  assert.match(trayModule, /SETTINGS_MENU_ID => dispatch_tray_action\(app, "settings"\)/);
+  assert.match(trayModule, /CHECK_UPDATE_MENU_ID => dispatch_tray_action\(app, "check-update"\)/);
+  assert.match(trayModule, /QUIT_MENU_ID => app\.exit\(0\)/);
+  assert.match(trayModule, /WindowEvent::CloseRequested/);
+  assert.match(trayModule, /TRAY_LANGUAGE_EVENT/);
+  assert.match(trayModule, /localized_open\.set_text\(open_text\)/);
+  assert.match(trayModule, /"Open SkillMate"/);
+  assert.match(frontendEntry, /listen\("skillmate:tray-action"/);
+  assert.match(frontendEntry, /emit\("skillmate:tray-language", language\)/);
+  assert.match(frontendEntry, /payload === "settings"/);
+  assert.match(frontendEntry, /payload === "check-update"/);
+  assert.match(frontendEntry, /setSettingsTab\("app-update"\)/);
+  assert.match(frontendEntry, /void checkAppUpdate\(\)/);
+});
+
 test("Tauri updater 配置必须生成签名更新包", () => {
   const tauriConfig = readJson("src-tauri/tauri.conf.json");
   const capabilities = readJson("src-tauri/capabilities/default.json");

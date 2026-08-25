@@ -14,6 +14,7 @@ export function useAppUpdateFlow({ showToast }) {
   const { t } = useI18n();
   const updateRef = useRef(null);
   const autoCheckRef = useRef(false);
+  const operationRef = useRef(null);
   const [appUpdateState, setAppUpdateState] = useState({
     status: "idle",
     currentVersion: "",
@@ -43,6 +44,10 @@ export function useAppUpdateFlow({ showToast }) {
   }, []);
 
   const checkAppUpdate = useCallback(async () => {
+    if (operationRef.current) {
+      return null;
+    }
+    operationRef.current = "check";
     setAppUpdateState((current) => ({
       ...current,
       status: "checking",
@@ -94,16 +99,21 @@ export function useAppUpdateFlow({ showToast }) {
       }));
       showToast(t("appUpdate.toast.checkFailed", { message }), "error");
       return null;
+    } finally {
+      if (operationRef.current === "check") {
+        operationRef.current = null;
+      }
     }
   }, [showToast, t]);
 
   // 启动自动检查:静默模式,失败不打扰,发现新版本时提示一次。
   // 不复用 checkAppUpdate,避免把"已是最新"的成功 toast 和错误 toast 打到启动流程里。
   const runStartupUpdateCheck = useCallback(async () => {
-    if (autoCheckRef.current) {
+    if (autoCheckRef.current || operationRef.current) {
       return;
     }
     autoCheckRef.current = true;
+    operationRef.current = "startup-check";
     try {
       const { check } = await loadAppUpdateApis();
       const update = await check();
@@ -131,6 +141,10 @@ export function useAppUpdateFlow({ showToast }) {
       showToast(t("appUpdate.toast.startupAvailable", { version: update.version }), "success");
     } catch {
       // 启动静默检查失败不打扰用户;设置页手动检查会展示完整错误。
+    } finally {
+      if (operationRef.current === "startup-check") {
+        operationRef.current = null;
+      }
     }
   }, [showToast, t]);
 
@@ -142,6 +156,9 @@ export function useAppUpdateFlow({ showToast }) {
   }, [runStartupUpdateCheck]);
 
   const installAppUpdate = useCallback(async () => {
+    if (operationRef.current) {
+      return;
+    }
     let update = updateRef.current;
     if (!update) {
       update = await checkAppUpdate();
@@ -149,6 +166,10 @@ export function useAppUpdateFlow({ showToast }) {
     if (!update) {
       return;
     }
+    if (operationRef.current) {
+      return;
+    }
+    operationRef.current = "install";
     setAppUpdateState((current) => ({
       ...current,
       status: "downloading",
@@ -201,6 +222,9 @@ export function useAppUpdateFlow({ showToast }) {
         error: message,
       }));
       showToast(t("appUpdate.toast.installFailed", { message }), "error");
+      if (operationRef.current === "install") {
+        operationRef.current = null;
+      }
       return;
     }
     try {
@@ -215,10 +239,18 @@ export function useAppUpdateFlow({ showToast }) {
         error: t("appUpdate.toast.autoRestartFailed", { message }),
       }));
       showToast(t("appUpdate.toast.restartManually", { message }), "error");
+    } finally {
+      if (operationRef.current === "install") {
+        operationRef.current = null;
+      }
     }
   }, [checkAppUpdate, showToast, t]);
 
   const restartApp = useCallback(async () => {
+    if (operationRef.current) {
+      return;
+    }
+    operationRef.current = "restart";
     try {
       setAppUpdateState((current) => ({
         ...current,
@@ -236,6 +268,10 @@ export function useAppUpdateFlow({ showToast }) {
         error: t("appUpdate.toast.restartFailed", { message: String(e) }),
       }));
       showToast(t("appUpdate.toast.restartFailed", { message: String(e) }), "error");
+    } finally {
+      if (operationRef.current === "restart") {
+        operationRef.current = null;
+      }
     }
   }, [showToast, t]);
 

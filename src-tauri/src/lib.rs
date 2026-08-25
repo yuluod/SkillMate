@@ -26,6 +26,8 @@ mod skill_reconcile;
 mod skill_structure;
 mod skill_trash;
 mod skillmate_manifest;
+#[cfg(desktop)]
+mod tray;
 
 use app_core::{
     assistant_root_by_name, expand_path, managed_skill_roots, now_ms, project_skill_root_by_name,
@@ -1363,6 +1365,8 @@ pub fn run() {
                 db: initialize_database_state().map(Mutex::new),
                 trash: Mutex::new(skill_trash::SkillTrash::default()),
             });
+            #[cfg(desktop)]
+            tray::setup(app)?;
             Ok(())
         })
         .plugin(tauri_plugin_process::init())
