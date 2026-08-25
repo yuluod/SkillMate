@@ -1123,6 +1123,9 @@ body {
   padding: 20px;
   width: 90%;
   max-width: 440px;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   animation: slideUp 0.18s ease;
   box-shadow: 0 6px 8px rgba(0, 0, 0, 0.2);
 }
