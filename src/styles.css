@@ -113,10 +113,11 @@ body {
 }
 
 .logo {
+  display: block;
   width: 36px;
   height: 36px;
   flex-shrink: 0;
-  filter: drop-shadow(0 4px 8px rgba(37, 99, 235, 0.18));
+  filter: drop-shadow(0 4px 8px rgba(91, 73, 190, 0.18));
 }
 
 .app-name {
