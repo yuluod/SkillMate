@@ -8,13 +8,27 @@ import {
 import { splitPolicyEntries } from "../lib/installPolicy.mjs";
 import { useI18n } from "../lib/i18n.jsx";
 
-const SETTINGS_TABS = [
-  ["backup", "settings.tabs.backup"],
-  ["app-update", "settings.tabs.appUpdate"],
-  ["install-policy", "settings.tabs.installPolicy"],
-  ["data", "settings.tabs.data"],
-  ["skillset", "settings.tabs.skillset"],
-  ["tags", "settings.tabs.tags"],
+const SETTINGS_GROUPS = [
+  {
+    labelKey: "settings.groups.general",
+    items: [["language", "settings.language", "globe"]],
+  },
+  {
+    labelKey: "settings.groups.application",
+    items: [
+      ["backup", "settings.tabs.backup", "branch"],
+      ["app-update", "settings.tabs.appUpdate", "updates"],
+      ["install-policy", "settings.tabs.installPolicy", "shield"],
+    ],
+  },
+  {
+    labelKey: "settings.groups.data",
+    items: [
+      ["data", "settings.tabs.data", "upload"],
+      ["skillset", "settings.tabs.skillset", "skills"],
+      ["tags", "settings.tabs.tags", "tag"],
+    ],
+  },
 ];
 
 function ActionRow({ children }) {
@@ -56,20 +70,20 @@ function AppUpdateSettings({ value }) {
   const view = value.view;
   const progress = Math.max(0, Math.min(100, view.progressPercent ?? 0));
   return (
-    <div className="settings-card">
-      <div className="settings-head"><Icon name="updates" size={20} /><h3>{t("settings.tabs.appUpdate")}</h3></div>
+    <div className="settings-card settings-card-update">
+      <div className="settings-head settings-detail-heading">
+        <Icon name="updates" size={20} />
+        <div><h3>{t("settings.tabs.appUpdate")}</h3><p>{t("settings.appUpdate.checkHint")}</p></div>
+      </div>
       <div className="settings-body">
-        <div className="app-update-panel">
-          <div className="app-update-main">
-            <span className={`update-pill ${view.statusTone}`}>{t(`settings.appUpdate.status.${view.status}`)}</span>
-            <h3>{view.nextVersion ? `SkillMate ${view.nextVersion}` : "SkillMate"}</h3>
-            <p>{t(view.nextVersion ? "settings.appUpdate.available" : "settings.appUpdate.checkHint")}</p>
-          </div>
-          <div className="app-update-meta">
-            <div><span className="label">{t("settings.appUpdate.current")}</span><span className="value mono">{view.currentVersion || t("common.unknown")}</span></div>
-            <div><span className="label">{t("settings.appUpdate.next")}</span><span className="value mono">{view.nextVersion || t("settings.appUpdate.none")}</span></div>
-            <div><span className="label">{t("settings.appUpdate.date")}</span><span className="value">{view.dateLabel}</span></div>
-          </div>
+        <div className={`app-update-status ${view.statusTone}`} role="status">
+          <Icon name={view.status === "current" ? "check" : "updates"} size={18} />
+          <strong>{t(`settings.appUpdate.status.${view.status}`)}</strong>
+        </div>
+        <div className="app-update-meta">
+          <div><span className="label">{t("settings.appUpdate.current")}</span><span className="value mono">{view.currentVersion || t("common.unknown")}</span></div>
+          <div><span className="label">{t("settings.appUpdate.next")}</span><span className="value mono">{view.nextVersion || t("settings.appUpdate.none")}</span></div>
+          <div><span className="label">{t("settings.appUpdate.date")}</span><span className="value">{view.dateLabel}</span></div>
         </div>
         {view.progressText && (
           <div className="app-update-progress">
@@ -95,6 +109,27 @@ function AppUpdateSettings({ value }) {
           )}
         </ActionRow>
         <div className="git-meta">{t("settings.appUpdate.help")}</div>
+      </div>
+    </div>
+  );
+}
+
+function LanguageSettings() {
+  const { t, language, setLanguage } = useI18n();
+  return (
+    <div className="settings-card">
+      <div className="settings-head settings-detail-heading">
+        <Icon name="globe" size={20} />
+        <div><h3>{t("settings.language")}</h3><p>{t("settings.languageHint")}</p></div>
+      </div>
+      <div className="settings-body">
+        <div className="form settings-language-field">
+          <label htmlFor="settings-language">{t("settings.language")}</label>
+          <select id="settings-language" value={language} onChange={(event) => setLanguage(event.target.value)}>
+            <option value="zh-CN">中文</option>
+            <option value="en">English</option>
+          </select>
+        </div>
       </div>
     </div>
   );
@@ -259,25 +294,32 @@ function TagSettings({ value }) {
 }
 
 export default function SettingsView({ activeTab, setActiveTab, backup, appUpdate, installPolicy, data, skillSet, tags }) {
-  const { t, language, setLanguage } = useI18n();
+  const { t } = useI18n();
   return (
     <div className="settings">
-      <div className="content-head"><div><h2>{t("nav.settings")}</h2></div></div>
-      <div className="settings-language">
-        <div><Icon name="globe" size={18} /><span><strong>{t("settings.language")}</strong><small>{t("settings.languageHint")}</small></span></div>
-        <select aria-label={t("settings.language")} value={language} onChange={(event) => setLanguage(event.target.value)}><option value="zh-CN">中文</option><option value="en">English</option></select>
-      </div>
-      <div className="sort-tabs settings-tabs" role="tablist" aria-label={t("settings.category")}>
-        {SETTINGS_TABS.map(([key, labelKey]) => (
-          <button key={key} role="tab" aria-selected={activeTab === key} className={`sort-tab ${activeTab === key ? "active" : ""}`} onClick={() => setActiveTab(key)}>{t(labelKey)}</button>
+      <aside className="settings-nav" aria-label={t("settings.category")}>
+        {SETTINGS_GROUPS.map((group) => (
+          <div className="settings-nav-group" key={group.labelKey}>
+            <span className="settings-nav-label">{t(group.labelKey)}</span>
+            <div role="tablist">
+              {group.items.map(([key, labelKey, icon]) => (
+                <button key={key} role="tab" aria-selected={activeTab === key} className={`settings-nav-item ${activeTab === key ? "active" : ""}`} onClick={() => setActiveTab(key)}>
+                  <Icon name={icon} size={18} /><span>{t(labelKey)}</span>
+                </button>
+              ))}
+            </div>
+          </div>
         ))}
-      </div>
-      {activeTab === "backup" && <BackupSettings value={backup} />}
-      {activeTab === "app-update" && <AppUpdateSettings value={appUpdate} />}
-      {activeTab === "install-policy" && <InstallPolicySettings value={installPolicy} />}
-      {activeTab === "data" && <DataSettings value={data} />}
-      {activeTab === "skillset" && <SkillSetSettings value={skillSet} />}
-      {activeTab === "tags" && <TagSettings value={tags} />}
+      </aside>
+      <section className="settings-detail">
+        {activeTab === "language" && <LanguageSettings />}
+        {activeTab === "backup" && <BackupSettings value={backup} />}
+        {activeTab === "app-update" && <AppUpdateSettings value={appUpdate} />}
+        {activeTab === "install-policy" && <InstallPolicySettings value={installPolicy} />}
+        {activeTab === "data" && <DataSettings value={data} />}
+        {activeTab === "skillset" && <SkillSetSettings value={skillSet} />}
+        {activeTab === "tags" && <TagSettings value={tags} />}
+      </section>
     </div>
   );
 }

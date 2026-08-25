@@ -44,6 +44,24 @@ const VIEWS = {
   settings: { titleKey: "nav.settings", icon: "settings" },
 };
 
+const SETTINGS_TAB_LABELS = {
+  language: "settings.language",
+  backup: "settings.tabs.backup",
+  "app-update": "settings.tabs.appUpdate",
+  "install-policy": "settings.tabs.installPolicy",
+  data: "settings.tabs.data",
+  skillset: "settings.tabs.skillset",
+  tags: "settings.tabs.tags",
+};
+
+const VIEW_CONTEXT_LABELS = {
+  dashboard: "header.context.dashboard",
+  skills: "header.context.skills",
+  ai: "header.context.assistants",
+  scenarios: "header.context.scenarios",
+  updates: "header.context.updates",
+};
+
 
 
 function getSavedThemeMode() {
@@ -83,6 +101,34 @@ const Logo = React.memo(function Logo() {
   return <img className="logo" src={appIcon} alt="" />;
 });
 
+function TagFilterBar({ tags, selectedCount, onToggle, onClear }) {
+  const { t } = useI18n();
+  if (tags.length === 0) return null;
+
+  return (
+    <div className="content-tag-filter" aria-label={t("sidebar.tags")}>
+      <div className="content-tag-filter-label">
+        <Icon name="tag" size={15} />
+        <span>{t("sidebar.tags")}</span>
+      </div>
+      <div className="tag-list">
+        {tags.map(tag => (
+          <button
+            key={tag.id}
+            className={`tag-chip ${tag.selected ? "active" : ""}`}
+            style={{ "--c": tag.color }}
+            aria-pressed={tag.selected}
+            onClick={() => onToggle(tag.id)}
+          >
+            <span className="tag-dot" />{tag.name}
+          </button>
+        ))}
+      </div>
+      {selectedCount > 0 && <button className="content-tag-filter-clear" onClick={onClear}>{t("common.clear")}</button>}
+    </div>
+  );
+}
+
 
 function getDir(path) {
   const i = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
@@ -120,7 +166,7 @@ function App() {
   const [theme, setTheme] = useState(getSavedThemeMode);
   const [newTagName, setNewTagName] = useState("");
   const [newTagColor, setNewTagColor] = useState("#58a6ff");
-  const [settingsTab, setSettingsTab] = useState("backup");
+  const [settingsTab, setSettingsTab] = useState("language");
   const [loadError, setLoadError] = useState("");
   const [trashReceipt, setTrashReceipt] = useState(null);
   const [driftGroup, setDriftGroup] = useState(null);
@@ -550,10 +596,14 @@ function App() {
 
       <header className="header">
         <div className="header-left">
-          <Logo />
-          <div>
+          <div className="header-brand">
+            <Logo />
             <h1 className="app-name">SkillMate</h1>
-            <p className="app-sub">{t(VIEWS[view].titleKey)}</p>
+          </div>
+          <div className="header-context" aria-label={t(VIEWS[view].titleKey)}>
+            <span>{t(VIEWS[view].titleKey)}</span>
+            <span className="header-context-separator">/</span>
+            <strong>{t(view === "settings" ? SETTINGS_TAB_LABELS[settingsTab] : VIEW_CONTEXT_LABELS[view])}</strong>
           </div>
         </div>
 
@@ -597,21 +647,6 @@ function App() {
             ))}
           </div>
 
-          <div className="sidebar-section">
-            <div className="section-header">
-              <span>{t("sidebar.tags")}</span>
-              {selectedTags.length > 0 && <button onClick={() => setTags(current => current.map(tag => ({ ...tag, selected: false })))}>{t("common.clear")}</button>}
-            </div>
-            <div className="tag-list">
-              {tags.map(tag => (
-                <button key={tag.id} className={`tag-chip ${tag.selected ? "active" : ""}`} style={{ "--c": tag.color }} onClick={() => toggleTag(tag.id)}>
-                  <span className="tag-dot" />{tag.name}
-                </button>
-              ))}
-              {tags.length === 0 && <p className="empty-hint">{t("sidebar.noTags")}</p>}
-            </div>
-          </div>
-
           <div className="sidebar-footer">
             <div className="mini-stats">
               <div><span className="val">{statSkills}</span><span className="lbl">Skills</span></div>
@@ -621,7 +656,7 @@ function App() {
           </div>
         </nav>
 
-        <main className="content" ref={contentRef}>
+        <main className={`content ${view === "settings" ? "content-settings" : ""}`} ref={contentRef}>
           {loadError && (
             <div className="load-error-banner" role="alert">
               <div><strong>{t("error.dataTitle")}</strong><span>{loadError}</span></div>
@@ -642,6 +677,14 @@ function App() {
                 </div>
               </div>
             </div>
+          )}
+          {(view === "skills" || view === "updates") && (
+            <TagFilterBar
+              tags={tags}
+              selectedCount={selectedTags.length}
+              onToggle={toggleTag}
+              onClear={() => setTags(current => current.map(tag => ({ ...tag, selected: false })))}
+            />
           )}
           {init ? <Skeleton /> : view === "dashboard" && (
             <DashboardView stats={dashboardStats} driftGroups={driftGroups} onNavigate={setView} onMarketInstall={installMarketSkill} onOpenDrift={setDriftGroup} />
@@ -672,7 +715,7 @@ function App() {
           )}
 
           {view === "scenarios" && (
-            <ScenarioView scenarios={data.scenarios} skills={skills} flow={scenarioFlow} />
+            <ScenarioView scenarios={data.scenarios} skills={allSkills} flow={scenarioFlow} />
           )}
 
           {view === "updates" && (
