@@ -29,7 +29,7 @@ async function loadDashboard() {
   return {
     assistants,
     tags: optionalValue("tags", "标签", tagsResult, []),
-    scenarios: optionalValue("scenarios", "场景", scenariosResult, []),
+    scenarios: optionalValue("scenarios", "组合", scenariosResult, []),
     git: optionalValue("git", "Git 备份", gitResult, {
       enabled: false,
       repo_path: "",

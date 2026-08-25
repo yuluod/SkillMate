@@ -657,7 +657,7 @@ export function buildImportPreviewSummary(preview, t) {
       lines.push(localized(t, "summary.import.removeTags", "将清空现有 {count} 个标签", { count: preview.existing_tags_to_remove }));
     }
     if (preview.existing_scenarios_to_remove > 0) {
-      lines.push(localized(t, "summary.import.removeScenarios", "将清空现有 {count} 个场景", { count: preview.existing_scenarios_to_remove }));
+      lines.push(localized(t, "summary.import.removeScenarios", "将清空现有 {count} 个组合", { count: preview.existing_scenarios_to_remove }));
     }
     if (preview.existing_skill_tag_mappings_to_remove > 0) {
       lines.push(localized(t, "summary.import.removeMappings", "将清空现有 {count} 条 Skill 标签映射", { count: preview.existing_skill_tag_mappings_to_remove }));
@@ -671,10 +671,10 @@ export function buildImportPreviewSummary(preview, t) {
     lines.push(localized(t, "summary.import.replaceTags", "将覆盖 {count} 个标签", { count: preview.tags_to_replace }));
   }
   if (preview.scenarios_to_add > 0) {
-    lines.push(localized(t, "summary.import.addScenarios", "将新增 {count} 个场景", { count: preview.scenarios_to_add }));
+    lines.push(localized(t, "summary.import.addScenarios", "将新增 {count} 个组合", { count: preview.scenarios_to_add }));
   }
   if (preview.scenarios_to_replace > 0) {
-    lines.push(localized(t, "summary.import.replaceScenarios", "将覆盖 {count} 个场景", { count: preview.scenarios_to_replace }));
+    lines.push(localized(t, "summary.import.replaceScenarios", "将覆盖 {count} 个组合", { count: preview.scenarios_to_replace }));
   }
   if (preview.skill_tag_writes > 0) {
     lines.push(localized(t, "summary.import.writeMappings", "将写入 {count} 条 Skill 标签映射", { count: preview.skill_tag_writes }));
@@ -687,19 +687,19 @@ export function buildScenarioManifestPreviewSummary(preview, t) {
   const lines = [];
 
   if (preview.replace_existing && preview.existing_scenarios_to_remove > 0) {
-    lines.push(localized(t, "summary.import.removeScenarios", "将清空现有 {count} 个场景", { count: preview.existing_scenarios_to_remove }));
+    lines.push(localized(t, "summary.import.removeScenarios", "将清空现有 {count} 个组合", { count: preview.existing_scenarios_to_remove }));
   }
   if (preview.scenarios_to_add > 0) {
-    lines.push(localized(t, "summary.import.addScenarios", "将新增 {count} 个场景", { count: preview.scenarios_to_add }));
+    lines.push(localized(t, "summary.import.addScenarios", "将新增 {count} 个组合", { count: preview.scenarios_to_add }));
   }
   if (preview.scenarios_to_replace > 0) {
-    lines.push(localized(t, "summary.import.replaceScenarios", "将覆盖 {count} 个场景", { count: preview.scenarios_to_replace }));
+    lines.push(localized(t, "summary.import.replaceScenarios", "将覆盖 {count} 个组合", { count: preview.scenarios_to_replace }));
   }
   if (Array.isArray(preview.missing_skill_refs) && preview.missing_skill_refs.length > 0) {
     lines.push(localized(t, "summary.scenario.missing", "有 {count} 个 Skill 路径当前不存在", { count: preview.missing_skill_refs.length }));
   }
 
-  return lines.length > 0 ? lines : [localized(t, "summary.scenario.noChanges", "未检测到可导入的场景变化")];
+  return lines.length > 0 ? lines : [localized(t, "summary.scenario.noChanges", "未检测到可导入的组合变化")];
 }
 
 export function buildSkillMateManifestPreviewSummary(preview, t) {

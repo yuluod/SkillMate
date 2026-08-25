@@ -38,7 +38,7 @@ const THEME_MODES = ["system", "light", "dark"];
 const VIEWS = {
   dashboard: { titleKey: "nav.dashboard", icon: "dashboard" },
   skills: { titleKey: "nav.skills", icon: "skills" },
-  ai: { titleKey: "nav.assistants", icon: "assistants" },
+  ai: { titleKey: "nav.assistants", icon: "monitor" },
   scenarios: { titleKey: "nav.scenarios", icon: "scenarios" },
   updates: { titleKey: "nav.updates", icon: "updates" },
   settings: { titleKey: "nav.settings", icon: "settings" },
@@ -133,6 +133,7 @@ function App() {
 
   const [sysTheme, setSysTheme] = useState(getSystemTheme);
   const searchRef = useRef(null);
+  const contentRef = useRef(null);
   const toastTimerRef = useRef(null);
   const trashTimerRef = useRef(null);
   const mountedRef = useRef(false);
@@ -158,6 +159,10 @@ function App() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
+
+  useEffect(() => {
+    if (contentRef.current) contentRef.current.scrollTop = 0;
+  }, [view]);
 
   // 初始加载需要在 StrictMode 下保持幂等，并避免卸载后继续写状态。
   useEffect(() => {
@@ -569,13 +574,13 @@ function App() {
           <div className="sidebar-footer">
             <div className="mini-stats">
               <div><span className="val">{statSkills}</span><span className="lbl">Skills</span></div>
-              <div><span className="val">{statAI}</span><span className="lbl">AI</span></div>
+              <div><span className="val">{statAI}</span><span className="lbl">{t("nav.assistants")}</span></div>
               <div><span className="val">{tags.length}</span><span className="lbl">{t("sidebar.tags")}</span></div>
             </div>
           </div>
         </nav>
 
-        <main className="content">
+        <main className="content" ref={contentRef}>
           {loadError && (
             <div className="load-error-banner" role="alert">
               <div><strong>{t("error.dataTitle")}</strong><span>{loadError}</span></div>
