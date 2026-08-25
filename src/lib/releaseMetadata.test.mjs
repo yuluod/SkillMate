@@ -151,6 +151,20 @@ test("Tauri bundle identifier 不应使用 .app 结尾", () => {
   assert.ok(!tauriConfig.identifier.endsWith(".app"));
 });
 
+test("Windows 桌面程序不应打开控制台且 NSIS 必须使用产品图标", () => {
+  const tauriConfig = readJson("src-tauri/tauri.conf.json");
+  const desktopEntry = readText("src-tauri/src/main.rs");
+  const cliEntry = readText("src-tauri/src/bin/skillmate-cli.rs");
+
+  assert.match(
+    desktopEntry,
+    /#!\[cfg_attr\(not\(debug_assertions\), windows_subsystem = "windows"\)\]/
+  );
+  assert.doesNotMatch(cliEntry, /windows_subsystem\s*=\s*"windows"/);
+  assert.equal(tauriConfig.bundle.windows.nsis.installerIcon, "icons/icon.ico");
+  assert.equal(tauriConfig.bundle.windows.nsis.uninstallerIcon, "icons/icon.ico");
+});
+
 test("Tauri updater 配置必须生成签名更新包", () => {
   const tauriConfig = readJson("src-tauri/tauri.conf.json");
   const capabilities = readJson("src-tauri/capabilities/default.json");
@@ -216,6 +230,14 @@ test("Release workflow 必须发布 updater metadata", () => {
   assert.match(workflow, /--target aarch64-apple-darwin/);
   assert.match(workflow, /SHA256SUMS/);
   assert.match(workflow, /skillmate-sbom\.spdx\.json/);
+  assert.match(workflow, /actions\/attest@[0-9a-f]{40}/);
+  assert.doesNotMatch(workflow, /actions\/attest-sbom@/);
+  assert.match(workflow, /sbom-path: skillmate-sbom\.spdx\.json/);
+  assert.doesNotMatch(
+    workflow,
+    /gh release upload[^\n]*skillmate-sbom\.spdx\.json/,
+    "SBOM 应用于 attestation，但不应作为公开 Release Asset 上传"
+  );
   assert.match(workflow, /actions\/attest-build-provenance@[0-9a-f]{40}/);
   assert.match(generator, /encodeURIComponent\(assetName\)/);
   assert.match(generator, /SkillMate_\$\{version\}_aarch64\.app\.tar\.gz/);
