@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="src-tauri/icons/icon.png" alt="SkillMate" width="128" />
+</p>
+
 # SkillMate
 
 SkillMate 是一个跨平台桌面应用，用来盘点、安装、组织和更新本机的目录型 **AI 助手 Skills**。
@@ -10,12 +14,16 @@ SkillMate 是一个跨平台桌面应用，用来盘点、安装、组织和更�
 - Codex
 - OpenClaw
 - Gemini CLI
+- Cursor
+- OpenCode
+- GitHub Copilot
 
 ## 核心能力
 
 ### Skill 盘点
 
 - 扫描受支持助手的本地 Skill 目录
+- 在安全工作台汇总更新、结构问题、静态风险、本地内容变更、跨助手漂移和扫描诊断
 - 展示名称、路径、来源、递归目录大小、入口文档预览和更新状态
 - 按 Agent Skills 规范识别大小写精确的 `SKILL.md`
 - 校验 YAML frontmatter、必填 `name` / `description`、名称格式及目录名一致性
@@ -23,6 +31,12 @@ SkillMate 是一个跨平台桌面应用，用来盘点、安装、组织和更�
 - 识别可选的 `references/`、`scripts/`、`assets/` 资源目录
 - 用 `符合规范` / `需要修复` / `非 Skill` 标记结构状态；小写 `skill.md` 和仅 README 的目录会提示修复
 - 检查脚本、依赖清单、软连接、隐藏文件、网络访问和环境变量引用等静态风险
+
+### 市场发现
+
+- 搜索 [skills.sh](https://skills.sh/) 收录的目录型 Skills
+- 通过 GitHub Repository Search 查找公开 Skill 仓库
+- 市场结果只负责发现来源；安装仍复用结构预览、静态风险检查、安全策略和写入计划
 
 ### 安装 Skill
 
@@ -40,7 +54,7 @@ Git 来源支持普通仓库地址、GitHub shorthand、GitHub tree URL，以及
 
 安装前会先生成结构预览、风险提示和写入计划。Git 来源的预览会临时克隆仓库；安装时不会把仓库的 `.git`、`.hg`、`.svn` 目录带入助手目录，但会单独保存来源、引用、子目录和已安装提交，普通仓库与仓库子目录都可以继续检查和更新。
 
-本地目录默认复制到目标助手目录。对于本地目录来源，也可以选择“链接到项目”，把 Skill 软连接到对应助手的项目目录：Codex 使用 `.agents/skills`，Claude Code 使用 `.claude/skills`，Gemini CLI 使用 `.gemini/skills`，OpenClaw 使用 `skills`。项目级安装同样会写入受管注册，后续可以安全预览、导出或解除软连接。
+本地目录默认复制到目标助手目录。对于本地目录来源，也可以选择“链接到项目”，把 Skill 软连接到对应助手的项目目录：Codex 使用 `.agents/skills`，Claude Code 使用 `.claude/skills`，Gemini CLI 使用 `.gemini/skills`，OpenClaw 使用 `skills`，Cursor 使用 `.cursor/skills`，OpenCode 使用 `.opencode/skills`，GitHub Copilot 使用 `.github/skills`。项目级安装同样会写入受管注册，后续可以安全预览、导出或解除软连接。
 
 全局安装会写入各助手当前推荐的目录。为兼容既有安装，扫描时还会发现 Codex 的 `~/.codex/skills`，以及 OpenClaw、Gemini CLI 可复用的 `~/.agents/skills`；兼容目录只参与发现，不会改变新安装的目标路径。
 
@@ -78,9 +92,26 @@ Git 来源支持普通仓库地址、GitHub shorthand、GitHub tree URL，以及
 
 SkillMate 只会自动移除自身记录的受管 Skill，不会删除手工放入助手目录的内容。安装、Manifest 和 Profile 应用失败时会尽量恢复文件、受管状态和数据库记录，并明确报告未能完成的回滚步骤。
 
+普通卸载会先把受管 Skill 暂存到 SkillMate 自有垃圾箱，界面提供 60 秒撤销窗口。启动维护只会清理带 SkillMate 所有权标记的遗留暂存目录；恢复时如果原路径已出现新内容，会拒绝覆盖。
+
+当同名 Skill 在多个助手目录中的内容哈希不一致时，工作台会形成漂移组。用户可以选择一个完整实体目录作为基准并预览同步计划；同步只覆盖内容未被本地修改的 SkillMate 受管副本，不会覆盖手工目录或跟随软连接，失败时会回滚事务。
+
 Git 备份用于保存受管 Skill 内容，不是完整应用恢复。快照不会包含 SkillMate 数据库、标签、场景、Profile、受管 sidecar、运行时缓存或软连接，并会尽力排除常见凭据与密钥文件；每次同步都会在仓库中写入清单，记录来源路径、复制统计和排除原因。
 
 为保证提交内容与安全扫描结果一致，SkillMate 会直接提交已验证的 Git tree；Git 的 clean filter（包括换行规范化）会生效，但不会执行提交 hooks，也不会自动应用 `commit.gpgSign`。需要额外签名或提交钩子时，请在同步后自行处理。
+
+## 命令行
+
+仓库同时提供 `skillmate-cli`，用于在脚本或 CI 中执行与桌面端一致的声明式流程：
+
+```text
+skillmate-cli scan [--json]
+skillmate-cli plan <skillmate.toml> [--json]
+skillmate-cli verify <skillmate.toml> [--json]
+skillmate-cli apply <skillmate.toml> --plan-token <令牌> [--json]
+```
+
+`apply` 必须使用同一份清单最新 `plan` 输出的计划令牌；清单或当前状态变化后，旧令牌会失效。
 
 ## 当前边界
 
@@ -88,7 +119,8 @@ Git 备份用于保存受管 Skill 内容，不是完整应用恢复。快照不
 
 - VSCode / Cursor / Windsurf / Zed 整包扩展管理
 - npm / PyPI 安装入口
-- 市场搜索
+- MCP 配置与服务器管理
+- 团队私有 Registry 和账号同步
 
 这些能力后续是否加入，取决于目录型 Skill 管理闭环是否足够稳定。
 
