@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { DEFAULT_INSTALL_POLICY, normalizeInstallPolicy } from "./installPolicy.mjs";
 import { skillmateApi } from "./skillmateApi.js";
+import { useI18n } from "./i18n.jsx";
 
 export function useInstallPolicyFlow({ showToast }) {
+  const { t } = useI18n();
   const [policy, setPolicy] = useState(DEFAULT_INSTALL_POLICY);
   const [savedPolicy, setSavedPolicy] = useState(DEFAULT_INSTALL_POLICY);
   const [loading, setLoading] = useState(true);
@@ -18,11 +20,11 @@ export function useInstallPolicyFlow({ showToast }) {
       setError("");
     } catch (e) {
       setError(String(e));
-      showToast(`加载安装策略失败: ${e}`, "error");
+      showToast(t("policy.toast.loadFailed", { message: String(e) }), "error");
     } finally {
       setLoading(false);
     }
-  }, [showToast]);
+  }, [showToast, t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -38,7 +40,7 @@ export function useInstallPolicyFlow({ showToast }) {
       .catch((e) => {
         if (cancelled) return;
         setError(String(e));
-        showToast(`加载安装策略失败: ${e}`, "error");
+        showToast(t("policy.toast.loadFailed", { message: String(e) }), "error");
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -46,7 +48,7 @@ export function useInstallPolicyFlow({ showToast }) {
     return () => {
       cancelled = true;
     };
-  }, [showToast]);
+  }, [showToast, t]);
 
   const dirty = useMemo(
     () => JSON.stringify(policy) !== JSON.stringify(savedPolicy),
@@ -65,14 +67,14 @@ export function useInstallPolicyFlow({ showToast }) {
       setPolicy(result);
       setSavedPolicy(result);
       setError("");
-      showToast("安装策略已保存", "success");
+      showToast(t("policy.toast.saved"), "success");
     } catch (e) {
       setError(String(e));
-      showToast(`保存安装策略失败: ${e}`, "error");
+      showToast(t("policy.toast.saveFailed", { message: String(e) }), "error");
     } finally {
       setSaving(false);
     }
-  }, [policy, saving, showToast]);
+  }, [policy, saving, showToast, t]);
 
   return {
     policy,

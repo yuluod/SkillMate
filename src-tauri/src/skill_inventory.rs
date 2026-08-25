@@ -341,6 +341,7 @@ fn build_skill(
             description: structure.manifest_description.clone().unwrap_or_default(),
             readme: inspection.preview,
             version: inspection.version.unwrap_or_else(|| "未知".to_string()),
+            content_hash: content_fingerprint(ep).unwrap_or_default(),
         },
         origin: SkillOriginFields {
             upstream_url,

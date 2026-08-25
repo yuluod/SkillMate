@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import Icon from "./components/Icon.jsx";
+import appIcon from "../src-tauri/icons/128x128.png";
 import {
   ConfirmModal,
+  DriftSyncModal,
   InstallModal,
   PreviewModal,
   TagEditorModal,
@@ -9,11 +11,16 @@ import {
 import SettingsView from "./components/SettingsView.jsx";
 import ScenarioView from "./components/ScenarioView.jsx";
 import { AssistantsView, SkillsView, UpdatesView } from "./components/InventoryViews.jsx";
+import DashboardView from "./components/DashboardView.jsx";
 import {
   buildAppUpdateView,
+  buildDashboardStats,
+  buildDriftGroups,
   buildUniqueSkillInventory,
   filterSkillsByScenario,
+  getMarketInstallSource,
 } from "./lib/skillmate.mjs";
+import { useI18n } from "./lib/i18n.jsx";
 import { useAppUpdateFlow } from "./lib/useAppUpdateFlow.js";
 import { useGitBackupFlow } from "./lib/useGitBackupFlow.js";
 import { useImportExportFlow } from "./lib/useImportExportFlow.js";
@@ -29,11 +36,12 @@ const EMPTY_DATA = { assistants: [], tags: [], scenarios: [], git: { enabled: fa
 const THEME_STORAGE_KEY = "skillmate-theme-mode";
 const THEME_MODES = ["system", "light", "dark"];
 const VIEWS = {
-  skills: { title: "Skills", icon: "skills" },
-  ai: { title: "AI 助手", icon: "assistants" },
-  scenarios: { title: "场景", icon: "scenarios" },
-  updates: { title: "更新", icon: "updates" },
-  settings: { title: "设置", icon: "settings" },
+  dashboard: { titleKey: "nav.dashboard", icon: "dashboard" },
+  skills: { titleKey: "nav.skills", icon: "skills" },
+  ai: { titleKey: "nav.assistants", icon: "assistants" },
+  scenarios: { titleKey: "nav.scenarios", icon: "scenarios" },
+  updates: { titleKey: "nav.updates", icon: "updates" },
+  settings: { titleKey: "nav.settings", icon: "settings" },
 };
 
 
@@ -62,25 +70,17 @@ function Skeleton() {
   );
 }
 
-function Loader() {
+function Loader({ label }) {
   return (
     <div className="loader-overlay">
       <div className="loader-spinner"><div /><div /><div /></div>
-      <p>加载中...</p>
+      <p>{label}</p>
     </div>
   );
 }
 
 const Logo = React.memo(function Logo() {
-  return (
-    <svg className="logo" viewBox="0 0 48 48">
-      <defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stopColor="#58a6ff" /><stop offset="100%" stopColor="#a855f7" /></linearGradient></defs>
-      <rect x="4" y="4" width="40" height="40" rx="12" fill="url(#g)" />
-      <path d="M14 18L20 24L14 30" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-      <path d="M22 24H34" stroke="white" strokeWidth="3" strokeLinecap="round" />
-      <circle cx="34" cy="34" r="5" fill="white" fillOpacity="0.9" />
-    </svg>
-  );
+  return <img className="logo" src={appIcon} alt="" />;
 });
 
 
@@ -104,10 +104,11 @@ function getStatePriority(state) {
 
 
 function App() {
+  const { t, language, setLanguage } = useI18n();
   const [data, setData] = useState(EMPTY_DATA);
-  const [view, setView] = useState("skills");
+  const [view, setView] = useState("dashboard");
   const [tags, setTags] = useState([]);
-  const [confirmState, setConfirmState] = useState({ open: false, title: "", message: "", confirmLabel: "确认", tone: "danger", onConfirm: null });
+  const [confirmState, setConfirmState] = useState({ open: false, title: "", message: "", confirmLabel: "", tone: "danger", onConfirm: null });
   const [sort, setSort] = useState("name");
   const [loading, setLoading] = useState(false);
   const [init, setInit] = useState(true);
@@ -121,6 +122,8 @@ function App() {
   const [newTagColor, setNewTagColor] = useState("#58a6ff");
   const [settingsTab, setSettingsTab] = useState("backup");
   const [loadError, setLoadError] = useState("");
+  const [trashReceipt, setTrashReceipt] = useState(null);
+  const [driftGroup, setDriftGroup] = useState(null);
   const {
     input: searchInput,
     query: search,
@@ -131,19 +134,23 @@ function App() {
   const [sysTheme, setSysTheme] = useState(getSystemTheme);
   const searchRef = useRef(null);
   const toastTimerRef = useRef(null);
+  const trashTimerRef = useRef(null);
   const mountedRef = useRef(false);
   const loadRequestRef = useRef(0);
   if (!toastTimerRef.current) {
     toastTimerRef.current = createResettableTimer();
   }
+  if (!trashTimerRef.current) {
+    trashTimerRef.current = createResettableTimer();
+  }
 
   const resolved = theme === "system" ? sysTheme : theme;
 
-  // 快捷键：Alt+1~5 切换视图
+  // 快捷键：Alt+1~6 切换视图
   useEffect(() => {
-    const viewKeys = ["skills", "ai", "scenarios", "updates", "settings"];
+    const viewKeys = ["dashboard", "skills", "ai", "scenarios", "updates", "settings"];
     const handler = (e) => {
-      if (e.altKey && e.key >= "1" && e.key <= "5") {
+      if (e.altKey && e.key >= "1" && e.key <= "6") {
         e.preventDefault();
         setView(viewKeys[parseInt(e.key) - 1]);
       }
@@ -160,6 +167,7 @@ function App() {
       mountedRef.current = false;
       loadRequestRef.current += 1;
       toastTimerRef.current?.dispose();
+      trashTimerRef.current?.dispose();
     };
   }, []);
 
@@ -169,7 +177,7 @@ function App() {
       open: true,
       title,
       message,
-      confirmLabel: options.confirmLabel || "确认",
+      confirmLabel: options.confirmLabel || t("common.confirm"),
       tone: options.tone || "danger",
       onConfirm,
     });
@@ -229,16 +237,16 @@ function App() {
         })));
       }
       const diagnosticMessage = diagnostics
-        .map((item) => `${item.label}：${item.message}`)
-        .join("；");
-      setLoadError(diagnosticMessage ? `部分数据加载失败：${diagnosticMessage}` : "");
+        .map((item) => `${t(`diagnostic.${item.section}`)}: ${item.message}`)
+        .join(t("common.messageSeparator"));
+      setLoadError(diagnosticMessage ? t("error.partialData", { message: diagnosticMessage }) : "");
       if (resetUpdates) resetUpdateState();
       if (!failedSections.has("git")) gitBackupFlow.hydrate(git);
-      if (diagnosticMessage) showToast("部分数据加载失败，已保留可用内容", "warn");
+      if (diagnosticMessage) showToast(t("toast.partialData"), "warn");
     } catch (e) {
       if (mountedRef.current && requestId === loadRequestRef.current) {
-        setLoadError(`核心数据加载失败：${String(e)}`);
-        showToast(`加载失败: ${e}`, "error");
+        setLoadError(t("error.coreData", { message: String(e) }));
+        showToast(t("toast.loadFailed", { message: String(e) }), "error");
       }
     }
     finally {
@@ -257,6 +265,8 @@ function App() {
   const allSkills = useMemo(() => {
     return buildUniqueSkillInventory(data.assistants);
   }, [data.assistants]);
+  const driftGroups = useMemo(() => buildDriftGroups(data.assistants), [data.assistants]);
+  const dashboardStats = useMemo(() => buildDashboardStats(data.assistants), [data.assistants]);
 
   const scenarioFlow = useScenarioFlow({
     scenarios: data.scenarios,
@@ -332,14 +342,14 @@ function App() {
 
 
   async function addTag() {
-    if (!newTagName.trim()) { showToast("请输入标签名", "error"); return; }
+    if (!newTagName.trim()) { showToast(t("tags.enterName"), "error"); return; }
     try {
       const tag = await skillmateApi.tags.add(newTagName.trim(), newTagColor);
       setTags(prev => [...prev, { ...tag, selected: false }]);
       setNewTagName("");
       setNewTagColor("#58a6ff");
-      showToast("标签已添加", "success");
-    } catch (e) { showToast(`添加标签失败: ${e}`, "error"); }
+      showToast(t("tags.added"), "success");
+    } catch (e) { showToast(t("tags.addFailed", { message: String(e) }), "error"); }
   }
 
   function openTagEditor(skill) {
@@ -359,11 +369,11 @@ function App() {
     if (!tagEditor.skill) return;
     try {
       await skillmateApi.tags.updateSkill(tagEditor.skill.path, tagEditor.selected);
-      showToast("标签已更新", "success");
+      showToast(t("tags.updated"), "success");
       setTagEditor({ open: false, skill: null, selected: [] });
       await loadData();
     } catch (e) {
-      showToast(`标签更新失败: ${e}`, "error");
+      showToast(t("tags.updateFailed", { message: String(e) }), "error");
     }
   }
 
@@ -377,41 +387,61 @@ function App() {
   async function openPreview(path) {
     try {
       const { content, validation, diagnostics = [] } = await skillmateApi.inventory.readSkill(path);
+      const skill = allSkills.find((item) => item.path === path) || null;
       setPreview({
         title: path.split(/[\\/]/).pop(),
-        content: content || "无内容",
+        content: content || t("preview.empty"),
         validation,
         diagnostics,
+        skill,
       });
       setPreviewOpen(true);
-    } catch (e) { showToast(`预览失败: ${e}`, "error"); }
+    } catch (e) { showToast(t("preview.failed", { message: String(e) }), "error"); }
   }
 
   async function remove(path, name, availableIn = []) {
     const sharedWarning = availableIn.length > 1
-      ? `该目录同时被 ${availableIn.map((assistant) => assistant.name).join("、")} 使用，删除后这些助手都会失去该 Skill。`
+      ? t("trash.shared", { assistants: availableIn.map((assistant) => assistant.name).join(t("common.listSeparator")) })
       : "";
-    confirmAction("删除 Skill", `确定要删除「${name}」吗？${sharedWarning}此操作不可恢复。`, async () => {
+    confirmAction(t("trash.title"), t("trash.message", { name, shared: sharedWarning }), async () => {
       setLoading(true);
       try {
-        await skillmateApi.inventory.deleteSkill(path);
-        showToast("已删除", "success");
+        const receipt = await skillmateApi.inventory.trashSkill(path);
+        setTrashReceipt(receipt);
+        trashTimerRef.current.start(Math.max(0, Number(receipt.expiresAt || receipt.expires_at) - Date.now()), async () => {
+          setTrashReceipt(null);
+          try { await skillmateApi.inventory.purgeTrash(receipt.token); } catch { /* 重启维护会清理遗留暂存区。 */ }
+        });
+        showToast(t("trash.done", { name }), "success");
         await loadData();
-      } catch (e) { showToast(`删除失败: ${e}`, "error"); }
+      } catch (e) { showToast(t("trash.failed", { message: String(e) }), "error"); }
       finally { setLoading(false); }
-    }, { confirmLabel: "删除 Skill" });
+    }, { confirmLabel: t("trash.action") });
+  }
+
+  async function undoTrash() {
+    if (!trashReceipt) return;
+    trashTimerRef.current.clear();
+    try {
+      await skillmateApi.inventory.restoreTrash(trashReceipt.token);
+      showToast(t("trash.restored", { name: trashReceipt.name }), "success");
+      setTrashReceipt(null);
+      await loadData();
+    } catch (error) {
+      showToast(t("trash.restoreFailed", { message: String(error) }), "error");
+    }
   }
 
   async function unlinkSymlink(path, name) {
-    confirmAction("解除软连接", `确定要解除「${name}」的项目软连接吗？源目录不会被删除。`, async () => {
+    confirmAction(t("unlink.title"), t("unlink.message", { name }), async () => {
       setLoading(true);
       try {
         const r = await skillmateApi.inventory.unlinkSkill(path);
         showToast(String(r), "success");
         await loadData();
-      } catch (e) { showToast(`解除失败: ${e}`, "error"); }
+      } catch (e) { showToast(t("unlink.failed", { message: String(e) }), "error"); }
       finally { setLoading(false); }
-    }, { confirmLabel: "解除软连接", tone: "primary" });
+    }, { confirmLabel: t("unlink.action"), tone: "primary" });
   }
 
   const orderedUpdatable = useMemo(() => [...updatable].sort((a, b) => {
@@ -436,8 +466,8 @@ function App() {
   }, [getSyncInfo, orderedUpdatable]);
 
   const appUpdateView = useMemo(
-    () => buildAppUpdateView(appUpdateState),
-    [appUpdateState]
+    () => buildAppUpdateView(appUpdateState, language),
+    [appUpdateState, language]
   );
   const runAppUpdatePrimaryAction = useCallback(() => {
     if (appUpdateView.primaryAction === "install") {
@@ -450,19 +480,34 @@ function App() {
   }, [appUpdateView.primaryAction, checkAppUpdate, installAppUpdate, restartApp]);
 
   async function openDir(path) {
-    try { await skillmateApi.inventory.openFolder(getDir(path)); } catch (e) { showToast(`打开失败: ${e}`, "error"); }
+    try { await skillmateApi.inventory.openFolder(getDir(path)); } catch (e) { showToast(t("folder.openFailed", { message: String(e) }), "error"); }
+  }
+
+  function installMarketSkill(item) {
+    const source = getMarketInstallSource(item);
+    if (!source) {
+      showToast(t("market.error", { message: t("common.unknown") }), "error");
+      return;
+    }
+    installFlow.source.prepare(source);
+    setInstallOpen(true);
+  }
+
+  async function completeDrift(message) {
+    showToast(String(message || t("drift.complete")), "success");
+    await loadData();
   }
 
   return (
     <div className="app">
-      {loading && <Loader />}
+      {loading && <Loader label={t("common.loading")} />}
 
       <header className="header">
         <div className="header-left">
           <Logo />
           <div>
             <h1 className="app-name">SkillMate</h1>
-            <p className="app-sub">{VIEWS[view].title}</p>
+            <p className="app-sub">{t(VIEWS[view].titleKey)}</p>
           </div>
         </div>
 
@@ -470,8 +515,8 @@ function App() {
           {(view === "skills" || view === "updates") && (
             <div className="search-box">
               <Icon name="search" size={16} />
-              <input ref={searchRef} type="text" aria-label={view === "updates" ? "搜索更新" : "搜索 Skills"} placeholder={view === "updates" ? "搜索更新..." : `搜索 Skills... (${typeof navigator !== "undefined" && navigator.platform?.startsWith("Mac") ? "⌘K" : "Ctrl+K"})`} value={searchInput} onChange={e => handleSearchInput(e.target.value)} />
-              {search && <button className="search-x" aria-label="清除搜索" onClick={clearSearch}><Icon name="x" size={14} /></button>}
+              <input ref={searchRef} type="text" aria-label={view === "updates" ? t("header.searchUpdates") : t("nav.skills")} placeholder={view === "updates" ? t("header.searchUpdates") : t("header.searchSkills", { shortcut: typeof navigator !== "undefined" && navigator.platform?.startsWith("Mac") ? "⌘K" : "Ctrl+K" })} value={searchInput} onChange={e => handleSearchInput(e.target.value)} />
+              {search && <button className="search-x" aria-label={t("header.clearSearch")} onClick={clearSearch}><Icon name="x" size={14} /></button>}
             </div>
           )}
         </div>
@@ -479,13 +524,14 @@ function App() {
         <div className="header-right">
           {view === "skills" && (
             <div className="sort-tabs">
-              <button className={`sort-tab ${sort === "name" ? "active" : ""}`} onClick={() => setSort("name")}><Icon name="tag" size={14} />名称</button>
-              <button className={`sort-tab ${sort === "date" ? "active" : ""}`} onClick={() => setSort("date")}><Icon name="clock" size={14} />时间</button>
+              <button className={`sort-tab ${sort === "name" ? "active" : ""}`} onClick={() => setSort("name")}><Icon name="tag" size={14} />{t("sort.name")}</button>
+              <button className={`sort-tab ${sort === "date" ? "active" : ""}`} onClick={() => setSort("date")}><Icon name="clock" size={14} />{t("sort.time")}</button>
             </div>
           )}
-          <button className="btn btn-ghost" onClick={loadData} title="刷新" aria-label="刷新数据"><Icon name="refresh" size={18} className={loading ? "spin" : ""} /></button>
-          <button className="btn btn-primary" onClick={() => setInstallOpen(true)}><Icon name="plus" size={18} /><span>安装</span></button>
-          <button className="btn btn-ghost" onClick={cycleTheme} title="切换主题" aria-label="切换主题">
+          <button className="btn btn-ghost" onClick={loadData} title={t("common.refresh")} aria-label={t("common.refresh")}><Icon name="refresh" size={18} className={loading ? "spin" : ""} /></button>
+          <button className="btn btn-primary" onClick={() => setInstallOpen(true)}><Icon name="plus" size={18} /><span>{t("common.install")}</span></button>
+          <button className="btn btn-ghost language-toggle" onClick={() => setLanguage(language === "zh-CN" ? "en" : "zh-CN")} title={t("language.switch")} aria-label={t("language.switch")}><Icon name="globe" size={17} /><span>{language === "zh-CN" ? "EN" : "中"}</span></button>
+          <button className="btn btn-ghost" onClick={cycleTheme} title={t("header.switchTheme")} aria-label={t("header.switchTheme")}>
             <Icon name={theme === "system" ? "monitor" : theme === "light" ? "sun" : "moon"} size={18} />
           </button>
         </div>
@@ -497,7 +543,7 @@ function App() {
             {Object.entries(VIEWS).map(([k, v]) => (
               <button key={k} className={`nav-item ${view === k ? "active" : ""}`} onClick={() => setView(k)}>
                 <Icon name={v.icon} size={18} />
-                <span>{v.title}</span>
+                <span>{t(v.titleKey)}</span>
                 {k === "skills" && statSkills > 0 && <span className="badge">{statSkills}</span>}
                 {k === "ai" && <span className="badge">{statAI}</span>}
                 {k === "updates" && updateBadge > 0 && <span className="badge warn">{updateBadge}</span>}
@@ -507,8 +553,8 @@ function App() {
 
           <div className="sidebar-section">
             <div className="section-header">
-              <span>标签</span>
-              {selectedTags.length > 0 && <button onClick={() => setTags(t => t.map(tag => ({ ...tag, selected: false })))}>清除</button>}
+              <span>{t("sidebar.tags")}</span>
+              {selectedTags.length > 0 && <button onClick={() => setTags(current => current.map(tag => ({ ...tag, selected: false })))}>{t("common.clear")}</button>}
             </div>
             <div className="tag-list">
               {tags.map(tag => (
@@ -516,7 +562,7 @@ function App() {
                   <span className="tag-dot" />{tag.name}
                 </button>
               ))}
-              {tags.length === 0 && <p className="empty-hint">暂无标签</p>}
+              {tags.length === 0 && <p className="empty-hint">{t("sidebar.noTags")}</p>}
             </div>
           </div>
 
@@ -524,7 +570,7 @@ function App() {
             <div className="mini-stats">
               <div><span className="val">{statSkills}</span><span className="lbl">Skills</span></div>
               <div><span className="val">{statAI}</span><span className="lbl">AI</span></div>
-              <div><span className="val">{tags.length}</span><span className="lbl">标签</span></div>
+              <div><span className="val">{tags.length}</span><span className="lbl">{t("sidebar.tags")}</span></div>
             </div>
           </div>
         </nav>
@@ -532,8 +578,8 @@ function App() {
         <main className="content">
           {loadError && (
             <div className="load-error-banner" role="alert">
-              <div><strong>数据加载异常</strong><span>{loadError}</span></div>
-              <button className="btn btn-secondary btn-sm" onClick={() => loadData({ resetUpdates: false })}>重试</button>
+              <div><strong>{t("error.dataTitle")}</strong><span>{loadError}</span></div>
+              <button className="btn btn-secondary btn-sm" onClick={() => loadData({ resetUpdates: false })}>{t("common.retry")}</button>
             </div>
           )}
           {activeScenario && (
@@ -541,17 +587,21 @@ function App() {
               <div className="settings-body" style={{ padding: 14 }}>
                 <div className="card-actions" style={{ justifyContent: "space-between" }}>
                   <div>
-                    <strong>按场景筛选：{activeScenario.name}</strong>
-                    <div className="git-meta">仅显示该场景中的 {activeScenario.skill_ids.length} 个 Skill</div>
+                    <strong>{t("scenarioFilter.title", { name: activeScenario.name })}</strong>
+                    <div className="git-meta">{t("scenarioFilter.count", { count: activeScenario.skill_ids.length })}</div>
                   </div>
                   <button className="btn btn-secondary btn-sm" onClick={() => scenarioFlow.setActiveId("")}>
-                    <Icon name="x" size={14} />清除场景筛选
+                    <Icon name="x" size={14} />{t("scenarioFilter.clear")}
                   </button>
                 </div>
               </div>
             </div>
           )}
-          {init ? <Skeleton /> : view === "skills" && (
+          {init ? <Skeleton /> : view === "dashboard" && (
+            <DashboardView stats={dashboardStats} driftGroups={driftGroups} onNavigate={setView} onMarketInstall={installMarketSkill} onOpenDrift={setDriftGroup} />
+          )}
+
+          {!init && view === "skills" && (
             <SkillsView
               skills={skills}
               allSkillCount={allSkills.length}
@@ -669,7 +719,16 @@ function App() {
       )}
 
       {previewOpen && (
-        <PreviewModal preview={preview} onClose={() => setPreviewOpen(false)} />
+        <PreviewModal
+          preview={preview}
+          driftGroup={driftGroups.find((group) => group.name === preview.skill?.name)}
+          onCheckUpdate={checkUpdate}
+          onOpenDrift={(group) => {
+            setPreviewOpen(false);
+            setDriftGroup(group);
+          }}
+          onClose={() => setPreviewOpen(false)}
+        />
       )}
 
       {tagEditor.open && (
@@ -683,14 +742,17 @@ function App() {
       )}
 
       <div className={`toast ${toastState.show ? "show" : ""} ${toastState.type}`} role="status" aria-live="polite" aria-atomic="true">{toastState.show ? toastState.msg : ""}</div>
+      {trashReceipt && <div className="undo-bar" role="status"><span>{t("trash.done", { name: trashReceipt.name })}</span><button className="btn btn-secondary btn-sm" onClick={undoTrash}><Icon name="undo" size={14} />{t("trash.undo")}</button></div>}
+
+      {driftGroup && <DriftSyncModal group={driftGroup} onClose={() => setDriftGroup(null)} onComplete={completeDrift} />}
 
       {confirmState.open && (
         <ConfirmModal
           confirmState={confirmState}
-          onClose={() => setConfirmState({ open: false, title: "", message: "", confirmLabel: "确认", tone: "danger", onConfirm: null })}
+          onClose={() => setConfirmState({ open: false, title: "", message: "", confirmLabel: "", tone: "danger", onConfirm: null })}
           onConfirm={() => {
             const cb = confirmState.onConfirm;
-            setConfirmState({ open: false, title: "", message: "", confirmLabel: "确认", tone: "danger", onConfirm: null });
+            setConfirmState({ open: false, title: "", message: "", confirmLabel: "", tone: "danger", onConfirm: null });
             cb?.();
           }}
         />

@@ -1,8 +1,10 @@
 import { useEffect, useId, useRef } from "react";
 import Icon from "./Icon.jsx";
 import { activateModalFocus } from "../lib/modalFocus.mjs";
+import { useI18n } from "../lib/i18n.jsx";
 
 export default function ModalShell({ title, icon, className = "", onClose, children, role = "dialog", descriptionId }) {
+  const { t } = useI18n();
   const titleId = useId();
   const modalRef = useRef(null);
   const onCloseRef = useRef(onClose);
@@ -35,7 +37,7 @@ export default function ModalShell({ title, icon, className = "", onClose, child
       >
         <div className="modal-head">
           <h3 id={titleId}>{icon && <Icon name={icon} size={18} />}{title}</h3>
-          <button className="modal-x" type="button" aria-label="关闭弹窗" onClick={onClose}>
+          <button className="modal-x" type="button" aria-label={t("common.close")} onClick={onClose}>
             <Icon name="x" size={20} />
           </button>
         </div>

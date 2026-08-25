@@ -63,8 +63,18 @@ export const skillmateApi = Object.freeze({
     loadDashboard,
     readSkill,
     deleteSkill: (path) => invoke("delete_skill", { path }),
+    trashSkill: (path) => invoke("trash_skill", { path }),
+    restoreTrash: (token) => invoke("restore_trashed_skill", { token }),
+    purgeTrash: (token) => invoke("purge_trashed_skill", { token }),
     unlinkSkill: (path) => invoke("unlink_symlink_skill", { path }),
     openFolder: (path) => invoke("open_folder", { path }),
+  }),
+  market: Object.freeze({
+    search: (source, query) => invoke("search_market", { source, query }),
+  }),
+  drift: Object.freeze({
+    preview: (sourcePath, targetPaths) => invoke("preview_sync_skill_copies", { sourcePath, targetPaths }),
+    apply: (sourcePath, targetPaths, planToken) => invoke("sync_skill_copies", { sourcePath, targetPaths, planToken }),
   }),
   tags: Object.freeze({
     add: (name, color) => invoke("add_tag", { name, color }),

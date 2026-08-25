@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useI18n } from "./i18n.jsx";
 
 async function loadAppUpdateApis() {
   const [{ getVersion }, { check }, { relaunch }] = await Promise.all([
@@ -10,6 +11,7 @@ async function loadAppUpdateApis() {
 }
 
 export function useAppUpdateFlow({ showToast }) {
+  const { t } = useI18n();
   const updateRef = useRef(null);
   const autoCheckRef = useRef(false);
   const [appUpdateState, setAppUpdateState] = useState({
@@ -61,7 +63,7 @@ export function useAppUpdateFlow({ showToast }) {
           error: "",
           lastCheckedAt: Date.now(),
         });
-        showToast("当前已是最新版本", "success");
+        showToast(t("appUpdate.toast.current"), "success");
         return null;
       }
       const plainUpdate = {
@@ -78,7 +80,7 @@ export function useAppUpdateFlow({ showToast }) {
         error: "",
         lastCheckedAt: Date.now(),
       });
-      showToast(`发现新版本 ${update.version}`, "success");
+      showToast(t("appUpdate.toast.available", { version: update.version }), "success");
       return update;
     } catch (e) {
       const message = String(e);
@@ -90,10 +92,10 @@ export function useAppUpdateFlow({ showToast }) {
         error: message,
         lastCheckedAt: Date.now(),
       }));
-      showToast(`检查应用更新失败: ${message}`, "error");
+      showToast(t("appUpdate.toast.checkFailed", { message }), "error");
       return null;
     }
-  }, [showToast]);
+  }, [showToast, t]);
 
   // 启动自动检查:静默模式,失败不打扰,发现新版本时提示一次。
   // 不复用 checkAppUpdate,避免把"已是最新"的成功 toast 和错误 toast 打到启动流程里。
@@ -126,11 +128,11 @@ export function useAppUpdateFlow({ showToast }) {
         },
         lastCheckedAt: Date.now(),
       }));
-      showToast(`发现新版本 ${update.version},可在设置中更新`, "success");
+      showToast(t("appUpdate.toast.startupAvailable", { version: update.version }), "success");
     } catch {
       // 启动静默检查失败不打扰用户;设置页手动检查会展示完整错误。
     }
-  }, [showToast]);
+  }, [showToast, t]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -189,7 +191,7 @@ export function useAppUpdateFlow({ showToast }) {
         progress: null,
         error: "",
       }));
-      showToast("更新已安装，正在重启应用", "success");
+      showToast(t("appUpdate.toast.restarting"), "success");
     } catch (e) {
       const message = String(e);
       setAppUpdateState((current) => ({
@@ -198,7 +200,7 @@ export function useAppUpdateFlow({ showToast }) {
         progress: null,
         error: message,
       }));
-      showToast(`安装应用更新失败: ${message}`, "error");
+      showToast(t("appUpdate.toast.installFailed", { message }), "error");
       return;
     }
     try {
@@ -210,11 +212,11 @@ export function useAppUpdateFlow({ showToast }) {
         ...current,
         status: "ready_to_restart",
         progress: null,
-        error: `自动重启失败: ${message}`,
+        error: t("appUpdate.toast.autoRestartFailed", { message }),
       }));
-      showToast(`自动重启失败，请手动重启: ${message}`, "error");
+      showToast(t("appUpdate.toast.restartManually", { message }), "error");
     }
-  }, [checkAppUpdate, showToast]);
+  }, [checkAppUpdate, showToast, t]);
 
   const restartApp = useCallback(async () => {
     try {
@@ -231,11 +233,11 @@ export function useAppUpdateFlow({ showToast }) {
         ...current,
         status: "ready_to_restart",
         progress: null,
-        error: `重启失败: ${e}`,
+        error: t("appUpdate.toast.restartFailed", { message: String(e) }),
       }));
-      showToast(`重启失败: ${e}`, "error");
+      showToast(t("appUpdate.toast.restartFailed", { message: String(e) }), "error");
     }
-  }, [showToast]);
+  }, [showToast, t]);
 
   return {
     appUpdateState,

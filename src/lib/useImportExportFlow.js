@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { buildImportPreviewToken, isImportPreviewCurrent } from "./skillmate.mjs";
 import { createSingleFlightPlanExecutor } from "./plannedAction.mjs";
 import { invokeSkillMateCommand, skillmateApi, skillmateCommands } from "./skillmateApi.js";
+import { useI18n } from "./i18n.jsx";
 
 export function useImportExportFlow({ showToast, loadData }) {
+  const { t, language } = useI18n();
   const [exportPath, setExportPath] = useState("~/skillmate-export.json");
   const [importPath, setImportPath] = useState("~/skillmate-export.json");
   const [importMode, setImportMode] = useState("merge");
@@ -89,26 +91,26 @@ export function useImportExportFlow({ showToast, loadData }) {
       const result = await skillmateApi.profiles.get();
       setSkillProfiles(result);
     } catch (e) {
-      showToast(`加载 Profile 失败: ${e}`, "error");
+      showToast(t("profile.toast.loadFailed", { message: String(e) }), "error");
     }
   }
 
   async function exportLibraryFile() {
     if (!exportPath.trim()) {
-      showToast("请输入导出文件路径", "error");
+      showToast(t("data.toast.enterExportPath"), "error");
       return;
     }
     try {
       const result = await skillmateApi.library.export(exportPath);
-      showToast(String(result), "success");
+      showToast(language === "en" ? t("data.toast.exported") : String(result || t("data.toast.exported")), "success");
     } catch (e) {
-      showToast(`导出失败: ${e}`, "error");
+      showToast(t("data.toast.exportFailed", { message: String(e) }), "error");
     }
   }
 
   async function previewImportLibraryFile() {
     if (!importPath.trim()) {
-      showToast("请输入导入文件路径", "error");
+      showToast(t("data.toast.enterImportPath"), "error");
       return;
     }
     setPreviewingImport(true);
@@ -119,11 +121,11 @@ export function useImportExportFlow({ showToast, loadData }) {
         ...buildImportPreviewToken({ path: importPath, mode: importMode }),
         planToken: result.plan_token || "",
       });
-      showToast("已生成导入预览", "success");
+      showToast(t("data.toast.previewReady"), "success");
     } catch (e) {
       setImportPreview(null);
       setImportPreviewToken(null);
-      showToast(`预览失败: ${e}`, "error");
+      showToast(t("data.toast.previewFailed", { message: String(e) }), "error");
     } finally {
       setPreviewingImport(false);
     }
@@ -131,19 +133,19 @@ export function useImportExportFlow({ showToast, loadData }) {
 
   async function importLibraryFile() {
     if (!importPath.trim()) {
-      showToast("请输入导入文件路径", "error");
+      showToast(t("data.toast.enterImportPath"), "error");
       return;
     }
     if (!importPreview) {
-      showToast("请先预览导入内容", "warn");
+      showToast(t("data.toast.previewFirst"), "warn");
       return;
     }
     if (!importPreviewCurrent) {
-      showToast("导入参数已变化，请重新预览", "warn");
+      showToast(t("data.toast.previewChanged"), "warn");
       return;
     }
     if (!importPreviewToken?.planToken) {
-      showToast("导入计划缺失，请重新预览", "warn");
+      showToast(t("data.toast.planMissing"), "warn");
       return;
     }
     const execution = planExecutorRef.current.run(
@@ -156,12 +158,12 @@ export function useImportExportFlow({ showToast, loadData }) {
     setApplyingImport(true);
     try {
       const result = await execution.promise;
-      showToast(String(result), "success");
+      showToast(language === "en" ? t("data.toast.imported") : String(result || t("data.toast.imported")), "success");
       setImportPreview(null);
       setImportPreviewToken(null);
       await loadData();
     } catch (e) {
-      showToast(`导入失败: ${e}`, "error");
+      showToast(t("data.toast.importFailed", { message: String(e) }), "error");
     } finally {
       setApplyingImport(false);
     }
@@ -169,34 +171,34 @@ export function useImportExportFlow({ showToast, loadData }) {
 
   async function exportSkillMateManifestFile() {
     if (!skillMateManifestPath.trim()) {
-      showToast("请输入 skillmate.toml 路径", "error");
+      showToast(t("manifest.toast.enterPath"), "error");
       return;
     }
     try {
       const result = await skillmateApi.manifests.exportSkillMate(skillMateManifestPath);
-      showToast(String(result), "success");
+      showToast(language === "en" ? t("manifest.toast.exported") : String(result || t("manifest.toast.exported")), "success");
     } catch (e) {
-      showToast(`导出失败: ${e}`, "error");
+      showToast(t("manifest.toast.exportFailed", { message: String(e) }), "error");
     }
   }
 
   async function exportProjectSkillMateManifestFile() {
     if (!projectManifestRoot.trim()) {
-      showToast("请输入项目路径", "error");
+      showToast(t("manifest.toast.enterProject"), "error");
       return;
     }
     try {
       const path = await skillmateApi.manifests.exportProject(projectManifestRoot.trim());
       updateSkillMateManifestPath(String(path));
-      showToast(`项目锁定清单已导出到 ${path}`, "success");
+      showToast(t("manifest.toast.projectExported", { path: String(path) }), "success");
     } catch (e) {
-      showToast(`导出项目锁定清单失败: ${e}`, "error");
+      showToast(t("manifest.toast.projectExportFailed", { message: String(e) }), "error");
     }
   }
 
   async function previewSkillMateManifestFile() {
     if (!skillMateManifestPath.trim()) {
-      showToast("请输入 skillmate.toml 路径", "error");
+      showToast(t("manifest.toast.enterPath"), "error");
       return;
     }
     setPreviewingSkillMateManifest(true);
@@ -207,11 +209,11 @@ export function useImportExportFlow({ showToast, loadData }) {
         ...buildImportPreviewToken({ path: skillMateManifestPath, mode: "apply" }),
         planToken: result.plan_token || "",
       });
-      showToast("已生成 SkillMate manifest 预览", result.can_apply ? "success" : "warn");
+      showToast(t("manifest.toast.previewReady"), result.can_apply ? "success" : "warn");
     } catch (e) {
       setSkillMateManifestPreview(null);
       setSkillMateManifestPreviewToken(null);
-      showToast(`预览失败: ${e}`, "error");
+      showToast(t("manifest.toast.previewFailed", { message: String(e) }), "error");
     } finally {
       setPreviewingSkillMateManifest(false);
     }
@@ -219,19 +221,19 @@ export function useImportExportFlow({ showToast, loadData }) {
 
   async function applySkillMateManifestFile() {
     if (!skillMateManifestPreview) {
-      showToast("请先预览 skillmate.toml", "warn");
+      showToast(t("manifest.toast.previewFirst"), "warn");
       return;
     }
     if (!skillMateManifestPreviewCurrent) {
-      showToast("manifest 路径已变化，请重新预览", "warn");
+      showToast(t("manifest.toast.previewChanged"), "warn");
       return;
     }
     if (!skillMateManifestPreviewToken?.planToken) {
-      showToast("manifest 计划缺失，请重新预览", "warn");
+      showToast(t("manifest.toast.planMissing"), "warn");
       return;
     }
     if (!skillMateManifestPreview.can_apply) {
-      showToast("manifest 存在冲突或格式问题，无法应用", "error");
+      showToast(t("manifest.toast.blocked"), "error");
       return;
     }
     const execution = planExecutorRef.current.run(
@@ -244,12 +246,12 @@ export function useImportExportFlow({ showToast, loadData }) {
     setApplyingSkillMateManifest(true);
     try {
       const result = await execution.promise;
-      showToast(String(result), "success");
+      showToast(language === "en" ? t("manifest.toast.applied") : String(result || t("manifest.toast.applied")), "success");
       setSkillMateManifestPreview(null);
       setSkillMateManifestPreviewToken(null);
       await loadData();
     } catch (e) {
-      showToast(`应用失败: ${e}`, "error");
+      showToast(t("manifest.toast.applyFailed", { message: String(e) }), "error");
     } finally {
       setApplyingSkillMateManifest(false);
     }
@@ -257,7 +259,7 @@ export function useImportExportFlow({ showToast, loadData }) {
 
   async function saveCurrentSkillProfile() {
     if (!skillProfileName.trim()) {
-      showToast("请输入 Profile 名称", "error");
+      showToast(t("profile.toast.enterName"), "error");
       return;
     }
     try {
@@ -266,9 +268,9 @@ export function useImportExportFlow({ showToast, loadData }) {
       setSkillProfileName("");
       setSkillProfileDescription("");
       setSkillProfilePreview(null);
-      showToast("已保存当前 Skill 组合", "success");
+      showToast(t("profile.toast.saved"), "success");
     } catch (e) {
-      showToast(`保存 Profile 失败: ${e}`, "error");
+      showToast(t("profile.toast.saveFailed", { message: String(e) }), "error");
     }
   }
 
@@ -277,10 +279,10 @@ export function useImportExportFlow({ showToast, loadData }) {
     try {
       const result = await skillmateApi.profiles.preview(profileId);
       setSkillProfilePreview(result);
-      showToast("已生成 Profile 预览", result.manifest_preview?.can_apply ? "success" : "warn");
+      showToast(t("profile.toast.previewReady"), result.manifest_preview?.can_apply ? "success" : "warn");
     } catch (e) {
       setSkillProfilePreview(null);
-      showToast(`预览 Profile 失败: ${e}`, "error");
+      showToast(t("profile.toast.previewFailed", { message: String(e) }), "error");
     } finally {
       setPreviewingSkillProfile(false);
     }
@@ -288,11 +290,11 @@ export function useImportExportFlow({ showToast, loadData }) {
 
   async function applySkillProfile(profileId) {
     if (skillProfilePreview?.profile?.id !== profileId || !skillProfilePreview?.plan_token) {
-      showToast("Profile 计划缺失或已切换，请重新预览", "warn");
+      showToast(t("profile.toast.planMissing"), "warn");
       return;
     }
     if (!skillProfilePreview.manifest_preview?.can_apply || skillProfilePreview.profile_issues?.length) {
-      showToast("Profile 存在冲突或格式问题，无法应用", "error");
+      showToast(t("profile.toast.blocked"), "error");
       return;
     }
     const execution = planExecutorRef.current.run(
@@ -305,12 +307,12 @@ export function useImportExportFlow({ showToast, loadData }) {
     setApplyingSkillProfile(true);
     try {
       const result = await execution.promise;
-      showToast(String(result), "success");
+      showToast(language === "en" ? t("profile.toast.applied") : String(result || t("profile.toast.applied")), "success");
       setSkillProfilePreview(null);
       await loadSkillProfiles();
       await loadData();
     } catch (e) {
-      showToast(`应用 Profile 失败: ${e}`, "error");
+      showToast(t("profile.toast.applyFailed", { message: String(e) }), "error");
     } finally {
       setApplyingSkillProfile(false);
     }
@@ -320,12 +322,12 @@ export function useImportExportFlow({ showToast, loadData }) {
     setApplyingSkillProfile(true);
     try {
       const result = await skillmateApi.profiles.rollback();
-      showToast(String(result), "success");
+      showToast(language === "en" ? t("profile.toast.rolledBack") : String(result || t("profile.toast.rolledBack")), "success");
       setSkillProfilePreview(null);
       await loadSkillProfiles();
       await loadData();
     } catch (e) {
-      showToast(`回滚 Profile 失败: ${e}`, "error");
+      showToast(t("profile.toast.rollbackFailed", { message: String(e) }), "error");
     } finally {
       setApplyingSkillProfile(false);
     }
@@ -333,20 +335,20 @@ export function useImportExportFlow({ showToast, loadData }) {
 
   async function exportScenarioManifestFile() {
     if (!scenarioManifestPath.trim()) {
-      showToast("请输入场景 manifest 文件路径", "error");
+      showToast(t("scenarioManifest.toast.enterPath"), "error");
       return;
     }
     try {
       const result = await skillmateApi.scenarios.exportManifest(scenarioManifestPath);
-      showToast(String(result), "success");
+      showToast(language === "en" ? t("scenarioManifest.toast.exported") : String(result || t("scenarioManifest.toast.exported")), "success");
     } catch (e) {
-      showToast(`导出失败: ${e}`, "error");
+      showToast(t("scenarioManifest.toast.exportFailed", { message: String(e) }), "error");
     }
   }
 
   async function previewImportScenarioManifestFile() {
     if (!scenarioManifestPath.trim()) {
-      showToast("请输入场景 manifest 文件路径", "error");
+      showToast(t("scenarioManifest.toast.enterPath"), "error");
       return;
     }
     setPreviewingScenarioManifest(true);
@@ -360,11 +362,11 @@ export function useImportExportFlow({ showToast, loadData }) {
         }),
         planToken: result.plan_token || "",
       });
-      showToast("已生成场景导入预览", "success");
+      showToast(t("scenarioManifest.toast.previewReady"), "success");
     } catch (e) {
       setScenarioManifestPreview(null);
       setScenarioManifestPreviewToken(null);
-      showToast(`预览失败: ${e}`, "error");
+      showToast(t("scenarioManifest.toast.previewFailed", { message: String(e) }), "error");
     } finally {
       setPreviewingScenarioManifest(false);
     }
@@ -372,19 +374,19 @@ export function useImportExportFlow({ showToast, loadData }) {
 
   async function importScenarioManifestFile() {
     if (!scenarioManifestPath.trim()) {
-      showToast("请输入场景 manifest 文件路径", "error");
+      showToast(t("scenarioManifest.toast.enterPath"), "error");
       return;
     }
     if (!scenarioManifestPreview) {
-      showToast("请先预览场景导入内容", "warn");
+      showToast(t("scenarioManifest.toast.previewFirst"), "warn");
       return;
     }
     if (!scenarioManifestPreviewCurrent) {
-      showToast("场景导入参数已变化，请重新预览", "warn");
+      showToast(t("scenarioManifest.toast.previewChanged"), "warn");
       return;
     }
     if (!scenarioManifestPreviewToken?.planToken) {
-      showToast("场景导入计划缺失，请重新预览", "warn");
+      showToast(t("scenarioManifest.toast.planMissing"), "warn");
       return;
     }
     const execution = planExecutorRef.current.run(
@@ -397,12 +399,12 @@ export function useImportExportFlow({ showToast, loadData }) {
     setApplyingScenarioManifest(true);
     try {
       const result = await execution.promise;
-      showToast(String(result), "success");
+      showToast(language === "en" ? t("scenarioManifest.toast.imported") : String(result || t("scenarioManifest.toast.imported")), "success");
       setScenarioManifestPreview(null);
       setScenarioManifestPreviewToken(null);
       await loadData();
     } catch (e) {
-      showToast(`导入失败: ${e}`, "error");
+      showToast(t("scenarioManifest.toast.importFailed", { message: String(e) }), "error");
     } finally {
       setApplyingScenarioManifest(false);
     }

@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { buildGitBackupState } from "./skillmate.mjs";
 import { skillmateApi } from "./skillmateApi.js";
+import { useI18n } from "./i18n.jsx";
 
 function toDraft(config) {
   return {
@@ -11,6 +12,7 @@ function toDraft(config) {
 }
 
 export function useGitBackupFlow({ saved, showToast, loadData }) {
+  const { t, language } = useI18n();
   const [draft, setDraft] = useState(() => toDraft(saved));
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -40,43 +42,43 @@ export function useGitBackupFlow({ saved, showToast, loadData }) {
 
   const save = useCallback(async () => {
     if (!state.payload.repoPath) {
-      showToast("请输入备份仓库路径", "error");
+      showToast(t("backup.toast.enterPath"), "error");
       return;
     }
     if (saving || syncing) return;
     setSaving(true);
     try {
       await skillmateApi.backup.setup(state.payload);
-      showToast("Git 备份已保存", "success");
+      showToast(t("backup.toast.saved"), "success");
       await loadData();
     } catch (e) {
-      showToast(`保存失败: ${e}`, "error");
+      showToast(t("backup.toast.saveFailed", { message: String(e) }), "error");
     } finally {
       setSaving(false);
     }
-  }, [loadData, saving, showToast, state.payload, syncing]);
+  }, [loadData, saving, showToast, state.payload, syncing, t]);
 
   const sync = useCallback(async () => {
     if (state.dirty) {
-      showToast("Git 备份设置尚未保存，请先保存后再同步", "warn");
+      showToast(t("backup.toast.unsaved"), "warn");
       return;
     }
     if (!state.configured) {
-      showToast("请先配置并保存 Git 备份仓库", "warn");
+      showToast(t("backup.toast.unconfigured"), "warn");
       return;
     }
     if (saving || syncing) return;
     setSyncing(true);
     try {
       const result = await skillmateApi.backup.sync(`SkillMate sync ${new Date().toISOString()}`);
-      showToast(String(result), "success");
+      showToast(language === "en" ? t("backup.toast.synced") : String(result || t("backup.toast.synced")), "success");
       await loadData();
     } catch (e) {
-      showToast(`同步失败: ${e}`, "error");
+      showToast(t("backup.toast.syncFailed", { message: String(e) }), "error");
     } finally {
       setSyncing(false);
     }
-  }, [loadData, saving, showToast, state.configured, state.dirty, syncing]);
+  }, [language, loadData, saving, showToast, state.configured, state.dirty, syncing, t]);
 
   return {
     repoPath: draft.repoPath,

@@ -168,6 +168,33 @@ pub fn assistant_definitions() -> &'static [AssistantDefinition] {
             project_install_path: ".gemini/skills",
             recursive_discovery_depth: 2,
         },
+        AssistantDefinition {
+            name: "Cursor",
+            ai_type: "skill",
+            icon: "cursor",
+            global_install_path: "~/.cursor/skills",
+            global_discovery_paths: &["~/.cursor/skills"],
+            project_install_path: ".cursor/skills",
+            recursive_discovery_depth: 2,
+        },
+        AssistantDefinition {
+            name: "OpenCode",
+            ai_type: "skill",
+            icon: "opencode",
+            global_install_path: "~/.config/opencode/skills",
+            global_discovery_paths: &["~/.config/opencode/skills"],
+            project_install_path: ".opencode/skills",
+            recursive_discovery_depth: 2,
+        },
+        AssistantDefinition {
+            name: "GitHub Copilot",
+            ai_type: "skill",
+            icon: "copilot",
+            global_install_path: "~/.copilot/skills",
+            global_discovery_paths: &["~/.copilot/skills"],
+            project_install_path: ".github/skills",
+            recursive_discovery_depth: 2,
+        },
     ]
 }
 

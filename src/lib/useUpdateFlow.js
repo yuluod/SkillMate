@@ -1,7 +1,9 @@
 import { useCallback, useState } from "react";
 import { skillmateApi } from "./skillmateApi.js";
+import { useI18n } from "./i18n.jsx";
 
 export function useUpdateFlow({ updatable, showToast, loadData }) {
+  const { t, language } = useI18n();
   const [updateState, setUpdateState] = useState({});
 
   const resetUpdateState = useCallback(() => setUpdateState({}), []);
@@ -16,7 +18,7 @@ export function useUpdateFlow({ updatable, showToast, loadData }) {
       installedRef: state.installedRef || skill.installed_ref,
       latestRef: state.latestRef || skill.latest_ref,
       syncState: state.syncState || skill.sync_state,
-      message: state.message || skill.sync_message || "待检查",
+      message: state.message || skill.sync_message || t("updates.state.unknown"),
       lagCount: state.lagCount ?? skill.lag_count ?? 0,
       lastProbeAt: state.lastProbeAt ?? skill.last_probe_at,
       lastSyncAt: state.lastSyncAt ?? skill.last_sync_at,
@@ -25,7 +27,7 @@ export function useUpdateFlow({ updatable, showToast, loadData }) {
       checking: Boolean(state.checking),
       updating: Boolean(state.updating)
     };
-  }, [updateState]);
+  }, [t, updateState]);
 
   const checkAllUpdates = useCallback(async () => {
     if (updatable.length === 0) return;
@@ -47,7 +49,7 @@ export function useUpdateFlow({ updatable, showToast, loadData }) {
                 updating: false,
                 hasUpdate: false,
                 lagCount: 0,
-                message: "检查失败: 后端未返回结果",
+                message: t("updates.message.noResult"),
                 syncState: "failed",
               };
         });
@@ -55,7 +57,7 @@ export function useUpdateFlow({ updatable, showToast, loadData }) {
       });
       const failed = results.filter((result) => result.syncState === "failed").length;
       showToast(
-        failed > 0 ? `检查完成，${failed} 个 Skill 失败` : "全部检查完成",
+        failed > 0 ? t("updates.toast.batchPartial", { count: failed }) : t("updates.toast.batchDone"),
         failed > 0 ? "warn" : "success"
       );
     } catch (error) {
@@ -68,15 +70,15 @@ export function useUpdateFlow({ updatable, showToast, loadData }) {
             updating: false,
             hasUpdate: false,
             lagCount: 0,
-            message: `检查失败: ${error}`,
+            message: t("updates.toast.checkFailed", { message: String(error) }),
             syncState: "failed",
           };
         });
         return next;
       });
-      showToast(`批量检查失败: ${error}`, "error");
+      showToast(t("updates.toast.batchFailed", { message: String(error) }), "error");
     }
-  }, [showToast, updatable, updateState]);
+  }, [showToast, t, updatable, updateState]);
 
   const checkUpdate = useCallback(async (path) => {
     try {
@@ -84,25 +86,26 @@ export function useUpdateFlow({ updatable, showToast, loadData }) {
       const r = await skillmateApi.updates.checkOne(path);
       setUpdateState(prev => ({ ...prev, [path]: { ...(prev[path] || {}), checking: false, updating: false, ...r } }));
       const hasUpdate = typeof r.hasUpdate === "boolean" ? r.hasUpdate : r.syncState === "behind";
-      showToast(r.message || (hasUpdate ? "有更新" : "已是最新"), hasUpdate ? "warn" : "success");
+      const fallback = t(hasUpdate ? "updates.toast.available" : "updates.toast.current");
+      showToast(language === "en" ? fallback : (r.message || fallback), hasUpdate ? "warn" : "success");
     } catch (e) {
       setUpdateState(prev => ({ ...prev, [path]: { ...(prev[path] || {}), checking: false } }));
-      showToast(`检查失败: ${e}`, "error");
+      showToast(t("updates.toast.checkFailed", { message: String(e) }), "error");
     }
-  }, [showToast]);
+  }, [language, showToast, t]);
 
   const updateSkill = useCallback(async (path) => {
     try {
       setUpdateState(prev => ({ ...prev, [path]: { ...(prev[path] || {}), updating: true } }));
       const result = await skillmateApi.updates.applyOne(path);
-      showToast(String(result || "更新成功"), "success");
+      showToast(language === "en" ? t("updates.toast.updated") : String(result || t("updates.toast.updated")), "success");
       await checkUpdate(path);
       await loadData();
     } catch (e) {
       setUpdateState(prev => ({ ...prev, [path]: { ...(prev[path] || {}), updating: false } }));
-      showToast(`更新失败: ${e}`, "error");
+      showToast(t("updates.toast.updateFailed", { message: String(e) }), "error");
     }
-  }, [checkUpdate, loadData, showToast]);
+  }, [checkUpdate, language, loadData, showToast, t]);
 
   return {
     updateState,

@@ -5,6 +5,7 @@ description = "AI Coding Assistant Skill Manager"
 authors = ["SkillMate"]
 license = "AGPL-3.0-or-later"
 edition = "2021"
+default-run = "skillmate"
 
 [lib]
 name = "skillmate_lib"
@@ -26,6 +27,11 @@ dirs = "6"
 chrono = "0.4"
 rusqlite = { version = "0.31", features = ["bundled"] }
 toml = "1.1"
+ureq = { version = "2.12", features = ["json"] }
+
+[[bin]]
+name = "skillmate-cli"
+path = "src/bin/skillmate-cli.rs"
 
 [profile.dev]
 debug = 1
