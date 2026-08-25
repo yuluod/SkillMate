@@ -53,6 +53,10 @@ function readModalShellSource() {
   return readFileSync(new URL("../components/ModalShell.jsx", import.meta.url), "utf8");
 }
 
+function readStylesSource() {
+  return readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+}
+
 test("应用更新状态视图应当映射按钮能力和版本信息", () => {
   assert.deepEqual(
     buildAppUpdateView({
@@ -131,6 +135,15 @@ test("App 可靠性回归点应当避免脆弱写法", () => {
   assert.match(modalShell, /role=\{role\}/);
   assert.match(modalShell, /aria-modal="true"/);
   assert.match(modalShell, /activateModalFocus/);
+});
+
+test("桌面端弹窗应当受视口高度约束并可纵向滚动", () => {
+  const baseStyles = readStylesSource().split("@media")[0];
+  const modalRule = baseStyles.match(/\.modal\s*\{([^}]*)\}/s)?.[1] ?? "";
+
+  assert.match(modalRule, /max-height:\s*calc\(100dvh - 32px\)/);
+  assert.match(modalRule, /overflow-y:\s*auto/);
+  assert.match(modalRule, /overscroll-behavior:\s*contain/);
 });
 
 test("安装来源只保留 Git 仓库和本地目录", () => {
