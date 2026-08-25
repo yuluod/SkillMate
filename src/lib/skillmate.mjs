@@ -145,14 +145,34 @@ const APP_UPDATE_PRIMARY_ACTIONS = {
   error: { action: "check", label: "重新检查", icon: "refresh", enabled: true },
 };
 
-export function buildInstallCommandPreview({ source, assistantName, installMode, projectPath }) {
+function localized(t, key, fallback, values = {}) {
+  if (typeof t === "function") {
+    const translated = t(key, values);
+    if (translated && translated !== key) return translated;
+  }
+  return fallback.replace(/\{(\w+)\}/g, (_, name) => String(values[name] ?? `{${name}}`));
+}
+
+function localizedMap(t, prefix, value, fallbackMap, fallbackKey) {
+  const normalized = value && fallbackMap[value] ? value : fallbackKey;
+  return localized(t, `${prefix}.${normalized}`, fallbackMap[normalized] || String(value || ""));
+}
+
+export function buildInstallCommandPreview({ source, assistantName, installMode, projectPath, t }) {
   if (installMode === "symlink") {
-    return `将本地目录软连接到 ${projectPath || "项目"} 的 ${assistantName || "目标"} Skills 目录`;
+    return localized(t, "install.command.symlink", "将本地目录软连接到 {project} 的 {assistant} Skills 目录", {
+      project: projectPath || localized(t, "install.command.project", "项目"),
+      assistant: assistantName || localized(t, "install.command.target", "目标"),
+    });
   }
   if (source === "local") {
-    return `复制本地目录到 ${assistantName || "目标"} Skills 目录`;
+    return localized(t, "install.command.copy", "复制本地目录到 {assistant} Skills 目录", {
+      assistant: assistantName || localized(t, "install.command.target", "目标"),
+    });
   }
-  return `克隆 Git 仓库到 ${assistantName || "目标"} Skills 目录`;
+  return localized(t, "install.command.clone", "克隆 Git 仓库到 {assistant} Skills 目录", {
+    assistant: assistantName || localized(t, "install.command.target", "目标"),
+  });
 }
 
 export function buildInstallPreviewToken({ packageValue, source, assistantName, installMode, projectPath }) {
@@ -202,20 +222,21 @@ export function buildInstallPrimaryAction({
   previewCurrent,
   previewingInstall,
   loading,
+  t,
 }) {
   const hasInput = Boolean((packageValue || "").trim());
   const canApply = Boolean(preview?.can_apply ?? preview?.can_install);
   const disabled = !hasInput || previewingInstall || loading;
   if (previewingInstall) {
-    return { action: "preview", label: "检查中...", icon: "preview", disabled: true };
+    return { action: "preview", label: localized(t, "install.action.checking", "检查中..."), icon: "preview", disabled: true };
   }
   if (preview && previewCurrent && canApply) {
-    return { action: "install", label: "安装", icon: "plus", disabled };
+    return { action: "install", label: localized(t, "install.action.install", "安装"), icon: "plus", disabled };
   }
   if (preview && previewCurrent && !canApply) {
-    return { action: "preview", label: "重新检查", icon: "preview", disabled };
+    return { action: "preview", label: localized(t, "install.action.recheck", "重新检查"), icon: "preview", disabled };
   }
-  return { action: "preview", label: "检查结构", icon: "preview", disabled };
+  return { action: "preview", label: localized(t, "install.action.inspect", "检查结构"), icon: "preview", disabled };
 }
 
 export function normalizeSkillStructure(skill) {
@@ -229,92 +250,92 @@ export function normalizeSkillStructure(skill) {
   };
 }
 
-export function getStructureStatusLabel(status) {
-  return STRUCTURE_STATUS_LABELS[status] || STRUCTURE_STATUS_LABELS.nonstandard;
+export function getStructureStatusLabel(status, t) {
+  return localizedMap(t, "structure.status", status, STRUCTURE_STATUS_LABELS, "nonstandard");
 }
 
 export function getStructureStatusTone(status) {
   return STRUCTURE_STATUS_TONES[status] || STRUCTURE_STATUS_TONES.nonstandard;
 }
 
-export function buildStructureWarningSummary(skill) {
+export function buildStructureWarningSummary(skill, t) {
   const { warnings } = normalizeSkillStructure(skill);
   if (warnings.length === 0) {
-    return "结构未发现明显问题";
+    return localized(t, "structure.noIssues", "结构未发现明显问题");
   }
-  return warnings.map((warning) => STRUCTURE_WARNING_LABELS[warning] || warning).join("、");
+  return warnings.map((warning) => localized(t, `structure.warning.${warning}`, STRUCTURE_WARNING_LABELS[warning] || warning)).join(localized(t, "common.listSeparator", "、"));
 }
 
-export function getInstallSourceLabel(sourceKind) {
-  return INSTALL_SOURCE_LABELS[sourceKind] || sourceKind || INSTALL_SOURCE_LABELS.unknown;
+export function getInstallSourceLabel(sourceKind, t) {
+  return localizedMap(t, "install.sourceKind", sourceKind, INSTALL_SOURCE_LABELS, "unknown");
 }
 
-export function getInstallConfidenceLabel(confidence) {
-  return INSTALL_CONFIDENCE_LABELS[confidence] || confidence || INSTALL_CONFIDENCE_LABELS.low;
+export function getInstallConfidenceLabel(confidence, t) {
+  return localizedMap(t, "install.confidence", confidence, INSTALL_CONFIDENCE_LABELS, "low");
 }
 
-export function buildInstallDetectionSummary(detection) {
+export function buildInstallDetectionSummary(detection, t) {
   if (!detection) {
     return "";
   }
-  const label = getInstallSourceLabel(detection.source_kind);
-  const confidence = getInstallConfidenceLabel(detection.confidence);
-  const parts = [`识别为${label}`, confidence];
+  const label = getInstallSourceLabel(detection.source_kind, t);
+  const confidence = getInstallConfidenceLabel(detection.confidence, t);
+  const parts = [localized(t, "install.detection.identified", "识别为{source}", { source: label }), confidence];
   if (detection.reference) {
-    parts.push(`引用 ${detection.reference}`);
+    parts.push(localized(t, "install.detection.reference", "引用 {value}", { value: detection.reference }));
   }
   if (detection.subdir) {
-    parts.push(`子目录 ${detection.subdir}`);
+    parts.push(localized(t, "install.detection.subdir", "子目录 {value}", { value: detection.subdir }));
   }
   if (detection.target_name) {
-    parts.push(`目标 ${detection.target_name}`);
+    parts.push(localized(t, "install.detection.target", "目标 {value}", { value: detection.target_name }));
   }
   if (detection.needs_model) {
-    parts.push("可用模型辅助识别");
+    parts.push(localized(t, "install.detection.model", "可用模型辅助识别"));
   }
   return parts.join(" · ");
 }
 
-export function buildInstallDetectionWarningSummary(detection) {
+export function buildInstallDetectionWarningSummary(detection, t) {
   const warnings = Array.isArray(detection?.warnings) ? detection.warnings : [];
   if (warnings.length === 0) {
     return "";
   }
-  return warnings.map((warning) => STRUCTURE_WARNING_LABELS[warning] || warning).join("、");
+  return warnings.map((warning) => localized(t, `structure.warning.${warning}`, STRUCTURE_WARNING_LABELS[warning] || warning)).join(localized(t, "common.listSeparator", "、"));
 }
 
-export function buildInstallDetectionView(detection) {
+export function buildInstallDetectionView(detection, t) {
   if (!detection) {
     return null;
   }
   return {
-    title: detection.detector === "rules" ? "本地规则" : "模型辅助",
+    title: localized(t, detection.detector === "rules" ? "install.detection.rules" : "install.detection.modelTitle", detection.detector === "rules" ? "本地规则" : "模型辅助"),
     tone: detection.confidence === "low" ? "warn" : "success",
-    summary: buildInstallDetectionSummary(detection),
-    warningSummary: buildInstallDetectionWarningSummary(detection),
-    sourceLabel: getInstallSourceLabel(detection.source_kind),
-    confidenceLabel: getInstallConfidenceLabel(detection.confidence),
+    summary: buildInstallDetectionSummary(detection, t),
+    warningSummary: buildInstallDetectionWarningSummary(detection, t),
+    sourceLabel: getInstallSourceLabel(detection.source_kind, t),
+    confidenceLabel: getInstallConfidenceLabel(detection.confidence, t),
     needsModel: Boolean(detection.needs_model),
   };
 }
 
-export function getPackageKindLabel(kind) {
-  return PACKAGE_KIND_LABELS[kind] || PACKAGE_KIND_LABELS.unknown;
+export function getPackageKindLabel(kind, t) {
+  return localizedMap(t, "install.packageKind", kind, PACKAGE_KIND_LABELS, "unknown");
 }
 
-export function buildPackageDetectionSummary(detection) {
+export function buildPackageDetectionSummary(detection, t) {
   if (!detection) {
     return "";
   }
   const count = Array.isArray(detection.detected_skills) ? detection.detected_skills.length : 0;
-  const parts = [getPackageKindLabel(detection.package_kind), `${count} 个 Skill`];
+  const parts = [getPackageKindLabel(detection.package_kind, t), localized(t, "install.detection.skillCount", "{count} 个 Skill", { count })];
   if (detection.needs_model) {
-    parts.push("可选模型辅助识别");
+    parts.push(localized(t, "install.detection.optionalModel", "可选模型辅助识别"));
   }
   return parts.join(" · ");
 }
 
-export function buildInstallPreviewView(preview) {
+export function buildInstallPreviewView(preview, t) {
   if (!preview) {
     return null;
   }
@@ -336,14 +357,14 @@ export function buildInstallPreviewView(preview) {
     canApply: Boolean(preview.can_apply ?? preview.can_install),
     tone: conflicts.length > 0 || policy.allowed === false ? "error" : getStructureStatusTone(preview.structure_status),
     message: preview.message || "",
-    packageSummary: buildPackageDetectionSummary(packageDetection),
+    packageSummary: buildPackageDetectionSummary(packageDetection, t),
     packageWarnings: (packageDetection.warnings || [])
-      .map((warning) => STRUCTURE_WARNING_LABELS[warning] || warning)
-      .join("、"),
+      .map((warning) => localized(t, `structure.warning.${warning}`, STRUCTURE_WARNING_LABELS[warning] || warning))
+      .join(localized(t, "common.listSeparator", "、")),
     skills: packageDetection.detected_skills || [],
     actions: actions.map((action) => ({
       ...action,
-      label: PREVIEW_ACTION_LABELS[action.action] || action.action,
+      label: localized(t, `install.previewAction.${action.action}`, PREVIEW_ACTION_LABELS[action.action] || action.action),
     })),
     conflicts,
     needsModel: Boolean(packageDetection.needs_model),
@@ -353,13 +374,13 @@ export function buildInstallPreviewView(preview) {
       message: policy.message || "",
       findings: (policy.findings || []).map((finding) => ({
         ...finding,
-        label: STRUCTURE_WARNING_LABELS[finding.code] || finding.message || finding.code,
+        label: localized(t, `structure.warning.${finding.code}`, STRUCTURE_WARNING_LABELS[finding.code] || finding.message || finding.code),
       })),
     },
   };
 }
 
-export function buildInstallPreviewSummary(preview) {
+export function buildInstallPreviewSummary(preview, t) {
   if (!preview) {
     return [];
   }
@@ -367,21 +388,21 @@ export function buildInstallPreviewSummary(preview) {
   const actions = Array.isArray(preview.target_actions) ? preview.target_actions : [];
   const conflicts = Array.isArray(preview.conflicts) ? preview.conflicts : [];
   const lines = [];
-  lines.push(`结构：${getStructureStatusLabel(preview.structure_status)}`);
+  lines.push(localized(t, "install.summary.structure", "结构：{value}", { value: getStructureStatusLabel(preview.structure_status, t) }));
   if (preview.target_path) {
-    lines.push(`目标：${preview.target_path}`);
+    lines.push(localized(t, "install.summary.target", "目标：{value}", { value: preview.target_path }));
   }
   if (actions.length > 0) {
-    lines.push(`写入：${actions.length} 个动作`);
+    lines.push(localized(t, "install.summary.actions", "写入：{count} 个动作", { count: actions.length }));
   }
   if (conflicts.length > 0) {
-    lines.push(`冲突：${conflicts.length} 个`);
+    lines.push(localized(t, "install.summary.conflicts", "冲突：{count} 个", { count: conflicts.length }));
   }
   if (preview.install_policy?.message) {
-    lines.push(`策略：${preview.install_policy.message}`);
+    lines.push(localized(t, "install.summary.policy", "策略：{value}", { value: preview.install_policy.message }));
   }
   if (packageDetection.package_kind) {
-    lines.push(buildPackageDetectionSummary(packageDetection));
+    lines.push(buildPackageDetectionSummary(packageDetection, t));
   }
   if (preview.message) {
     lines.push(preview.message);
@@ -389,17 +410,17 @@ export function buildInstallPreviewSummary(preview) {
   return lines;
 }
 
-export function buildValidationSummary(report) {
+export function buildValidationSummary(report, t) {
   if (!report) {
     return [];
   }
   return (report.checks || []).map((check) => ({
     ...check,
-    label: VALIDATION_STATUS_LABELS[check.status] || check.status,
+    label: localized(t, `validation.status.${check.status}`, VALIDATION_STATUS_LABELS[check.status] || check.status),
   }));
 }
 
-export function buildSkillCardView(skill) {
+export function buildSkillCardView(skill, t) {
   const structure = normalizeSkillStructure(skill);
   const isSymlink = skill?.source_type === "symlink";
   const isManaged = Boolean(skill?.managed_by_app);
@@ -410,21 +431,21 @@ export function buildSkillCardView(skill) {
   return {
     title: skill?.manifest_title || skill?.name || "",
     description: buildSkillDescription(skill),
-    structureLabel: getStructureStatusLabel(structure.status),
+    structureLabel: getStructureStatusLabel(structure.status, t),
     structureTone: getStructureStatusTone(structure.status),
-    warningSummary: buildStructureWarningSummary(skill),
+    warningSummary: buildStructureWarningSummary(skill, t),
     securityWarningCount: securityWarnings.length,
     securityWarningSummary: securityWarnings
-      .map((warning) => STRUCTURE_WARNING_LABELS[warning] || warning)
-      .join("、"),
+      .map((warning) => localized(t, `structure.warning.${warning}`, STRUCTURE_WARNING_LABELS[warning] || warning))
+      .join(localized(t, "common.listSeparator", "、")),
     hasManagedDrift: structure.warnings.includes("managed_content_changed"),
-    sourceLabel: skill?.source || "未托管",
+    sourceLabel: skill?.source || localized(t, "source.unmanaged", "未托管"),
     canSync: Boolean(skill?.can_sync),
     hasUpdate: Boolean(skill?.has_update),
     canDelete: isManaged && !isSymlink,
     canUnlink: isManaged && isSymlink,
     availableIn,
-    availabilityLabel: availableIn.map((assistant) => assistant.name).join("、"),
+    availabilityLabel: availableIn.map((assistant) => assistant.name).join(localized(t, "common.listSeparator", "、")),
     isShared: availableIn.length > 1,
   };
 }
@@ -455,6 +476,91 @@ export function buildUniqueSkillInventory(assistants) {
     }
   }
   return [...byPath.values()];
+}
+
+export function buildDriftGroups(assistants) {
+  const byName = new Map();
+  for (const assistant of Array.isArray(assistants) ? assistants : []) {
+    for (const skill of Array.isArray(assistant?.skills) ? assistant.skills : []) {
+      const name = typeof skill?.name === "string" ? skill.name.trim() : "";
+      const path = typeof skill?.path === "string" ? skill.path : "";
+      const contentHash = typeof skill?.content_hash === "string" ? skill.content_hash : "";
+      if (!name || !path || !contentHash) continue;
+      const copies = byName.get(name) || new Map();
+      const existing = copies.get(path);
+      const availability = { name: assistant?.name || "未知助手", icon: assistant?.icon || "" };
+      if (existing) {
+        if (!existing.availableIn.some((item) => item.name === availability.name)) {
+          existing.availableIn.push(availability);
+        }
+      } else {
+        copies.set(path, {
+          name,
+          path,
+          contentHash,
+          managed: Boolean(skill?.managed_by_app),
+          sourceType: skill?.source_type || "unknown",
+          source: skill?.source || "",
+          structureStatus: skill?.structure_status || "nonstandard",
+          warnings: Array.isArray(skill?.structure_warnings) ? [...skill.structure_warnings] : [],
+          availableIn: [availability],
+        });
+      }
+      byName.set(name, copies);
+    }
+  }
+
+  return [...byName.entries()]
+    .map(([name, copies]) => {
+      const values = [...copies.values()];
+      const hashes = [...new Set(values.map((copy) => copy.contentHash))];
+      return {
+        id: name,
+        name,
+        copies: values.sort((left, right) => left.path.localeCompare(right.path)),
+        versionCount: hashes.length,
+      };
+    })
+    .filter((group) => group.copies.length > 1 && group.versionCount > 1)
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+export function buildDashboardStats(assistants) {
+  const skills = buildUniqueSkillInventory(assistants);
+  const driftGroups = buildDriftGroups(assistants);
+  let updates = 0;
+  let structureIssues = 0;
+  let securityRisks = 0;
+  let localChanges = 0;
+  for (const skill of skills) {
+    const card = buildSkillCardView(skill);
+    if (skill?.sync_state === "behind" || skill?.has_update) updates += 1;
+    if (skill?.structure_status !== "complete") structureIssues += 1;
+    if (card.securityWarningCount > 0) securityRisks += 1;
+    if (card.hasManagedDrift) localChanges += 1;
+  }
+  return {
+    skills: skills.length,
+    assistants: (Array.isArray(assistants) ? assistants : []).filter((assistant) => assistant?.exists).length,
+    updates,
+    structureIssues,
+    securityRisks,
+    localChanges,
+    driftGroups: driftGroups.length,
+    diagnostics: (Array.isArray(assistants) ? assistants : [])
+      .reduce((count, assistant) => count + (Array.isArray(assistant?.diagnostics) ? assistant.diagnostics.length : 0), 0),
+  };
+}
+
+export function getMarketInstallSource(item) {
+  if (typeof item?.installSource === "string" && item.installSource.trim()) {
+    return item.installSource.trim();
+  }
+  if (typeof item?.install_source === "string" && item.install_source.trim()) {
+    return item.install_source.trim();
+  }
+  const repository = typeof item?.repository === "string" ? item.repository.trim() : "";
+  return repository ? `https://github.com/${repository}.git` : "";
 }
 
 export function buildSkillDescription(skill) {
@@ -543,75 +649,75 @@ export function isImportPreviewCurrent({ previewToken, path, mode }) {
   return previewToken.path === current.path && previewToken.mode === current.mode;
 }
 
-export function buildImportPreviewSummary(preview) {
+export function buildImportPreviewSummary(preview, t) {
   const lines = [];
 
   if (preview.replace_existing) {
     if (preview.existing_tags_to_remove > 0) {
-      lines.push(`将清空现有 ${preview.existing_tags_to_remove} 个标签`);
+      lines.push(localized(t, "summary.import.removeTags", "将清空现有 {count} 个标签", { count: preview.existing_tags_to_remove }));
     }
     if (preview.existing_scenarios_to_remove > 0) {
-      lines.push(`将清空现有 ${preview.existing_scenarios_to_remove} 个场景`);
+      lines.push(localized(t, "summary.import.removeScenarios", "将清空现有 {count} 个场景", { count: preview.existing_scenarios_to_remove }));
     }
     if (preview.existing_skill_tag_mappings_to_remove > 0) {
-      lines.push(`将清空现有 ${preview.existing_skill_tag_mappings_to_remove} 条 Skill 标签映射`);
+      lines.push(localized(t, "summary.import.removeMappings", "将清空现有 {count} 条 Skill 标签映射", { count: preview.existing_skill_tag_mappings_to_remove }));
     }
   }
 
   if (preview.tags_to_add > 0) {
-    lines.push(`将新增 ${preview.tags_to_add} 个标签`);
+    lines.push(localized(t, "summary.import.addTags", "将新增 {count} 个标签", { count: preview.tags_to_add }));
   }
   if (preview.tags_to_replace > 0) {
-    lines.push(`将覆盖 ${preview.tags_to_replace} 个标签`);
+    lines.push(localized(t, "summary.import.replaceTags", "将覆盖 {count} 个标签", { count: preview.tags_to_replace }));
   }
   if (preview.scenarios_to_add > 0) {
-    lines.push(`将新增 ${preview.scenarios_to_add} 个场景`);
+    lines.push(localized(t, "summary.import.addScenarios", "将新增 {count} 个场景", { count: preview.scenarios_to_add }));
   }
   if (preview.scenarios_to_replace > 0) {
-    lines.push(`将覆盖 ${preview.scenarios_to_replace} 个场景`);
+    lines.push(localized(t, "summary.import.replaceScenarios", "将覆盖 {count} 个场景", { count: preview.scenarios_to_replace }));
   }
   if (preview.skill_tag_writes > 0) {
-    lines.push(`将写入 ${preview.skill_tag_writes} 条 Skill 标签映射`);
+    lines.push(localized(t, "summary.import.writeMappings", "将写入 {count} 条 Skill 标签映射", { count: preview.skill_tag_writes }));
   }
 
-  return lines.length > 0 ? lines : ["未检测到可导入的组织数据变化"];
+  return lines.length > 0 ? lines : [localized(t, "summary.import.noChanges", "未检测到可导入的组织数据变化")];
 }
 
-export function buildScenarioManifestPreviewSummary(preview) {
+export function buildScenarioManifestPreviewSummary(preview, t) {
   const lines = [];
 
   if (preview.replace_existing && preview.existing_scenarios_to_remove > 0) {
-    lines.push(`将清空现有 ${preview.existing_scenarios_to_remove} 个场景`);
+    lines.push(localized(t, "summary.import.removeScenarios", "将清空现有 {count} 个场景", { count: preview.existing_scenarios_to_remove }));
   }
   if (preview.scenarios_to_add > 0) {
-    lines.push(`将新增 ${preview.scenarios_to_add} 个场景`);
+    lines.push(localized(t, "summary.import.addScenarios", "将新增 {count} 个场景", { count: preview.scenarios_to_add }));
   }
   if (preview.scenarios_to_replace > 0) {
-    lines.push(`将覆盖 ${preview.scenarios_to_replace} 个场景`);
+    lines.push(localized(t, "summary.import.replaceScenarios", "将覆盖 {count} 个场景", { count: preview.scenarios_to_replace }));
   }
   if (Array.isArray(preview.missing_skill_refs) && preview.missing_skill_refs.length > 0) {
-    lines.push(`有 ${preview.missing_skill_refs.length} 个 Skill 路径当前不存在`);
+    lines.push(localized(t, "summary.scenario.missing", "有 {count} 个 Skill 路径当前不存在", { count: preview.missing_skill_refs.length }));
   }
 
-  return lines.length > 0 ? lines : ["未检测到可导入的场景变化"];
+  return lines.length > 0 ? lines : [localized(t, "summary.scenario.noChanges", "未检测到可导入的场景变化")];
 }
 
-export function buildSkillMateManifestPreviewSummary(preview) {
+export function buildSkillMateManifestPreviewSummary(preview, t) {
   const lines = [];
   const validationIssues = Array.isArray(preview?.validation_issues) ? preview.validation_issues : [];
   const actions = Array.isArray(preview?.actions) ? preview.actions : [];
   const conflicts = Array.isArray(preview?.conflicts) ? preview.conflicts : [];
   if (validationIssues.length > 0) {
-    lines.push(`存在 ${validationIssues.length} 个格式问题`);
+    lines.push(localized(t, "summary.manifest.validation", "存在 {count} 个格式问题", { count: validationIssues.length }));
   }
   const installs = actions.filter((action) => !action.kind || action.kind === "install");
   const keeps = actions.filter((action) => action.kind === "keep");
   const removals = actions.filter((action) => action.kind === "remove");
-  if (installs.length > 0) lines.push(`将安装 ${installs.length} 条 Skill 记录`);
-  if (keeps.length > 0) lines.push(`将保留 ${keeps.length} 条来源一致的 Skill`);
-  if (removals.length > 0) lines.push(`将移除 ${removals.length} 条多余的受管 Skill`);
+  if (installs.length > 0) lines.push(localized(t, "summary.manifest.install", "将安装 {count} 条 Skill 记录", { count: installs.length }));
+  if (keeps.length > 0) lines.push(localized(t, "summary.manifest.keep", "将保留 {count} 条来源一致的 Skill", { count: keeps.length }));
+  if (removals.length > 0) lines.push(localized(t, "summary.manifest.remove", "将移除 {count} 条多余的受管 Skill", { count: removals.length }));
   if (conflicts.length > 0) {
-    lines.push(`存在 ${conflicts.length} 个冲突`);
+    lines.push(localized(t, "summary.manifest.conflicts", "存在 {count} 个冲突", { count: conflicts.length }));
   }
   actions.slice(0, 5).forEach((action) => {
     lines.push(`${action.assistant}：${action.target_name} · ${action.message}`);
@@ -622,10 +728,10 @@ export function buildSkillMateManifestPreviewSummary(preview) {
   validationIssues.slice(0, 5).forEach((issue) => {
     lines.push(`#${issue.index + 1}：${issue.message}`);
   });
-  return lines.length > 0 ? lines : ["manifest 没有可执行动作"];
+  return lines.length > 0 ? lines : [localized(t, "summary.manifest.noActions", "manifest 没有可执行动作")];
 }
 
-export function buildSkillProfilePreviewSummary(preview) {
+export function buildSkillProfilePreviewSummary(preview, t) {
   if (!preview) {
     return [];
   }
@@ -634,37 +740,42 @@ export function buildSkillProfilePreviewSummary(preview) {
   const manifestPreview = preview.manifest_preview || {};
   const diff = preview.diff || {};
   const lines = [
-    `${profile.name || "未命名 Profile"} · ${(profile.skills || []).length} 条 Skill 记录`,
-    ...buildSkillMateManifestPreviewSummary(manifestPreview),
+    localized(t, "summary.profile.header", "{name} · {count} 条 Skill 记录", { name: profile.name || localized(t, "summary.profile.unnamed", "未命名 Profile"), count: (profile.skills || []).length }),
+    ...buildSkillMateManifestPreviewSummary(manifestPreview, t),
   ];
   if (profileIssues.length > 0) {
-    lines.push(`Profile 有 ${profileIssues.length} 个格式问题`);
+    lines.push(localized(t, "summary.profile.issues", "Profile 有 {count} 个格式问题", { count: profileIssues.length }));
   }
   profileIssues.slice(0, 5).forEach((issue) => {
     lines.push(issue.message);
   });
   if (Array.isArray(diff.to_install) && diff.to_install.length > 0) {
-    lines.push(`将补齐 ${diff.to_install.length} 条缺失记录`);
+    lines.push(localized(t, "summary.profile.install", "将补齐 {count} 条缺失记录", { count: diff.to_install.length }));
   }
   if (Array.isArray(diff.already_present) && diff.already_present.length > 0) {
-    lines.push(`${diff.already_present.length} 条记录已存在`);
+    lines.push(localized(t, "summary.profile.present", "{count} 条记录已存在", { count: diff.already_present.length }));
   }
   if (Array.isArray(diff.to_remove) && diff.to_remove.length > 0) {
-    lines.push(`将移除 ${diff.to_remove.length} 条不在目标组合中的受管记录`);
+    lines.push(localized(t, "summary.profile.remove", "将移除 {count} 条不在目标组合中的受管记录", { count: diff.to_remove.length }));
   }
   if (Array.isArray(diff.conflicts) && diff.conflicts.length > 0) {
-    lines.push(`Profile diff 有 ${diff.conflicts.length} 个冲突`);
+    lines.push(localized(t, "summary.profile.conflicts", "Profile diff 有 {count} 个冲突", { count: diff.conflicts.length }));
   }
-  lines.push("应用 Profile 会对齐 SkillMate 受管 Skill，不会删除手工添加的目录");
+  lines.push(localized(t, "summary.profile.safety", "应用 Profile 会对齐 SkillMate 受管 Skill，不会删除手工添加的目录"));
   return lines;
 }
 
-export function buildProjectTargetPreviewSummary(targets) {
+export function buildProjectTargetPreviewSummary(targets, t) {
   if (!Array.isArray(targets) || targets.length === 0) {
-    return ["未识别到项目目标目录"];
+    return [localized(t, "summary.project.noTargets", "未识别到项目目标目录")];
   }
   return targets.map((target) => (
-    `${target.assistant}：${target.target_path}${target.exists ? " · 已存在" : ""}${target.recommended ? " · 推荐" : ""}`
+    localized(t, "summary.project.target", "{assistant}：{path}{exists}{recommended}", {
+      assistant: target.assistant,
+      path: target.target_path,
+      exists: target.exists ? localized(t, "summary.project.exists", " · 已存在") : "",
+      recommended: target.recommended ? localized(t, "summary.project.recommended", " · 推荐") : "",
+    })
   ));
 }
 
@@ -676,15 +787,15 @@ export function getAppUpdateStatusTone(status) {
   return APP_UPDATE_STATUS_TONES[status] || APP_UPDATE_STATUS_TONES.idle;
 }
 
-export function formatAppUpdateDate(value) {
+export function formatAppUpdateDate(value, locale = "zh-CN") {
   if (!value) {
-    return "未知";
+    return locale.toLowerCase().startsWith("en") ? "Unknown" : "未知";
   }
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
     return String(value);
   }
-  return date.toLocaleString("zh-CN", {
+  return date.toLocaleString(locale, {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -709,7 +820,7 @@ export function buildAppUpdateProgressText(progress) {
   return "";
 }
 
-export function buildAppUpdateView(state) {
+export function buildAppUpdateView(state, locale = "zh-CN") {
   const status = state?.status || "idle";
   const update = state?.update || null;
   const progress = state?.progress || null;
@@ -720,7 +831,7 @@ export function buildAppUpdateView(state) {
     statusTone: getAppUpdateStatusTone(status),
     currentVersion: state?.currentVersion || update?.currentVersion || "",
     nextVersion: update?.version || "",
-    dateLabel: formatAppUpdateDate(update?.date),
+    dateLabel: formatAppUpdateDate(update?.date, locale),
     releaseNotes: update?.body || "",
     progressText: buildAppUpdateProgressText(progress),
     progressPercent: progress?.contentLength

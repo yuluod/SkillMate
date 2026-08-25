@@ -13,8 +13,10 @@ import {
 } from "./skillmate.mjs";
 import { createSingleFlightPlanExecutor } from "./plannedAction.mjs";
 import { invokeSkillMateCommand, skillmateApi, skillmateCommands } from "./skillmateApi.js";
+import { useI18n } from "./i18n.jsx";
 
 export function useInstallFlow({ installOpen, assistants, setInstallOpen, showToast, loadData, setLoading }) {
+  const { t, language } = useI18n();
   const [sourceInput, setSourceInput] = useState({ kind: "git", package: "", manual: false });
   const { kind: src, package: pkg } = sourceInput;
   const [installDetection, setInstallDetection] = useState(null);
@@ -35,6 +37,15 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
 
   const setPkg = useCallback((value) => {
     setSourceInput((current) => ({ ...current, package: value }));
+  }, []);
+
+  const preparePackage = useCallback((value) => {
+    setSourceInput({ kind: "git", package: value, manual: false });
+    setInstallDetection(null);
+    setInstallStructurePreview(null);
+    setInstallPreviewToken(null);
+    setInstallDetailsOpen(false);
+    setInstallAdvancedOpen(false);
   }, []);
 
   const setSrc = useCallback((value) => {
@@ -193,16 +204,16 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
   }, [installAssistant, installMode, installOpen, pkg, projectPath, src]);
 
   const installDetectionView = useMemo(
-    () => buildInstallDetectionView(installDetection),
-    [installDetection]
+    () => buildInstallDetectionView(installDetection, t),
+    [installDetection, t]
   );
   const installPreviewView = useMemo(
-    () => buildInstallPreviewView(installStructurePreview),
-    [installStructurePreview]
+    () => buildInstallPreviewView(installStructurePreview, t),
+    [installStructurePreview, t]
   );
   const cmd = useMemo(
-    () => buildInstallCommandPreview({ source: src, assistantName: installAssistant, installMode, projectPath }),
-    [installAssistant, installMode, projectPath, src]
+    () => buildInstallCommandPreview({ source: src, assistantName: installAssistant, installMode, projectPath, t }),
+    [installAssistant, installMode, projectPath, src, t]
   );
   const installPreviewCurrent = useMemo(
     () => Boolean(installPreviewToken?.planToken) && isInstallPreviewCurrent({
@@ -222,8 +233,9 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
       previewCurrent: installPreviewCurrent,
       previewingInstall,
       loading: false,
+      t,
     }),
-    [installPreviewCurrent, installStructurePreview, pkg, previewingInstall]
+    [installPreviewCurrent, installStructurePreview, pkg, previewingInstall, t]
   );
   const showProjectLinkOption = useMemo(
     () => shouldShowProjectLinkOption({ source: src, detection: installDetection }),
@@ -235,9 +247,9 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
   );
 
   const previewInstall = useCallback(async () => {
-    if (!pkg) { showToast("请输入仓库地址", "error"); return; }
-    if (!installAssistant) { showToast("请选择目标助手", "error"); return; }
-    if (installMode === "symlink" && !projectPath.trim()) { showToast("请输入项目路径", "error"); return; }
+    if (!pkg) { showToast(t("install.toast.enterSource"), "error"); return; }
+    if (!installAssistant) { showToast(t("install.toast.chooseAssistant"), "error"); return; }
+    if (installMode === "symlink" && !projectPath.trim()) { showToast(t("install.toast.enterProject"), "error"); return; }
     setPreviewingInstall(true);
     try {
       const token = buildInstallPreviewToken({
@@ -256,7 +268,7 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
       });
       setInstallStructurePreview(result);
       setInstallPreviewToken({ ...token, planToken: result.plan_token || "" });
-      showToast(result.can_apply ? "安装预览完成" : `预览完成：${result.message}`, result.can_apply ? "success" : "error");
+      showToast(t(result.can_apply ? "install.toast.previewDone" : "install.toast.previewNeedsAttention"), result.can_apply ? "success" : "error");
     } catch (e) {
       setInstallStructurePreview({
         can_install: false,
@@ -275,30 +287,30 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
         installMode,
         projectPath,
       }), planToken: "" });
-      showToast(`预览失败: ${e}`, "error");
+      showToast(t("install.toast.previewFailed", { message: String(e) }), "error");
     } finally {
       setPreviewingInstall(false);
     }
-  }, [installAssistant, installMode, pkg, projectPath, showToast, src]);
+  }, [installAssistant, installMode, pkg, projectPath, showToast, src, t]);
 
   const install = useCallback(async () => {
-    if (!pkg) { showToast("请输入包名", "error"); return; }
-    if (!installAssistant) { showToast("请选择目标助手", "error"); return; }
-    if (installMode === "symlink" && !projectPath.trim()) { showToast("请输入项目路径", "error"); return; }
+    if (!pkg) { showToast(t("install.toast.enterPackage"), "error"); return; }
+    if (!installAssistant) { showToast(t("install.toast.chooseAssistant"), "error"); return; }
+    if (installMode === "symlink" && !projectPath.trim()) { showToast(t("install.toast.enterProject"), "error"); return; }
     if (!installStructurePreview) {
-      showToast("请先预览安装计划", "warn");
+      showToast(t("install.toast.previewFirst"), "warn");
       return;
     }
     if (!installPreviewCurrent) {
-      showToast("安装计划已过期，请重新检查结构", "warn");
+      showToast(t("install.toast.expired"), "warn");
       return;
     }
     if (!(installStructurePreview.can_apply ?? installStructurePreview.can_install)) {
-      showToast(`当前预览不可安装: ${installStructurePreview.message || "存在冲突"}`, "error");
+      showToast(t("install.toast.cannotInstall", { message: language === "en" ? t("install.toast.conflict") : (installStructurePreview.message || t("install.toast.conflict")) }), "error");
       return;
     }
     if (!installPreviewToken?.planToken) {
-      showToast("安装计划缺失，请重新检查结构", "warn");
+      showToast(t("install.toast.missingPlan"), "warn");
       return;
     }
     const execution = planExecutorRef.current.run(
@@ -319,7 +331,7 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
       const r = await execution.promise;
       if (r.success) {
         const structureSummary = buildInstallStructureSummary(r);
-        showToast(structureSummary ? `安装成功，${structureSummary}` : "安装成功", "success");
+        showToast(structureSummary && language !== "en" ? t("install.toast.successWith", { summary: structureSummary }) : t("install.toast.success"), "success");
         setInstallOpen(false);
         setSourceInput((current) => ({ ...current, package: "", manual: false }));
         setInstallDetection(null);
@@ -331,14 +343,14 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
         setProjectPath("");
         await loadData();
       } else {
-        showToast(`安装失败: ${r.message}`, "error");
+        showToast(t("install.toast.failed", { message: String(r.message) }), "error");
       }
     } catch (e) {
-      showToast(`安装失败: ${e}`, "error");
+      showToast(t("install.toast.failed", { message: String(e) }), "error");
     } finally {
       setLoading(false);
     }
-  }, [installAssistant, installMode, installPreviewCurrent, installPreviewToken, installStructurePreview, loadData, pkg, projectPath, setInstallOpen, setLoading, showToast, src]);
+  }, [installAssistant, installMode, installPreviewCurrent, installPreviewToken, installStructurePreview, language, loadData, pkg, projectPath, setInstallOpen, setLoading, showToast, src, t]);
 
   const runInstallPrimaryAction = useCallback(() => {
     if (installPrimaryAction.action === "install") {
@@ -354,6 +366,7 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
       setKind: setSrc,
       package: pkg,
       setPackage: setPkg,
+      prepare: preparePackage,
       detectionView: installDetectionView,
     },
     target: {

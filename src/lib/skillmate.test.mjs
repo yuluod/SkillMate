@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import en from "../locales/en.js";
+import zhCN from "../locales/zh-CN.js";
+import { formatTranslation } from "./i18nCore.mjs";
 
 import {
   SUPPORTED_INSTALL_SOURCES,
@@ -20,6 +23,9 @@ import {
   buildScenarioManifestPreviewSummary,
   buildSkillCardView,
   buildUniqueSkillInventory,
+  buildDriftGroups,
+  buildDashboardStats,
+  getMarketInstallSource,
   buildSkillMateManifestPreviewSummary,
   buildSkillDescription,
   buildStructureWarningSummary,
@@ -44,6 +50,38 @@ import {
   shouldShowInstallAdvancedOptions,
   shouldShowProjectLinkOption,
 } from "./skillmate.mjs";
+
+const translateEnglish = (key, values) => formatTranslation(en, zhCN, key, values);
+
+test("跨助手同名 Skill 只有内容哈希不同时才形成漂移组", () => {
+  const assistants = [
+    { name: "Codex", icon: "codex", exists: true, skills: [{ name: "writer", path: "/a/writer", content_hash: "one", managed_by_app: true, structure_status: "complete", structure_warnings: [] }] },
+    { name: "Cursor", icon: "cursor", exists: true, skills: [{ name: "writer", path: "/b/writer", content_hash: "two", managed_by_app: true, structure_status: "complete", structure_warnings: [] }] },
+    { name: "Claude Code", icon: "claude", exists: true, skills: [{ name: "reader", path: "/c/reader", content_hash: "same", structure_status: "complete", structure_warnings: [] }] },
+    { name: "OpenCode", icon: "opencode", exists: true, skills: [{ name: "reader", path: "/d/reader", content_hash: "same", structure_status: "complete", structure_warnings: [] }] },
+  ];
+  const groups = buildDriftGroups(assistants);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].name, "writer");
+  assert.equal(groups[0].versionCount, 2);
+});
+
+test("工作台统计汇总风险、更新、诊断和内容漂移", () => {
+  const stats = buildDashboardStats([
+    {
+      name: "Codex", exists: true, diagnostics: [{ code: "x" }], skills: [
+        { name: "writer", path: "/a/writer", content_hash: "one", sync_state: "behind", managed_by_app: true, structure_status: "partial", structure_warnings: ["contains_scripts", "managed_content_changed"] },
+      ],
+    },
+    { name: "Cursor", exists: true, diagnostics: [], skills: [{ name: "writer", path: "/b/writer", content_hash: "two", managed_by_app: true, structure_status: "complete", structure_warnings: [] }] },
+  ]);
+  assert.deepEqual(stats, { skills: 2, assistants: 2, updates: 1, structureIssues: 1, securityRisks: 1, localChanges: 1, driftGroups: 1, diagnostics: 1 });
+});
+
+test("市场结果优先使用后端给出的安全安装来源", () => {
+  assert.equal(getMarketInstallSource({ installSource: "owner/repo#main:skills/writer", repository: "owner/repo" }), "owner/repo#main:skills/writer");
+  assert.equal(getMarketInstallSource({ repository: "owner/repo" }), "https://github.com/owner/repo.git");
+});
 
 function readAppSource() {
   return readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
@@ -997,5 +1035,32 @@ test("场景 manifest 预览摘要应当提示覆盖、清空和缺失引用", (
       missing_skill_refs: [],
     }),
     ["未检测到可导入的场景变化"]
+  );
+});
+
+test("英文界面应当本地化结构风险和声明式预览摘要", () => {
+  const card = buildSkillCardView({
+    name: "writer",
+    path: "/tmp/writer",
+    structure_status: "partial",
+    structure_warnings: ["contains_scripts", "managed_content_changed"],
+  }, translateEnglish);
+  assert.equal(card.structureLabel, "Needs fixes");
+  assert.equal(card.securityWarningSummary, "Contains executable scripts");
+
+  assert.deepEqual(
+    buildImportPreviewSummary({
+      replace_existing: false,
+      tags_to_add: 2,
+      tags_to_replace: 0,
+      scenarios_to_add: 0,
+      scenarios_to_replace: 0,
+      skill_tag_writes: 0,
+    }, translateEnglish),
+    ["Add 2 tags"],
+  );
+  assert.deepEqual(
+    buildProjectTargetPreviewSummary([{ assistant: "Cursor", target_path: "/tmp/.cursor/skills", exists: true, recommended: true }], translateEnglish),
+    ["Cursor: /tmp/.cursor/skills · exists · recommended"],
   );
 });

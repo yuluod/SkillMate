@@ -5,8 +5,10 @@ import {
   resolveScenarioSkills,
 } from "./skillmate.mjs";
 import { skillmateApi } from "./skillmateApi.js";
+import { useI18n } from "./i18n.jsx";
 
 export function useScenarioFlow({ scenarios, allSkills, selectableSkills, showToast, loadData, setView }) {
+  const { t, language } = useI18n();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [selectedPaths, setSelectedPaths] = useState([]);
@@ -37,18 +39,18 @@ export function useScenarioFlow({ scenarios, allSkills, selectableSkills, showTo
   }, []);
 
   const loadIntoEditor = useCallback((scenario) => {
-    setName(`${scenario.name} 副本`);
+    setName(t("scenario.copyName", { name: scenario.name }));
     setDescription(scenario.description || "");
     setSelectedPaths([...scenario.skill_ids]);
     setManualInput("");
-    showToast("已回填到场景编辑器", "success");
-  }, [showToast]);
+    showToast(t("scenario.toast.loaded"), "success");
+  }, [showToast, t]);
 
   const apply = useCallback((scenario) => {
     setActiveId(scenario.id);
     setView("skills");
-    showToast(`已按场景筛选：${scenario.name}`, "success");
-  }, [setView, showToast]);
+    showToast(t("scenario.toast.applied", { name: scenario.name }), "success");
+  }, [setView, showToast, t]);
 
   const create = useCallback(async () => {
     const skillIds = normalizeScenarioSkillPaths({
@@ -58,29 +60,29 @@ export function useScenarioFlow({ scenarios, allSkills, selectableSkills, showTo
     });
     try {
       await skillmateApi.scenarios.create({
-        name: name || `场景 ${new Date().toLocaleDateString()}`,
-        description: description || "自动生成场景",
+        name: name || t("scenario.defaultName", { date: new Date().toLocaleDateString(language === "en" ? "en-US" : "zh-CN") }),
+        description: description || t("scenario.defaultDescription"),
         skillIds,
       });
-      showToast("场景已创建", "success");
+      showToast(t("scenario.toast.created"), "success");
       clearEditor();
       await loadData();
       setView("scenarios");
     } catch (e) {
-      showToast(`创建失败: ${e}`, "error");
+      showToast(t("scenario.toast.createFailed", { message: String(e) }), "error");
     }
-  }, [clearEditor, description, loadData, manualInput, name, selectableSkills, selectedPaths, setView, showToast]);
+  }, [clearEditor, description, language, loadData, manualInput, name, selectableSkills, selectedPaths, setView, showToast, t]);
 
   const remove = useCallback(async (id) => {
     try {
       await skillmateApi.scenarios.delete(id);
       if (activeId === id) setActiveId("");
-      showToast("场景已删除", "success");
+      showToast(t("scenario.toast.deleted"), "success");
       await loadData();
     } catch (e) {
-      showToast(`删除失败: ${e}`, "error");
+      showToast(t("scenario.toast.deleteFailed", { message: String(e) }), "error");
     }
-  }, [activeId, loadData, showToast]);
+  }, [activeId, loadData, showToast, t]);
 
   const copyPaths = useCallback(async (paths) => {
     const text = formatScenarioCopyText(paths);
@@ -95,11 +97,11 @@ export function useScenarioFlow({ scenarios, allSkills, selectableSkills, showTo
         document.execCommand("copy");
         textarea.remove();
       }
-      showToast("路径已复制", "success");
+      showToast(t("scenario.toast.copied"), "success");
     } catch (e) {
-      showToast(`复制失败: ${e}`, "error");
+      showToast(t("scenario.toast.copyFailed", { message: String(e) }), "error");
     }
-  }, [showToast]);
+  }, [showToast, t]);
 
   return {
     active,

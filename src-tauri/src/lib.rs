@@ -1,16 +1,19 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app_core;
+pub mod cli;
 mod database;
 mod git_backup;
 mod install_policy;
 mod library_manifest;
 mod managed_installation;
 mod managed_state;
+mod market;
 mod operation_coordinator;
 mod operation_plan;
 mod organization_commands;
 mod scenario_manifest;
+mod skill_drift;
 mod skill_install;
 mod skill_install_source;
 mod skill_inventory;
@@ -21,6 +24,7 @@ mod skill_package;
 mod skill_profile;
 mod skill_reconcile;
 mod skill_structure;
+mod skill_trash;
 mod skillmate_manifest;
 
 use app_core::{
@@ -93,6 +97,7 @@ use tauri::Manager;
 
 pub(crate) struct AppState {
     db: Option<Mutex<Connection>>,
+    trash: Mutex<skill_trash::SkillTrash>,
 }
 
 pub(crate) fn lock_app_db<'a>(
@@ -134,6 +139,7 @@ pub struct SkillInventoryFields {
     pub description: String,
     pub readme: String,
     pub version: String,
+    pub content_hash: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -957,6 +963,89 @@ async fn delete_skill(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn trash_skill(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<skill_trash::TrashReceipt, String> {
+    let mut trash = state
+        .trash
+        .lock()
+        .map_err(|_| "撤销暂存区已锁定，请重启应用后重试".to_string())?;
+    run_exclusive_operation(|db| trash.trash(db, &expand_path(path.trim())))
+}
+
+#[tauri::command]
+fn restore_trashed_skill(
+    state: tauri::State<'_, AppState>,
+    token: String,
+) -> Result<String, String> {
+    let mut trash = state
+        .trash
+        .lock()
+        .map_err(|_| "撤销暂存区已锁定，请重启应用后重试".to_string())?;
+    run_exclusive_operation(|db| trash.restore(db, token.trim()))
+}
+
+#[tauri::command]
+fn purge_trashed_skill(state: tauri::State<'_, AppState>, token: String) -> Result<bool, String> {
+    state
+        .trash
+        .lock()
+        .map_err(|_| "撤销暂存区已锁定，请重启应用后重试".to_string())?
+        .purge(token.trim())
+}
+
+#[tauri::command]
+async fn search_market(
+    source: String,
+    query: String,
+) -> Result<market::MarketSearchResponse, String> {
+    run_blocking_task(move || market::search_market(source.trim(), query.trim())).await?
+}
+
+#[tauri::command]
+async fn preview_sync_skill_copies(
+    source_path: String,
+    target_paths: Vec<String>,
+) -> Result<skill_drift::DriftSyncPreview, String> {
+    run_blocking_task(move || {
+        run_exclusive_operation(|db| {
+            skill_drift::preview_sync_skill_copies(
+                db,
+                &expand_path(source_path.trim()),
+                &target_paths
+                    .iter()
+                    .map(|path| expand_path(path.trim()))
+                    .collect::<Vec<_>>(),
+            )
+        })
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn sync_skill_copies(
+    source_path: String,
+    target_paths: Vec<String>,
+    plan_token: Option<String>,
+) -> Result<String, String> {
+    run_blocking_task(move || {
+        run_exclusive_operation(|db| {
+            skill_drift::apply_sync_skill_copies(
+                db,
+                &expand_path(source_path.trim()),
+                &target_paths
+                    .iter()
+                    .map(|path| expand_path(path.trim()))
+                    .collect::<Vec<_>>(),
+                plan_token.as_deref(),
+            )
+        })
+    })
+    .await?
+}
+
+#[tauri::command]
 async fn unlink_symlink_skill(path: String) -> Result<String, String> {
     run_blocking_task(move || {
         run_exclusive_operation(|db| {
@@ -1232,6 +1321,9 @@ fn initialize_database_state() -> Option<Connection> {
             return None;
         }
     };
+    if let Err(error) = skill_trash::purge_abandoned_trash(&db) {
+        eprintln!("清理遗留可撤销暂存区失败: {}", error);
+    }
     match run_startup_maintenance(&db) {
         Ok(report) => {
             if report.recovered_transactions > 0 {
@@ -1269,6 +1361,7 @@ pub fn run() {
         .setup(|app| {
             app.manage(AppState {
                 db: initialize_database_state().map(Mutex::new),
+                trash: Mutex::new(skill_trash::SkillTrash::default()),
             });
             Ok(())
         })
@@ -1290,6 +1383,9 @@ pub fn run() {
             preview_install_skill,
             install_skill,
             delete_skill,
+            trash_skill,
+            restore_trashed_skill,
+            purge_trashed_skill,
             unlink_symlink_skill,
             get_skill_readme,
             inspect_skill_validation,
@@ -1298,6 +1394,9 @@ pub fn run() {
             check_update,
             check_updates,
             update_from_upstream,
+            search_market,
+            preview_sync_skill_copies,
+            sync_skill_copies,
             export_library,
             preview_import_library,
             import_library,
@@ -1802,6 +1901,7 @@ mod tests {
                         description: "".into(),
                         readme: "".into(),
                         version: "1.0.0".into(),
+                        content_hash: "sha256:test".into(),
                     },
                     origin: SkillOriginFields {
                         upstream_url: "".into(),
