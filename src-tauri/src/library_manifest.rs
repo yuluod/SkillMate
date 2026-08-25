@@ -215,10 +215,16 @@ pub fn read_library_export(path: String) -> Result<LibraryExport, String> {
 }
 
 pub fn count_rows(db: &Connection, table: &str) -> Result<usize, String> {
-    db.query_row(&format!("SELECT COUNT(*) FROM {}", table), [], |row| {
-        row.get(0)
-    })
-    .map_err(|e| e.to_string())
+    let count = db
+        .query_row(&format!("SELECT COUNT(*) FROM {}", table), [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(|e| e.to_string())?;
+    row_count_to_usize(count)
+}
+
+fn row_count_to_usize(count: i64) -> Result<usize, String> {
+    usize::try_from(count).map_err(|_| format!("数据库返回了无效的行数: {}", count))
 }
 
 pub fn write_library_export(path: String, export: &LibraryExport) -> Result<String, String> {
@@ -229,4 +235,25 @@ pub fn write_library_export(path: String, export: &LibraryExport) -> Result<Stri
     let payload = serde_json::to_string_pretty(export).map_err(|e| e.to_string())?;
     atomic_write(&target_path, payload.as_bytes())?;
     Ok(format!("已导出到 {}", target_path.to_string_lossy()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{count_rows, row_count_to_usize};
+    use rusqlite::Connection;
+
+    #[test]
+    fn count_rows_uses_a_checked_platform_size_conversion() {
+        let db = Connection::open_in_memory().expect("应当创建内存数据库");
+        db.execute("CREATE TABLE entries (id INTEGER PRIMARY KEY)", [])
+            .expect("应当创建测试表");
+        db.execute("INSERT INTO entries DEFAULT VALUES", [])
+            .expect("应当写入测试数据");
+
+        assert_eq!(count_rows(&db, "entries"), Ok(1));
+        assert_eq!(
+            row_count_to_usize(-1),
+            Err("数据库返回了无效的行数: -1".to_string())
+        );
+    }
 }
