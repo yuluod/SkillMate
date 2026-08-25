@@ -160,6 +160,7 @@ jobs:
           TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: |
           node scripts/release/validate-release.mjs
+          node scripts/release/generate-notes.mjs > /dev/null
           git fetch origin main --no-tags
           release_sha="$(git rev-list -n 1 "${TAG_NAME}")"
           if [ -z "${release_sha}" ]; then
@@ -208,17 +209,7 @@ jobs:
           TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           RELEASE_SHA: ${{ steps.validate-release.outputs.release_sha }}
         run: |
-          cat > release-body.md <<'EOF'
-          ## 安装包
-
-          请从下方 Assets 下载对应系统安装包。
-
-          - macOS Apple Silicon: `_aarch64.dmg`
-          - Windows: `_setup.exe`
-          - Linux: `.deb` 或 `.rpm`
-
-          当前 macOS 发布包面向 Apple Silicon；Intel Mac 暂不作为 v0.x 发布目标。
-          EOF
+          node scripts/release/generate-notes.mjs > release-body.md
 
           release_id="$(
             gh api --method POST "repos/${{ github.repository }}/releases" \
@@ -228,7 +219,7 @@ jobs:
               -f body="$(cat release-body.md)" \
               -F draft=true \
               -F prerelease=false \
-              -F generate_release_notes=true \
+              -F generate_release_notes=false \
               --jq ".id"
           )"
           echo "release_id=${release_id}" >> "${GITHUB_OUTPUT}"
@@ -432,6 +423,29 @@ jobs:
           uploaded="$(gh api "repos/${REPOSITORY}/releases/${RELEASE_ID}" --jq '.assets[].name | select(. == "latest.json")')"
           if [ "${uploaded}" != "latest.json" ]; then
             echo "::error title=updater metadata 上传失败::draft release 中未找到 latest.json"
+            exit 1
+          fi
+
+      - name: Remove standalone updater signatures
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          signature_ids="$(
+            gh api --paginate "repos/${REPOSITORY}/releases/${RELEASE_ID}/assets?per_page=100" \
+              --jq '.[] | select(.name | endswith(".sig")) | .id'
+          )"
+          for asset_id in ${signature_ids}; do
+            gh api --method DELETE "repos/${REPOSITORY}/releases/assets/${asset_id}"
+          done
+
+          remaining="$(
+            gh api --paginate "repos/${REPOSITORY}/releases/${RELEASE_ID}/assets?per_page=100" \
+              --jq '.[] | select(.name | endswith(".sig")) | .name'
+          )"
+          if [ -n "${remaining}" ]; then
+            echo "::error title=updater 签名清理失败::draft release 中仍存在独立 .sig 附件"
             exit 1
           fi
 

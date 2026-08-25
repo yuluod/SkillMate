@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { buildLatestMetadata, REQUIRED_UPDATER_PLATFORMS } from "../../scripts/release/generate-latest.mjs";
+import { buildReleaseBody, extractChangelogSection } from "../../scripts/release/generate-notes.mjs";
 import { validateReleaseVersions } from "../../scripts/release/validate-release.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -77,6 +78,37 @@ test("发布版本校验必须拒绝 tag 与三处版本不一致", () => {
   );
 });
 
+test("Release 应当从 CHANGELOG 提取对应版本的更新日志", () => {
+  const changelog = `# 更新日志
+
+## [Unreleased]
+
+- 待发布内容
+
+## [0.0.8] - 2026-08-15
+
+### 新增
+
+- 自动检查更新
+
+## [0.0.7] - 2026-08-10
+
+- 旧版本内容
+`;
+
+  assert.equal(extractChangelogSection(changelog, "v0.0.8"), "### 新增\n\n- 自动检查更新");
+  const body = buildReleaseBody(changelog, "v0.0.8");
+  assert.match(body, /^## 更新内容/);
+  assert.match(body, /自动检查更新/);
+  assert.match(body, /## 安装包/);
+  assert.doesNotMatch(body, /待发布内容|旧版本内容/);
+  assert.throws(() => extractChangelogSection(changelog, "v0.0.9"), /CHANGELOG\.md 缺少/);
+
+  const repositoryNotes = extractChangelogSection(readText("CHANGELOG.md"), "v0.0.8");
+  assert.match(repositoryNotes, /应用启动后自动检查/);
+  assert.doesNotMatch(repositoryNotes, /^\[[^\]]+\]:/m);
+});
+
 test("latest.json 生成器必须输出完整平台并拒绝缺失签名", () => {
   const version = "0.0.4";
   const assetNames = [
@@ -148,26 +180,37 @@ test("Tauri updater 配置必须生成签名更新包", () => {
 test("Release workflow 必须发布 updater metadata", () => {
   const workflow = readText(".github/workflows/release.yml");
   const generator = readText("scripts/release/generate-latest.mjs");
+  const notesGenerator = readText("scripts/release/generate-notes.mjs");
   const publishStep = workflow.indexOf("Publish completed release");
   const metadataStep = workflow.indexOf("Generate updater metadata");
+  const signatureCleanupStep = workflow.indexOf("Remove standalone updater signatures");
+  const supplyChainStep = workflow.indexOf("Download release assets for supply-chain metadata");
 
   assert.match(workflow, /TAURI_SIGNING_PRIVATE_KEY/);
   assert.match(workflow, /缺少 updater 签名密钥/);
-  assert.match(workflow, /macOS Apple Silicon/);
-  assert.match(workflow, /Intel Mac 暂不作为 v0\.x 发布目标/);
+  assert.match(notesGenerator, /macOS Apple Silicon/);
+  assert.match(notesGenerator, /Intel Mac 暂不作为 v0\.x 发布目标/);
   assert.match(workflow, /args: "--target aarch64-apple-darwin --bundles app,dmg"/);
   assert.equal((workflow.match(/includeUpdaterJson: true/g) || []).length, 0);
   assert.equal((workflow.match(/updaterJsonPreferNsis: true/g) || []).length, 0);
   assert.ok(publishStep >= 0, "Release workflow 必须包含发布 release 步骤");
   assert.ok(metadataStep >= 0, "Release workflow 必须包含 updater metadata 步骤");
+  assert.ok(signatureCleanupStep >= 0, "Release workflow 必须删除独立 updater 签名附件");
   assert.ok(
     metadataStep < publishStep,
     "必须先在 draft release 中上传并校验 latest.json，最后再公开 release"
   );
+  assert.ok(
+    metadataStep < signatureCleanupStep && signatureCleanupStep < supplyChainStep,
+    "必须先生成 latest.json，再删除 .sig，最后生成供应链元数据"
+  );
   assert.match(workflow, /Generate updater metadata/);
   assert.match(generator, /release 已提前公开/);
   assert.match(workflow, /draft release 中未找到 latest\.json/);
+  assert.match(workflow, /draft release 中仍存在独立 \.sig 附件/);
   assert.match(workflow, /scripts\/release\/validate-release\.mjs/);
+  assert.match(workflow, /scripts\/release\/generate-notes\.mjs/);
+  assert.match(workflow, /generate_release_notes=false/);
   assert.match(workflow, /git merge-base --is-ancestor/);
   assert.match(workflow, /拒绝覆盖正式 Release/);
   assert.match(workflow, /--target aarch64-apple-darwin/);
