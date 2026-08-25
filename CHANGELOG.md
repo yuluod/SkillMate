@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.0.10] - 2026-08-25
+
 ### 改进
 
 - SBOM 继续用于供应链证明，但不再作为面向用户的 Release Asset 上传。
@@ -58,6 +60,7 @@
 - 修复 CI 格式检查和 Windows 平台故障注入测试。
 - 发布版本一致性测试不再硬编码版本号。
 
-[Unreleased]: https://github.com/yuluod/SkillMate/compare/v0.0.9...HEAD
+[Unreleased]: https://github.com/yuluod/SkillMate/compare/v0.0.10...HEAD
+[0.0.10]: https://github.com/yuluod/SkillMate/compare/v0.0.9...v0.0.10
 [0.0.9]: https://github.com/yuluod/SkillMate/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/yuluod/SkillMate/releases/tag/v0.0.8
