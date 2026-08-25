@@ -16,7 +16,7 @@ const AI_META = {
   cursor: { bg: "#ffffff", src: cursorLogo, mode: "cover" },
 };
 
-const AiAvatar = React.memo(function AiAvatar({ name, brand, size = 36 }) {
+export const AiAvatar = React.memo(function AiAvatar({ name, brand, size = 36 }) {
   const metadata = AI_META[brand] || { bg: "#eff6ff" };
   return (
     <div

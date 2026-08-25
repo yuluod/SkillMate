@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SkillsView } from "./InventoryViews.jsx";
 import { InstallModal, PreviewModal } from "./SkillMateModals.jsx";
 import SettingsView from "./SettingsView.jsx";
+import ScenarioView from "./ScenarioView.jsx";
 import { useInstallFlow } from "../lib/useInstallFlow.js";
 import { useInstallPolicyFlow } from "../lib/useInstallPolicyFlow.js";
 import { useGitBackupFlow } from "../lib/useGitBackupFlow.js";
@@ -315,6 +316,70 @@ describe("场景与 Git 备份流程", () => {
     invoke.mockReset();
   });
 
+  it("组合选择器完整展示 Skill 名称并按平台分组", async () => {
+    const togglePath = vi.fn();
+    render(
+      <ScenarioView
+        scenarios={[]}
+        skills={[
+          {
+            name: "gh-address-comments",
+            path: "/Users/demo/.codex/skills/gh-address-comments",
+            ai: "Codex",
+            aiIcon: "codex",
+          },
+          {
+            name: "cloudflare-deploy",
+            path: "/Users/demo/.codex/skills/cloudflare-deploy",
+            ai: "Codex",
+            aiIcon: "codex",
+          },
+          {
+            name: "impeccable",
+            path: "/Users/demo/.agents/skills/impeccable",
+            ai: "Claude Code",
+            aiIcon: "claude",
+          },
+          {
+            name: "shared-writer",
+            path: "/Users/demo/.agents/skills/shared-writer",
+            ai: "Codex",
+            aiIcon: "codex",
+            availableIn: [
+              { name: "Codex", icon: "codex" },
+              { name: "Gemini CLI", icon: "gemini" },
+            ],
+          },
+        ]}
+        flow={{
+          editor: {
+            name: "",
+            setName: vi.fn(),
+            description: "",
+            setDescription: vi.fn(),
+            manualInput: "",
+            setManualInput: vi.fn(),
+            selectedPaths: [],
+            togglePath,
+            clear: vi.fn(),
+            create: vi.fn(),
+          },
+        }}
+      />
+    );
+
+    expect(screen.getByText("gh-address-comments")).toBeTruthy();
+    expect(screen.getByText("~/.codex/skills/gh-address-comments")).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Codex" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Claude Code" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "多个平台共用" })).toBeTruthy();
+    expect(screen.getByText("Codex、Gemini CLI")).toBeTruthy();
+    expect(screen.getAllByText("添加")).toHaveLength(4);
+
+    await userEvent.click(screen.getByRole("checkbox", { name: /gh-address-comments/ }));
+    expect(togglePath).toHaveBeenCalledWith("/Users/demo/.codex/skills/gh-address-comments");
+  });
+
   it("场景 Hook 通过稳定路径创建场景并刷新数据", async () => {
     invoke.mockResolvedValue(undefined);
     const showToast = vi.fn();
@@ -340,7 +405,7 @@ describe("场景与 Git 备份流程", () => {
 
     expect(invoke).toHaveBeenCalledWith("create_scenario", {
       name: "写作",
-      description: "自动生成场景",
+      description: "自动生成组合",
       skillIds: ["/tmp/writer"],
     });
     expect(loadData).toHaveBeenCalledOnce();

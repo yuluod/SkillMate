@@ -16,11 +16,11 @@ SkillMate 是本地优先的 AI Skills 生命周期管理器。它让用户能�
 
 ## Positioning
 
-SkillMate 的差异化机制是将严格的 Agent Skills 规范校验、静态风险检查、来源与提交追踪、声明式目标状态以及可回滚事务放在同一条安装和同步链路中。市场或跨助手分发不能绕过这条安全链路。
+SkillMate 的差异化机制是将严格的 Agent Skills 规范校验、静态风险检查、来源与提交追踪、声明式目标状态以及可回滚事务放在同一条安装和同步链路中。市场或跨平台分发不能绕过这条安全链路。
 
 ## Operating Context
 
-产品作为 Tauri 桌面应用运行，读取用户主目录和用户明确选择的项目目录中的 Skills。主要工作流包括本机盘点、市场或 Git/本地来源安装、跨 Agent 副本比较、Git 上游更新、标签与场景组织、`skillmate.toml` 对齐、Profile 切换以及 Git 备份。
+产品作为 Tauri 桌面应用运行，读取用户主目录和用户明确选择的项目目录中的 Skills。主要工作流包括本机盘点、市场或 Git/本地来源安装、跨平台副本比较、Git 上游更新、标签与组合组织、`skillmate.toml` 对齐、Profile 切换以及 Git 备份。
 
 ## Capabilities and Constraints
 
