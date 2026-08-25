@@ -1,0 +1,52 @@
+# 更新日志
+
+本项目的所有重要变更都会记录在此文件中。
+
+格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
+
+## [Unreleased]
+
+## [0.0.9] - 2026-08-25
+
+### 新增
+
+- 新增安全工作台，集中展示更新、结构问题、静态风险、本地变更、跨助手漂移和扫描诊断。
+- 新增 skills.sh 与 GitHub 市场发现入口，安装仍经过结构检查、安全策略和写入计划。
+- 新增可撤销卸载与 60 秒恢复窗口，并通过所有权标记保护用户手工内容。
+- 新增跨助手 Skill 内容漂移检测、同步预览、计划令牌校验和事务回滚。
+- 新增 `skillmate-cli`，支持声明式清单的扫描、计划、验证和应用。
+- 新增 Cursor、OpenCode 与 GitHub Copilot 的全局和项目级 Skill 目录支持。
+- 新增简体中文与英文界面切换。
+
+### 改进
+
+- 更新全平台应用图标以及网页 favicon。
+- 升级 Vite、Vitest、rusqlite、toml 和测试工具依赖。
+- README 补充 P0/P1 能力、安全边界和命令行说明。
+
+### 修复
+
+- 修复低高度桌面窗口中详情弹窗无法滚动的问题。
+- 修复同时存在桌面端与 CLI 二进制时 `cargo run` 无法选择启动目标的问题。
+- 适配 rusqlite 0.40 的 SQLite 行数读取类型变化，并对平台尺寸转换进行校验。
+
+## [0.0.8] - 2026-08-15
+
+### 新增
+
+- 应用启动后自动检查 GitHub Releases 上的新版本。
+
+### 改进
+
+- 重构核心模块、事务协调器、操作日志和前端流程边界，降低后续功能迭代的耦合。
+- 更新 React、前端构建工具、Rust crates 和 GitHub Actions 依赖。
+- 减少 Rust 开发构建的调试信息体积。
+
+### 修复
+
+- 修复 CI 格式检查和 Windows 平台故障注入测试。
+- 发布版本一致性测试不再硬编码版本号。
+
+[Unreleased]: https://github.com/yuluod/SkillMate/compare/v0.0.9...HEAD
+[0.0.9]: https://github.com/yuluod/SkillMate/compare/v0.0.8...v0.0.9
+[0.0.8]: https://github.com/yuluod/SkillMate/releases/tag/v0.0.8
