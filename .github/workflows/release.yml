@@ -473,14 +473,19 @@ jobs:
           subject-path: |
             release-artifacts/*
             SHA256SUMS
-            skillmate-sbom.spdx.json
 
-      - name: Upload checksums and SBOM
+      - name: Attest release SBOM
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: release-artifacts/*
+          sbom-path: skillmate-sbom.spdx.json
+
+      - name: Upload checksums
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           REPOSITORY: ${{ github.repository }}
-        run: gh release upload "${TAG_NAME}" SHA256SUMS skillmate-sbom.spdx.json --clobber --repo "${REPOSITORY}"
+        run: gh release upload "${TAG_NAME}" SHA256SUMS --clobber --repo "${REPOSITORY}"
 
       - name: Publish completed release
         env:
