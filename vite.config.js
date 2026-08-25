@@ -6,6 +6,11 @@ export default defineConfig({
   clearScreen: false,
   server: {
     port: 1420,
-    strictPort: true
+    strictPort: true,
+    watch: {
+      // Cargo frequently locks .pdb/.exe files while compiling on Windows.
+      // They are not frontend inputs, so Vite should never watch them.
+      ignored: /src-tauri[\\/]target[\\/]/
+    }
   }
 });
