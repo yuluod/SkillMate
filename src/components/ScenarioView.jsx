@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import Icon from "./Icon.jsx";
 import { AiAvatar } from "./InventoryViews.jsx";
 import { useI18n } from "../lib/i18n.jsx";
+import { SurfaceHeader, SurfaceSectionHeader } from "./SurfaceHeader.jsx";
 
 function formatHomePath(path) {
   return path
@@ -51,8 +52,8 @@ export default function ScenarioView({ scenarios, skills, flow }) {
   const selectedCount = flow.editor.selectedPaths.length;
 
   return (
-    <div className="scenario-view">
-      <div className="content-head"><div><h2>{t("nav.scenarios")}</h2><span className="count">{scenarios.length}</span></div></div>
+    <div className="scenario-view view-shell">
+      <SurfaceHeader title={t("nav.scenarios")} description={t("scenarios.subtitle")} meta={scenarios.length} />
       <section className="scenario-editor-card">
         <header className="scenario-editor-head">
           <span className="scenario-editor-icon"><Icon name="scenarios" size={20} /></span>
@@ -128,7 +129,7 @@ export default function ScenarioView({ scenarios, skills, flow }) {
         </footer>
       </section>
 
-      <div className="scenario-library-head"><h3>{t("scenarios.saved")}</h3><span>{scenarios.length}</span></div>
+      <SurfaceSectionHeader title={t("scenarios.saved")} meta={scenarios.length} />
       {scenarios.length === 0 ? (
         <div className="scenario-empty"><Icon name="scenarios" size={22} /><div><strong>{t("scenarios.empty")}</strong><p>{t("scenarios.emptyHint")}</p></div></div>
       ) : (

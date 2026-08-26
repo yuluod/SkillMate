@@ -1,4 +1,5 @@
 import Icon from "./Icon.jsx";
+import { SurfaceHeader } from "./SurfaceHeader.jsx";
 import {
   buildImportPreviewSummary,
   buildScenarioManifestPreviewSummary,
@@ -11,7 +12,10 @@ import { useI18n } from "../lib/i18n.jsx";
 const SETTINGS_GROUPS = [
   {
     labelKey: "settings.groups.general",
-    items: [["language", "settings.language", "globe"]],
+    items: [
+      ["language", "settings.language", "globe"],
+      ["appearance", "settings.appearance", "sparkles"],
+    ],
   },
   {
     labelKey: "settings.groups.application",
@@ -48,7 +52,7 @@ function BackupSettings({ value }) {
   const busy = value.saving || value.syncing;
   return (
     <div className="settings-card">
-      <div className="settings-head"><Icon name="lock" size={20} /><h3>{t("settings.tabs.backup")}</h3></div>
+      <SurfaceHeader className="settings-surface-header" title={t("settings.tabs.backup")} />
       <div className="settings-body">
         <div className="form"><label htmlFor="backup-repo-path">{t("settings.backup.repoPath")}</label><input id="backup-repo-path" value={value.repoPath} onChange={event => value.setRepoPath(event.target.value)} placeholder="~/skillmate-backup" disabled={busy} /></div>
         <div className="form"><label htmlFor="backup-branch">{t("settings.backup.branch")}</label><input id="backup-branch" value={value.branch} onChange={event => value.setBranch(event.target.value)} placeholder="main" disabled={busy} /></div>
@@ -71,10 +75,7 @@ function AppUpdateSettings({ value }) {
   const progress = Math.max(0, Math.min(100, view.progressPercent ?? 0));
   return (
     <div className="settings-card settings-card-update">
-      <div className="settings-head settings-detail-heading">
-        <Icon name="updates" size={20} />
-        <div><h3>{t("settings.tabs.appUpdate")}</h3><p>{t("settings.appUpdate.checkHint")}</p></div>
-      </div>
+      <SurfaceHeader className="settings-surface-header" title={t("settings.tabs.appUpdate")} description={t("settings.appUpdate.checkHint")} />
       <div className="settings-body">
         <div className={`app-update-status ${view.statusTone}`} role="status">
           <Icon name={view.status === "current" ? "check" : "updates"} size={18} />
@@ -118,10 +119,7 @@ function LanguageSettings() {
   const { t, language, setLanguage } = useI18n();
   return (
     <div className="settings-card">
-      <div className="settings-head settings-detail-heading">
-        <Icon name="globe" size={20} />
-        <div><h3>{t("settings.language")}</h3><p>{t("settings.languageHint")}</p></div>
-      </div>
+      <SurfaceHeader className="settings-surface-header" title={t("settings.language")} description={t("settings.languageHint")} />
       <div className="settings-body">
         <div className="form settings-language-field">
           <label htmlFor="settings-language">{t("settings.language")}</label>
@@ -135,13 +133,58 @@ function LanguageSettings() {
   );
 }
 
+const SKIN_OPTIONS = ["ledger", "standard", "cardbox"];
+const THEME_OPTIONS = ["system", "light", "dark"];
+
+function AppearanceSettings({ value }) {
+  const { t } = useI18n();
+  return (
+    <div className="settings-card">
+      <SurfaceHeader className="settings-surface-header" title={t("settings.appearance")} description={t("settings.appearanceHint")} />
+      <div className="settings-body">
+        <fieldset className="skin-picker">
+          <legend className="form-label">{t("settings.skin")}</legend>
+          <div className="skin-options" role="radiogroup" aria-label={t("settings.skin")}>
+            {SKIN_OPTIONS.map((option) => (
+              <label key={option} className={`skin-option skin-option-${option} ${value.skin === option ? "active" : ""}`}>
+                <input
+                  type="radio"
+                  name="skillmate-skin"
+                  value={option}
+                  checked={value.skin === option}
+                  onChange={() => value.setSkin(option)}
+                />
+                <span className="skin-swatch" aria-hidden="true">
+                  <span className="skin-swatch-rule" />
+                  <span className="skin-swatch-rule" />
+                  <span className="skin-swatch-seal" />
+                </span>
+                <span className="skin-copy">
+                  <strong>{t(`settings.skin.${option}`)}</strong>
+                  <small>{t(`settings.skin.${option}Hint`)}</small>
+                </span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <div className="form settings-language-field settings-section">
+          <label htmlFor="settings-theme">{t("settings.theme")}</label>
+          <select id="settings-theme" value={value.theme} onChange={(event) => value.setTheme(event.target.value)}>
+            {THEME_OPTIONS.map((option) => <option key={option} value={option}>{t(`settings.theme.${option}`)}</option>)}
+          </select>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function InstallPolicySettings({ value }) {
   const { t } = useI18n();
   const policy = value.policy;
   const enforced = policy.mode !== "off";
   return (
     <div className="settings-card">
-      <div className="settings-head"><Icon name="lock" size={20} /><h3>{t("settings.policy.title")}</h3></div>
+      <SurfaceHeader className="settings-surface-header" title={t("settings.policy.title")} />
       <div className="settings-body">
         <div className="form">
           <label htmlFor="install-policy-mode">{t("settings.policy.mode")}</label>
@@ -179,7 +222,7 @@ function DataSettings({ value }) {
   const { t } = useI18n();
   return (
     <div className="settings-card">
-      <div className="settings-head"><Icon name="upload" size={20} /><h3>{t("settings.tabs.data")}</h3></div>
+      <SurfaceHeader className="settings-surface-header" title={t("settings.tabs.data")} />
       <div className="settings-body">
         <div className="form"><label htmlFor="library-export-path">{t("settings.data.exportFile")}</label><input id="library-export-path" value={value.exportPath} onChange={event => value.setExportPath(event.target.value)} placeholder="~/skillmate-export.json" /></div>
         <ActionRow><button className="btn btn-primary btn-sm" onClick={value.exportLibrary}><Icon name="upload" size={14} />{t("settings.data.export")}</button></ActionRow>
@@ -219,7 +262,7 @@ function SkillSetSettings({ value }) {
   const { t } = useI18n();
   return (
     <div className="settings-card">
-      <div className="settings-head"><Icon name="skills" size={20} /><h3>Skill Set</h3></div>
+      <SurfaceHeader className="settings-surface-header" title="Skill Set" />
       <div className="settings-body">
         <div className="form"><label htmlFor="project-manifest-root">{t("settings.skillset.projectLock")}</label><input id="project-manifest-root" value={value.projectManifestRoot} onChange={event => value.setProjectManifestRoot(event.target.value)} placeholder="/path/to/project" /></div>
         <div className="git-meta">{t("settings.skillset.projectHelp")}</div>
@@ -284,7 +327,7 @@ function TagSettings({ value }) {
   const { t } = useI18n();
   return (
     <div className="settings-card">
-      <div className="settings-head"><Icon name="tag" size={20} /><h3>{t("settings.tags.title")}</h3></div>
+      <SurfaceHeader className="settings-surface-header" title={t("settings.tags.title")} />
       <div className="settings-body">
         <div className="tag-form"><input aria-label={t("settings.tags.name")} value={value.name} onChange={event => value.setName(event.target.value)} placeholder={t("settings.tags.name")} /><input aria-label={t("settings.tags.color")} type="color" value={value.color} onChange={event => value.setColor(event.target.value)} /><button className="btn btn-primary btn-sm" onClick={value.add}><Icon name="plus" size={14} />{t("settings.tags.add")}</button></div>
         <div className="tag-list settings-action-row">{value.tags.map(tag => <div key={tag.id} className="tag-chip active" style={{ "--c": tag.color }}><span className="tag-dot" />{tag.name}</div>)}</div>
@@ -293,7 +336,7 @@ function TagSettings({ value }) {
   );
 }
 
-export default function SettingsView({ activeTab, setActiveTab, backup, appUpdate, installPolicy, data, skillSet, tags }) {
+export default function SettingsView({ activeTab, setActiveTab, appearance, backup, appUpdate, installPolicy, data, skillSet, tags }) {
   const { t } = useI18n();
   return (
     <div className="settings">
@@ -313,6 +356,7 @@ export default function SettingsView({ activeTab, setActiveTab, backup, appUpdat
       </aside>
       <section className="settings-detail">
         {activeTab === "language" && <LanguageSettings />}
+        {activeTab === "appearance" && <AppearanceSettings value={appearance} />}
         {activeTab === "backup" && <BackupSettings value={backup} />}
         {activeTab === "app-update" && <AppUpdateSettings value={appUpdate} />}
         {activeTab === "install-policy" && <InstallPolicySettings value={installPolicy} />}

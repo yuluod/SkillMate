@@ -184,6 +184,15 @@ test("桌面端弹窗应当受视口高度约束并可纵向滚动", () => {
   assert.match(modalRule, /overscroll-behavior:\s*contain/);
 });
 
+test("经典主题的页眉与登记册只保留一处分隔线", () => {
+  const styles = readStylesSource();
+  const surfaceHeaderRule = styles.match(/\[data-skin="ledger"\] \.surface-header\s*\{([^}]*)\}/s)?.[1] ?? "";
+  const registryRule = styles.match(/\[data-skin="ledger"\] \.registry\s*\{([^}]*)\}/s)?.[1] ?? "";
+
+  assert.match(surfaceHeaderRule, /border-bottom:\s*3px double var\(--rule\)/);
+  assert.match(registryRule, /border-top:\s*0/);
+});
+
 test("安装来源只保留 Git 仓库和本地目录", () => {
   assert.deepEqual(SUPPORTED_INSTALL_SOURCES, ["git", "local"]);
 });

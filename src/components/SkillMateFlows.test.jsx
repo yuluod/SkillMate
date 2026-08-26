@@ -3,10 +3,11 @@ import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-li
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { SkillsView } from "./InventoryViews.jsx";
+import { AssistantsView, SkillsView, UpdatesView } from "./InventoryViews.jsx";
 import { InstallModal, PreviewModal } from "./SkillMateModals.jsx";
 import SettingsView from "./SettingsView.jsx";
 import ScenarioView from "./ScenarioView.jsx";
+import { persistPreference } from "../App.jsx";
 import { useInstallFlow } from "../lib/useInstallFlow.js";
 import { useInstallPolicyFlow } from "../lib/useInstallPolicyFlow.js";
 import { useGitBackupFlow } from "../lib/useGitBackupFlow.js";
@@ -145,6 +146,133 @@ describe("Dashboard 数据加载", () => {
   });
 });
 
+describe("外观偏好与登记册布局", () => {
+  it("URL 临时覆盖不写回本地偏好", () => {
+    const storage = { setItem: vi.fn() };
+
+    expect(persistPreference(storage, "?skin=cardbox", "skin", "skillmate-skin", ["ledger", "standard", "cardbox"], "cardbox")).toBe(false);
+    expect(persistPreference(storage, "?theme=light", "theme", "skillmate-theme-mode", ["system", "light", "dark"], "light")).toBe(false);
+    expect(storage.setItem).not.toHaveBeenCalled();
+
+    expect(persistPreference(storage, "", "skin", "skillmate-skin", ["ledger", "standard", "cardbox"], "standard")).toBe(true);
+    expect(storage.setItem).toHaveBeenCalledWith("skillmate-skin", "standard");
+  });
+
+  it("Skills 与 Updates 空状态保持四列登记行结构", () => {
+    const skillsRender = render(
+      <SkillsView
+        skills={[]}
+        allSkillCount={0}
+        selectedTagCount={0}
+        tags={[]}
+        onInstall={vi.fn()}
+        onClearFilters={vi.fn()}
+        onEditTags={vi.fn()}
+        onOpenDirectory={vi.fn()}
+        onPreview={vi.fn()}
+        onUnlink={vi.fn()}
+        onRemove={vi.fn()}
+      />
+    );
+    const skillCells = [...skillsRender.container.querySelector(".registry-empty").children];
+    const skillRegistry = skillsRender.container.querySelector(".registry");
+    expect(skillCells).toHaveLength(4);
+    expect(skillCells[0].classList.contains("registry-main")).toBe(true);
+    expect(skillRegistry?.getAttribute("role")).toBe("table");
+    expect(skillRegistry?.querySelectorAll('[role="columnheader"]')).toHaveLength(4);
+    expect(skillRegistry?.querySelector(".registry-empty")?.getAttribute("role")).toBe("row");
+    expect(skillRegistry?.querySelectorAll('.registry-empty > [role="cell"]')).toHaveLength(4);
+
+    const updatesRender = render(
+      <UpdatesView
+        skills={[]}
+        orderedSkills={[]}
+        stats={{ behind: 0, syncable: 0, failed: 0 }}
+        updateState={{}}
+        getSyncInfo={vi.fn()}
+        checkAll={vi.fn()}
+        checkOne={vi.fn()}
+        updateOne={vi.fn()}
+      />
+    );
+    const updateCells = [...updatesRender.container.querySelector(".registry-empty").children];
+    const updateRegistry = updatesRender.container.querySelector(".registry");
+    expect(updateCells).toHaveLength(4);
+    expect(updateCells[0].classList.contains("registry-main")).toBe(true);
+    expect(updateRegistry?.getAttribute("role")).toBe("table");
+    expect(updateRegistry?.querySelectorAll('[role="columnheader"]')).toHaveLength(4);
+    expect(updateRegistry?.querySelector(".registry-empty")?.getAttribute("role")).toBe("row");
+    expect(updateRegistry?.querySelectorAll('.registry-empty > [role="cell"]')).toHaveLength(4);
+  });
+
+  it("平台空状态复用登记册与统一页面标题", () => {
+    const { container } = render(<AssistantsView assistants={[]} installedCount={0} />);
+
+    expect(container.querySelector(".surface-header .surface-meta")?.textContent).toBe("已发现 0 / 0");
+    expect(container.querySelector(".assistant-registry .registry-empty")?.children).toHaveLength(4);
+    expect(container.querySelector(".assistant-registry")?.getAttribute("role")).toBe("table");
+    expect(container.querySelectorAll('.assistant-registry [role="columnheader"]')).toHaveLength(4);
+    expect(container.querySelectorAll('.assistant-registry .registry-empty > [role="cell"]')).toHaveLength(4);
+    expect(screen.getByText("尚未发现平台")).toBeTruthy();
+  });
+
+  it("来源签章由稳定来源类型决定样式", () => {
+    const unmanagedRender = render(
+      <SkillsView
+        skills={[{
+          path: "/tmp/.agents/skills/manual",
+          name: "manual",
+          source: "未托管",
+          source_type: "unknown",
+          managed_by_app: false,
+          tags: [],
+          size: "1 KB",
+          ai: "Codex",
+          aiIcon: "codex",
+          structure_status: "complete",
+          structure_warnings: [],
+        }]}
+        allSkillCount={1}
+        selectedTagCount={0}
+        tags={[]}
+        onInstall={vi.fn()}
+        onClearFilters={vi.fn()}
+        onEditTags={vi.fn()}
+        onOpenDirectory={vi.fn()}
+        onPreview={vi.fn()}
+        onUnlink={vi.fn()}
+        onRemove={vi.fn()}
+      />
+    );
+    expect(unmanagedRender.container.querySelector(".stamp-source")?.classList.contains("unmanaged")).toBe(true);
+    expect(unmanagedRender.container.querySelectorAll('.registry-row[role="row"] > [role="cell"]')).toHaveLength(4);
+    unmanagedRender.unmount();
+
+    const skill = { path: "/tmp/.agents/skills/package", name: "package" };
+    const packageRender = render(
+      <UpdatesView
+        skills={[skill]}
+        orderedSkills={[skill]}
+        stats={{ behind: 0, syncable: 1, failed: 0 }}
+        updateState={{}}
+        getSyncInfo={() => ({
+          originKind: "legacy_npm",
+          originLocator: "example-package",
+          installedRef: "1.0.0",
+          latestRef: "1.0.0",
+          syncState: "current",
+          canSync: true,
+        })}
+        checkAll={vi.fn()}
+        checkOne={vi.fn()}
+        updateOne={vi.fn()}
+      />
+    );
+    expect(packageRender.container.querySelector(".stamp-source")?.classList.contains("npm")).toBe(true);
+    expect(packageRender.container.querySelectorAll('.registry-row[role="row"] > [role="cell"]')).toHaveLength(4);
+  });
+});
+
 describe("安装流程交互", () => {
   it("手动选择来源后不再被自动识别结果覆盖", async () => {
     vi.useFakeTimers();
@@ -239,8 +367,125 @@ describe("安装流程交互", () => {
     );
 
     expect(screen.getByText("共享 2")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "writer 的更多操作" }));
     await user.click(screen.getByRole("button", { name: "删除 writer" }));
     expect(onRemove).toHaveBeenCalledWith("/tmp/.agents/skills/writer", "writer", availableIn);
+  });
+
+  it("风险条目提供明确审查动作，批量标签复用当前选择", async () => {
+    const user = userEvent.setup();
+    const onPreview = vi.fn();
+    const onEditTags = vi.fn();
+    const skills = [
+      {
+        path: "/tmp/.agents/skills/risky",
+        name: "risky",
+        source: "Git",
+        source_type: "git",
+        managed_by_app: true,
+        tags: [],
+        size: "2 KB",
+        ai: "Codex",
+        aiIcon: "codex",
+        structure_status: "nonstandard",
+        structure_warnings: ["script_execution"],
+      },
+      {
+        path: "/tmp/.agents/skills/writer",
+        name: "writer",
+        source: "Git",
+        source_type: "git",
+        managed_by_app: true,
+        tags: [],
+        size: "1 KB",
+        ai: "Codex",
+        aiIcon: "codex",
+        structure_status: "complete",
+        structure_warnings: [],
+      },
+    ];
+    render(
+      <SkillsView
+        skills={skills}
+        allSkillCount={2}
+        selectedTagCount={0}
+        tags={[]}
+        selectedSkillPaths={skills.map((skill) => skill.path)}
+        onToggleSelection={vi.fn()}
+        onToggleVisibleSelection={vi.fn()}
+        onClearSelection={vi.fn()}
+        onInstall={vi.fn()}
+        onClearFilters={vi.fn()}
+        onEditTags={onEditTags}
+        onOpenDirectory={vi.fn()}
+        onPreview={onPreview}
+        onUnlink={vi.fn()}
+        onRemove={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "审查 risky" }));
+    expect(onPreview).toHaveBeenCalledWith("/tmp/.agents/skills/risky");
+
+    await user.click(screen.getByRole("button", { name: "批量添加标签" }));
+    expect(onEditTags).toHaveBeenCalledWith(skills);
+  });
+
+  it("筛选后批量标签仍处理完整选择集", async () => {
+    const user = userEvent.setup();
+    const onEditTags = vi.fn();
+    const allSkills = [
+      {
+        path: "/tmp/.agents/skills/hidden",
+        name: "hidden",
+        source: "Git",
+        source_type: "git",
+        managed_by_app: true,
+        tags: [],
+        size: "1 KB",
+        ai: "Codex",
+        aiIcon: "codex",
+        structure_status: "complete",
+        structure_warnings: [],
+      },
+      {
+        path: "/tmp/.agents/skills/visible",
+        name: "visible",
+        source: "Git",
+        source_type: "git",
+        managed_by_app: true,
+        tags: [],
+        size: "1 KB",
+        ai: "Codex",
+        aiIcon: "codex",
+        structure_status: "complete",
+        structure_warnings: [],
+      },
+    ];
+    render(
+      <SkillsView
+        skills={[allSkills[1]]}
+        allSkills={allSkills}
+        allSkillCount={2}
+        selectedTagCount={0}
+        tags={[]}
+        selectedSkillPaths={allSkills.map((skill) => skill.path)}
+        onToggleSelection={vi.fn()}
+        onToggleVisibleSelection={vi.fn()}
+        onClearSelection={vi.fn()}
+        onInstall={vi.fn()}
+        onClearFilters={vi.fn()}
+        onEditTags={onEditTags}
+        onOpenDirectory={vi.fn()}
+        onPreview={vi.fn()}
+        onUnlink={vi.fn()}
+        onRemove={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("已选择 2 个 Skill")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "批量添加标签" }));
+    expect(onEditTags).toHaveBeenCalledWith(allSkills);
   });
 });
 
@@ -580,18 +825,66 @@ describe("应用更新流程", () => {
       expect(result.current.appUpdateState.status).toBe("checking");
       await waitFor(() => expect(updaterMocks.updater.check).toHaveBeenCalledTimes(1));
 
+      let secondCheck;
       await act(async () => {
-        await result.current.checkAppUpdate();
+        secondCheck = result.current.checkAppUpdate();
+        await Promise.resolve();
       });
       expect(updaterMocks.updater.check).toHaveBeenCalledTimes(1);
 
       await act(async () => {
         finishCheck(null);
-        await firstCheck;
+        await Promise.all([firstCheck, secondCheck]);
       });
       expect(result.current.appUpdateState.status).toBe("current");
     } finally {
       unmount();
+    }
+  });
+
+  it("手动检查会复用尚未完成的启动检查", async () => {
+    vi.useFakeTimers();
+    let finishCheck;
+    const update = {
+      currentVersion: "0.0.7",
+      version: "0.1.0",
+      date: "2026-03-21T00:00:00Z",
+      body: "notes",
+    };
+    updaterMocks.updater.check.mockImplementation(() => new Promise((resolve) => {
+      finishCheck = resolve;
+    }));
+
+    const { result, showToast, unmount } = renderAppUpdateFlow();
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      expect(updaterMocks.updater.check).toHaveBeenCalledTimes(1);
+
+      let manualCheck;
+      let settled = false;
+      await act(async () => {
+        manualCheck = result.current.checkAppUpdate();
+        manualCheck.then(() => {
+          settled = true;
+        });
+        await Promise.resolve();
+      });
+      expect(settled).toBe(false);
+      expect(updaterMocks.updater.check).toHaveBeenCalledTimes(1);
+
+      let checkedUpdate;
+      await act(async () => {
+        finishCheck(update);
+        checkedUpdate = await manualCheck;
+      });
+      expect(checkedUpdate).toBe(update);
+      expect(result.current.appUpdateState.status).toBe("available");
+      expect(showToast).toHaveBeenCalledWith("发现新版本 0.1.0", "success");
+    } finally {
+      unmount();
+      vi.useRealTimers();
     }
   });
 });

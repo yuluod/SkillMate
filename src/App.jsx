@@ -30,11 +30,14 @@ import { useScenarioFlow } from "./lib/useScenarioFlow.js";
 import { useSearchFlow } from "./lib/useSearchFlow.js";
 import { useUpdateFlow } from "./lib/useUpdateFlow.js";
 import { createResettableTimer } from "./lib/toastTimer.mjs";
+import { toUserErrorMessage } from "./lib/errorMessage.mjs";
 import { skillmateApi } from "./lib/skillmateApi.js";
 
 const EMPTY_DATA = { assistants: [], tags: [], scenarios: [], git: { enabled: false, remote_url: "" } };
 const THEME_STORAGE_KEY = "skillmate-theme-mode";
 const THEME_MODES = ["system", "light", "dark"];
+const SKIN_STORAGE_KEY = "skillmate-skin";
+const SKINS = ["ledger", "standard", "cardbox"];
 const VIEWS = {
   dashboard: { titleKey: "nav.dashboard", icon: "dashboard" },
   skills: { titleKey: "nav.skills", icon: "skills" },
@@ -46,6 +49,7 @@ const VIEWS = {
 
 const SETTINGS_TAB_LABELS = {
   language: "settings.language",
+  appearance: "settings.appearance",
   backup: "settings.tabs.backup",
   "app-update": "settings.tabs.appUpdate",
   "install-policy": "settings.tabs.installPolicy",
@@ -64,15 +68,52 @@ const VIEW_CONTEXT_LABELS = {
 
 
 
+function getParamOverride(key, allowed, search) {
+  if (search === undefined) {
+    if (typeof window === "undefined") return null;
+    search = window.location.search;
+  }
+  const value = new URLSearchParams(search).get(key);
+  return allowed.includes(value) ? value : null;
+}
+
+export function persistPreference(storage, search, overrideKey, storageKey, allowed, value) {
+  if (getParamOverride(overrideKey, allowed, search)) return false;
+  storage.setItem(storageKey, value);
+  return true;
+}
+
 function getSavedThemeMode() {
   if (typeof window === "undefined") return "system";
+  const override = getParamOverride("theme", THEME_MODES);
+  if (override) return override;
   const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
   return THEME_MODES.includes(saved) ? saved : "system";
+}
+
+function getSavedSkin() {
+  if (typeof window === "undefined") return "ledger";
+  const override = getParamOverride("skin", SKINS);
+  if (override) return override;
+  const saved = window.localStorage.getItem(SKIN_STORAGE_KEY);
+  return SKINS.includes(saved) ? saved : "ledger";
 }
 
 function getSystemTheme() {
   if (typeof window === "undefined") return "dark";
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function getInitialView() {
+  if (typeof window === "undefined") return "dashboard";
+  const parts = window.location.hash.replace(/^#\/?/, "").split("/");
+  return VIEWS[parts[0]] ? parts[0] : "dashboard";
+}
+
+function getInitialSettingsTab() {
+  if (typeof window === "undefined") return "language";
+  const parts = window.location.hash.replace(/^#\/?/, "").split("/");
+  return parts[0] === "settings" && SETTINGS_TAB_LABELS[parts[1]] ? parts[1] : "language";
 }
 
 function Skeleton() {
@@ -150,9 +191,9 @@ function getStatePriority(state) {
 
 
 function App() {
-  const { t, language, setLanguage } = useI18n();
+  const { t, language } = useI18n();
   const [data, setData] = useState(EMPTY_DATA);
-  const [view, setView] = useState("dashboard");
+  const [view, setView] = useState(getInitialView);
   const [tags, setTags] = useState([]);
   const [confirmState, setConfirmState] = useState({ open: false, title: "", message: "", confirmLabel: "", tone: "danger", onConfirm: null });
   const [sort, setSort] = useState("name");
@@ -161,13 +202,15 @@ function App() {
   const [installOpen, setInstallOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [preview, setPreview] = useState({ title: "", content: "", validation: null, diagnostics: [] });
-  const [tagEditor, setTagEditor] = useState({ open: false, skill: null, selected: [] });
+  const [tagEditor, setTagEditor] = useState({ open: false, skills: [], selected: [], mode: "replace" });
+  const [selectedSkillPaths, setSelectedSkillPaths] = useState([]);
   const [toastState, setToastState] = useState({ show: false, msg: "", type: "" });
   const [theme, setTheme] = useState(getSavedThemeMode);
+  const [skin, setSkin] = useState(getSavedSkin);
   const [newTagName, setNewTagName] = useState("");
   const [newTagColor, setNewTagColor] = useState("#58a6ff");
-  const [settingsTab, setSettingsTab] = useState("language");
-  const [loadError, setLoadError] = useState("");
+  const [settingsTab, setSettingsTab] = useState(getInitialSettingsTab);
+  const [loadError, setLoadError] = useState(null);
   const [trashReceipt, setTrashReceipt] = useState(null);
   const [driftGroup, setDriftGroup] = useState(null);
   const {
@@ -192,6 +235,26 @@ function App() {
   }
 
   const resolved = theme === "system" ? sysTheme : theme;
+
+  // 深链：视图与设置页签同步到 location.hash，前进后退可精确回溯
+  useEffect(() => {
+    const applyHash = () => {
+      const parts = window.location.hash.replace(/^#\/?/, "").split("/");
+      if (VIEWS[parts[0]]) {
+        setView(parts[0]);
+        if (parts[0] === "settings" && parts[1] && SETTINGS_TAB_LABELS[parts[1]]) {
+          setSettingsTab(parts[1]);
+        }
+      }
+    };
+    window.addEventListener("hashchange", applyHash);
+    return () => window.removeEventListener("hashchange", applyHash);
+  }, []);
+
+  useEffect(() => {
+    const next = view === "settings" ? `#/settings/${settingsTab}` : `#/${view}`;
+    if (window.location.hash !== next) window.location.hash = next;
+  }, [view, settingsTab]);
 
   // 快捷键：Alt+1~6 切换视图
   useEffect(() => {
@@ -241,8 +304,14 @@ function App() {
     m.addEventListener("change", handler);
     return () => m.removeEventListener("change", handler);
   }, []);
-  useEffect(() => { localStorage.setItem(THEME_STORAGE_KEY, theme); }, [theme]);
+  useEffect(() => {
+    persistPreference(window.localStorage, window.location.search, "theme", THEME_STORAGE_KEY, THEME_MODES, theme);
+  }, [theme]);
   useEffect(() => { document.documentElement.setAttribute("data-theme", resolved); }, [resolved]);
+  useEffect(() => {
+    persistPreference(window.localStorage, window.location.search, "skin", SKIN_STORAGE_KEY, SKINS, skin);
+    document.documentElement.setAttribute("data-skin", skin);
+  }, [skin]);
   useEffect(() => {
     const handler = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
@@ -254,23 +323,23 @@ function App() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
-  function cycleTheme() {
-    setTheme(prev => THEME_MODES[(THEME_MODES.indexOf(prev) + 1) % THEME_MODES.length]);
-  }
-
   const showToast = useCallback((msg, type = "") => {
-    setToastState({ show: true, msg, type });
+    const safeMessage = type === "error"
+      ? toUserErrorMessage(msg, t("error.safeRetry"), t("common.messageSeparator"))
+      : msg;
+    setToastState({ show: true, msg: safeMessage, type });
     toastTimerRef.current.start(3000, () => {
       if (mountedRef.current) {
         setToastState({ show: false, msg: "", type: "" });
       }
     });
-  }, []);
+  }, [t]);
 
   async function loadData(options = {}) {
     const resetUpdates = options?.resetUpdates ?? true;
     const requestId = ++loadRequestRef.current;
     setLoading(true);
+    setLoadError(null);
     try {
       const { assistants, tags, scenarios, git, diagnostics = [] } = await skillmateApi.inventory.loadDashboard();
       if (!mountedRef.current || requestId !== loadRequestRef.current) return;
@@ -290,14 +359,22 @@ function App() {
       const diagnosticMessage = diagnostics
         .map((item) => `${t(`diagnostic.${item.section}`)}: ${item.message}`)
         .join(t("common.messageSeparator"));
-      setLoadError(diagnosticMessage ? t("error.partialData", { message: diagnosticMessage }) : "");
+      setLoadError(diagnosticMessage ? {
+        summary: t("error.partialSummary"),
+        impact: t("error.partialImpact"),
+        details: diagnosticMessage,
+      } : null);
       if (resetUpdates) resetUpdateState();
       if (!failedSections.has("git")) gitBackupFlow.hydrate(git);
       if (diagnosticMessage) showToast(t("toast.partialData"), "warn");
     } catch (e) {
       if (mountedRef.current && requestId === loadRequestRef.current) {
-        setLoadError(t("error.coreData", { message: String(e) }));
-        showToast(t("toast.loadFailed", { message: String(e) }), "error");
+        setLoadError({
+          summary: t("error.coreSummary"),
+          impact: t("error.coreImpact"),
+          details: String(e),
+        });
+        showToast(t("toast.loadFailed"), "error");
       }
     }
     finally {
@@ -432,6 +509,20 @@ function App() {
     setTags(prev => prev.map(t => t.id === id ? { ...t, selected: !t.selected } : t));
   }
 
+  function toggleSkillSelection(path) {
+    setSelectedSkillPaths((current) => current.includes(path)
+      ? current.filter((item) => item !== path)
+      : [...current, path]);
+  }
+
+  function toggleVisibleSkillSelection() {
+    const visiblePaths = skills.map((skill) => skill.path);
+    const allSelected = visiblePaths.length > 0 && visiblePaths.every((path) => selectedSkillPaths.includes(path));
+    setSelectedSkillPaths((current) => allSelected
+      ? current.filter((path) => !visiblePaths.includes(path))
+      : [...new Set([...current, ...visiblePaths])]);
+  }
+
 
   async function addTag() {
     if (!newTagName.trim()) { showToast(t("tags.enterName"), "error"); return; }
@@ -444,8 +535,15 @@ function App() {
     } catch (e) { showToast(t("tags.addFailed", { message: String(e) }), "error"); }
   }
 
-  function openTagEditor(skill) {
-    setTagEditor({ open: true, skill, selected: [...skill.tags] });
+  function openTagEditor(skillOrSkills) {
+    const batch = Array.isArray(skillOrSkills);
+    const editorSkills = batch ? skillOrSkills : [skillOrSkills];
+    setTagEditor({
+      open: true,
+      skills: editorSkills,
+      selected: batch ? [] : [...(editorSkills[0]?.tags || [])],
+      mode: batch ? "add" : "replace",
+    });
   }
 
   function toggleSkillTag(tagId) {
@@ -458,15 +556,25 @@ function App() {
   }
 
   async function saveSkillTags() {
-    if (!tagEditor.skill) return;
-    try {
-      await skillmateApi.tags.updateSkill(tagEditor.skill.path, tagEditor.selected);
-      showToast(t("tags.updated"), "success");
-      setTagEditor({ open: false, skill: null, selected: [] });
-      await loadData();
-    } catch (e) {
-      showToast(t("tags.updateFailed", { message: String(e) }), "error");
+    if (tagEditor.skills.length === 0) return;
+    const results = await Promise.allSettled(tagEditor.skills.map((skill) => {
+      const nextTags = tagEditor.mode === "add"
+        ? [...new Set([...(skill.tags || []), ...tagEditor.selected])]
+        : tagEditor.selected;
+      return skillmateApi.tags.updateSkill(skill.path, nextTags);
+    }));
+    const failedCount = results.filter((result) => result.status === "rejected").length;
+    const successCount = results.length - failedCount;
+    if (failedCount === results.length) {
+      showToast(t("tags.updateFailedSafe"), "error");
+      return;
     }
+    showToast(failedCount > 0
+      ? t("tags.batchPartial", { success: successCount, failed: failedCount })
+      : t(tagEditor.mode === "add" ? "tags.addedMany" : "tags.updated"), failedCount > 0 ? "warn" : "success");
+    setTagEditor({ open: false, skills: [], selected: [], mode: "replace" });
+    setSelectedSkillPaths([]);
+    await loadData();
   }
 
   const statAI = data.assistants.filter(a => a.exists).length;
@@ -625,11 +733,6 @@ function App() {
             </div>
           )}
           <button className="btn btn-ghost" onClick={loadData} title={t("common.refresh")} aria-label={t("common.refresh")}><Icon name="refresh" size={18} className={loading ? "spin" : ""} /></button>
-          <button className="btn btn-primary" onClick={() => setInstallOpen(true)}><Icon name="plus" size={18} /><span>{t("common.install")}</span></button>
-          <button className="btn btn-ghost language-toggle" onClick={() => setLanguage(language === "zh-CN" ? "en" : "zh-CN")} title={t("language.switch")} aria-label={t("language.switch")}><Icon name="globe" size={17} /><span>{language === "zh-CN" ? "EN" : "中"}</span></button>
-          <button className="btn btn-ghost" onClick={cycleTheme} title={t("header.switchTheme")} aria-label={t("header.switchTheme")}>
-            <Icon name={theme === "system" ? "monitor" : theme === "light" ? "sun" : "moon"} size={18} />
-          </button>
         </div>
       </header>
 
@@ -646,20 +749,19 @@ function App() {
               </button>
             ))}
           </div>
-
-          <div className="sidebar-footer">
-            <div className="mini-stats">
-              <div><span className="val">{statSkills}</span><span className="lbl">Skills</span></div>
-              <div><span className="val">{statAI}</span><span className="lbl">{t("nav.assistants")}</span></div>
-              <div><span className="val">{tags.length}</span><span className="lbl">{t("sidebar.tags")}</span></div>
-            </div>
-          </div>
         </nav>
 
         <main className={`content ${view === "settings" ? "content-settings" : ""}`} ref={contentRef}>
           {loadError && (
             <div className="load-error-banner" role="alert">
-              <div><strong>{t("error.dataTitle")}</strong><span>{loadError}</span></div>
+              <div className="load-error-copy">
+                <strong>{loadError.summary}</strong>
+                <span>{loadError.impact}</span>
+                <details>
+                  <summary>{t("error.diagnosticDetails")}</summary>
+                  <code>{loadError.details}</code>
+                </details>
+              </div>
               <button className="btn btn-secondary btn-sm" onClick={() => loadData({ resetUpdates: false })}>{t("common.retry")}</button>
             </div>
           )}
@@ -687,12 +789,13 @@ function App() {
             />
           )}
           {init ? <Skeleton /> : view === "dashboard" && (
-            <DashboardView stats={dashboardStats} driftGroups={driftGroups} onNavigate={setView} onMarketInstall={installMarketSkill} onOpenDrift={setDriftGroup} />
+            <DashboardView stats={dashboardStats} tagCount={tags.length} driftGroups={driftGroups} onNavigate={setView} onMarketInstall={installMarketSkill} onOpenDrift={setDriftGroup} />
           )}
 
           {!init && view === "skills" && (
             <SkillsView
               skills={skills}
+              allSkills={allSkills}
               allSkillCount={allSkills.length}
               selectedTagCount={selectedTags.length}
               tags={tags}
@@ -707,6 +810,10 @@ function App() {
               onPreview={openPreview}
               onUnlink={unlinkSymlink}
               onRemove={remove}
+              selectedSkillPaths={selectedSkillPaths}
+              onToggleSelection={toggleSkillSelection}
+              onToggleVisibleSelection={toggleVisibleSkillSelection}
+              onClearSelection={() => setSelectedSkillPaths([])}
             />
           )}
 
@@ -735,6 +842,7 @@ function App() {
             <SettingsView
               activeTab={settingsTab}
               setActiveTab={setSettingsTab}
+              appearance={{ skin, setSkin, theme, setTheme }}
               backup={{ ...gitBackupFlow, lastSync: data.git.last_sync }}
               appUpdate={{
                 view: appUpdateView,
@@ -826,7 +934,7 @@ function App() {
           tags={tags}
           toggleSkillTag={toggleSkillTag}
           saveSkillTags={saveSkillTags}
-          onClose={() => setTagEditor({ open: false, skill: null, selected: [] })}
+          onClose={() => setTagEditor({ open: false, skills: [], selected: [], mode: "replace" })}
         />
       )}
 

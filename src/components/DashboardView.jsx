@@ -2,6 +2,8 @@ import { useState } from "react";
 import Icon from "./Icon.jsx";
 import { skillmateApi } from "../lib/skillmateApi.js";
 import { useI18n } from "../lib/i18n.jsx";
+import { toUserErrorMessage } from "../lib/errorMessage.mjs";
+import { SurfaceHeader, SurfaceSectionHeader } from "./SurfaceHeader.jsx";
 
 function AttentionRow({ icon, tone = "", title, body, onClick, action }) {
   return (
@@ -34,7 +36,7 @@ function MarketResult({ item, onInstall }) {
   );
 }
 
-export default function DashboardView({ stats, driftGroups, onNavigate, onMarketInstall, onOpenDrift }) {
+export default function DashboardView({ stats, tagCount, driftGroups, onNavigate, onMarketInstall, onOpenDrift }) {
   const { t } = useI18n();
   const [source, setSource] = useState("skills-sh");
   const [query, setQuery] = useState("");
@@ -52,7 +54,7 @@ export default function DashboardView({ stats, driftGroups, onNavigate, onMarket
       const result = await skillmateApi.market.search(source, trimmed);
       setMarket({ loading: false, items: result.items || [], searched: true, error: "" });
     } catch (error) {
-      setMarket({ loading: false, items: [], searched: true, error: t("market.error", { message: String(error) }) });
+      setMarket({ loading: false, items: [], searched: true, error: t("market.error", { message: toUserErrorMessage(error, t("error.safeRetry")) }) });
     }
   }
 
@@ -60,20 +62,19 @@ export default function DashboardView({ stats, driftGroups, onNavigate, onMarket
     + stats.localChanges + stats.driftGroups + stats.diagnostics;
 
   return (
-    <div className="dashboard">
-      <div className="dashboard-head">
-        <div><h2>{t("dashboard.title")}</h2><p>{t("dashboard.subtitle")}</p></div>
-      </div>
+    <div className="dashboard view-shell">
+      <SurfaceHeader title={t("dashboard.title")} description={t("dashboard.subtitle")} />
 
       <div className="dashboard-status" aria-label={t("dashboard.title")}>
-        <div><span>{stats.skills}</span><small>{t("dashboard.skills")}</small></div>
-        <div><span>{stats.assistants}</span><small>{t("dashboard.assistants")}</small></div>
-        <div className={stats.updates ? "warn" : ""}><span>{stats.updates}</span><small>{t("dashboard.updates")}</small></div>
-        <div className={attentionCount ? "error" : ""}><span>{attentionCount}</span><small>{t("dashboard.risks")}</small></div>
+        <span className="stamp"><span className="stamp-num">{stats.skills}</span>{t("dashboard.skills")}</span>
+        <span className="stamp"><span className="stamp-num">{stats.assistants}</span>{t("dashboard.assistants")}</span>
+        <span className="stamp"><span className="stamp-num">{tagCount}</span>{t("dashboard.tags")}</span>
+        <span className={`stamp ${stats.updates ? "warn" : "success"}`}><span className="stamp-num">{stats.updates}</span>{t("dashboard.updates")}</span>
+        <span className={`stamp ${attentionCount ? "error" : "success"}`}><span className="stamp-num">{attentionCount}</span>{t("dashboard.risks")}</span>
       </div>
 
       <section className="dashboard-section">
-        <div className="dashboard-section-head"><div><h3>{t("dashboard.attention")}</h3><p>{t("dashboard.attentionHint")}</p></div></div>
+        <SurfaceSectionHeader title={t("dashboard.attention")} description={t("dashboard.attentionHint")} />
         <div className="attention-queue">
           {stats.updates > 0 && <AttentionRow icon="updates" tone="warn" title={t("dashboard.updateTitle", { count: stats.updates })} body={t("dashboard.updateBody")} action={t("dashboard.review")} onClick={() => onNavigate("updates")} />}
           {stats.securityRisks > 0 && <AttentionRow icon="shield" tone="error" title={t("dashboard.securityTitle", { count: stats.securityRisks })} body={t("dashboard.securityBody")} action={t("dashboard.review")} onClick={() => onNavigate("skills")} />}
@@ -86,7 +87,7 @@ export default function DashboardView({ stats, driftGroups, onNavigate, onMarket
       </section>
 
       <section className="dashboard-section market-search">
-        <div className="dashboard-section-head"><div><h3>{t("market.title")}</h3><p>{t("market.subtitle")}</p></div></div>
+        <SurfaceSectionHeader title={t("market.title")} description={t("market.subtitle")} />
         <form className="market-search-form" onSubmit={search}>
           <label><span>{t("market.source")}</span><select value={source} onChange={(event) => setSource(event.target.value)}><option value="skills-sh">skills.sh</option><option value="github">GitHub</option></select></label>
           <label className="market-query"><span className="visually-hidden">{t("common.search")}</span><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("market.placeholder")} /></label>

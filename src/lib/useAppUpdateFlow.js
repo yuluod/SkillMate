@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n } from "./i18n.jsx";
+import { toUserErrorMessage } from "./errorMessage.mjs";
 
 async function loadAppUpdateApis() {
   const [{ getVersion }, { check }, { relaunch }] = await Promise.all([
@@ -15,6 +16,7 @@ export function useAppUpdateFlow({ showToast }) {
   const updateRef = useRef(null);
   const autoCheckRef = useRef(false);
   const operationRef = useRef(null);
+  const checkOperationRef = useRef(null);
   const [appUpdateState, setAppUpdateState] = useState({
     status: "idle",
     currentVersion: "",
@@ -35,76 +37,109 @@ export function useAppUpdateFlow({ showToast }) {
       })
       .catch((e) => {
         if (!cancelled) {
-          setAppUpdateState((current) => ({ ...current, error: String(e) }));
+          setAppUpdateState((current) => ({ ...current, error: toUserErrorMessage(e, t("error.safeRetry")) }));
         }
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [t]);
 
-  const checkAppUpdate = useCallback(async () => {
-    if (operationRef.current) {
-      return null;
+  const runAppUpdateCheck = useCallback((interactive) => {
+    const currentOperation = checkOperationRef.current;
+    if (currentOperation) {
+      if (interactive && !currentOperation.interactive) {
+        currentOperation.interactive = true;
+        setAppUpdateState((current) => ({
+          ...current,
+          status: "checking",
+          progress: null,
+          error: "",
+        }));
+      }
+      return currentOperation.promise;
     }
-    operationRef.current = "check";
-    setAppUpdateState((current) => ({
-      ...current,
-      status: "checking",
-      progress: null,
-      error: "",
-    }));
-    try {
-      const { getVersion, check } = await loadAppUpdateApis();
-      const currentVersion = await getVersion();
-      const update = await check();
-      updateRef.current = update;
-      if (!update) {
+
+    const operation = { interactive, promise: null };
+    operationRef.current = interactive ? "check" : "startup-check";
+    if (interactive) {
+      setAppUpdateState((current) => ({
+        ...current,
+        status: "checking",
+        progress: null,
+        error: "",
+      }));
+    }
+
+    operation.promise = (async () => {
+      try {
+        const { getVersion, check } = await loadAppUpdateApis();
+        const currentVersion = await getVersion();
+        const update = await check();
+        updateRef.current = update;
+        if (!update) {
+          setAppUpdateState({
+            status: "current",
+            currentVersion,
+            update: null,
+            progress: null,
+            error: "",
+            lastCheckedAt: Date.now(),
+          });
+          if (operation.interactive) {
+            showToast(t("appUpdate.toast.current"), "success");
+          }
+          return null;
+        }
         setAppUpdateState({
-          status: "current",
-          currentVersion,
-          update: null,
+          status: "available",
+          currentVersion: currentVersion || update.currentVersion || "",
+          update: {
+            currentVersion: update.currentVersion,
+            version: update.version,
+            date: update.date || "",
+            body: update.body || "",
+          },
           progress: null,
           error: "",
           lastCheckedAt: Date.now(),
         });
-        showToast(t("appUpdate.toast.current"), "success");
+        showToast(
+          t(operation.interactive ? "appUpdate.toast.available" : "appUpdate.toast.startupAvailable", { version: update.version }),
+          "success",
+        );
+        return update;
+      } catch (e) {
+        if (operation.interactive) {
+          const message = toUserErrorMessage(e, t("error.safeRetry"));
+          updateRef.current = null;
+          setAppUpdateState((current) => ({
+            ...current,
+            status: "error",
+            progress: null,
+            error: message,
+            lastCheckedAt: Date.now(),
+          }));
+          showToast(t("appUpdate.toast.checkFailed", { message }), "error");
+        }
         return null;
+      } finally {
+        if (checkOperationRef.current === operation) {
+          checkOperationRef.current = null;
+          operationRef.current = null;
+        }
       }
-      const plainUpdate = {
-        currentVersion: update.currentVersion,
-        version: update.version,
-        date: update.date || "",
-        body: update.body || "",
-      };
-      setAppUpdateState({
-        status: "available",
-        currentVersion: currentVersion || update.currentVersion || "",
-        update: plainUpdate,
-        progress: null,
-        error: "",
-        lastCheckedAt: Date.now(),
-      });
-      showToast(t("appUpdate.toast.available", { version: update.version }), "success");
-      return update;
-    } catch (e) {
-      const message = String(e);
-      updateRef.current = null;
-      setAppUpdateState((current) => ({
-        ...current,
-        status: "error",
-        progress: null,
-        error: message,
-        lastCheckedAt: Date.now(),
-      }));
-      showToast(t("appUpdate.toast.checkFailed", { message }), "error");
-      return null;
-    } finally {
-      if (operationRef.current === "check") {
-        operationRef.current = null;
-      }
-    }
+    })();
+    checkOperationRef.current = operation;
+    return operation.promise;
   }, [showToast, t]);
+
+  const checkAppUpdate = useCallback(async () => {
+    if (operationRef.current && !checkOperationRef.current) {
+      return null;
+    }
+    return runAppUpdateCheck(true);
+  }, [runAppUpdateCheck]);
 
   // 启动自动检查:静默模式,失败不打扰,发现新版本时提示一次。
   // 不复用 checkAppUpdate,避免把"已是最新"的成功 toast 和错误 toast 打到启动流程里。
@@ -113,40 +148,8 @@ export function useAppUpdateFlow({ showToast }) {
       return;
     }
     autoCheckRef.current = true;
-    operationRef.current = "startup-check";
-    try {
-      const { check } = await loadAppUpdateApis();
-      const update = await check();
-      updateRef.current = update;
-      if (!update) {
-        setAppUpdateState((current) => ({
-          ...current,
-          status: "current",
-          update: null,
-          lastCheckedAt: Date.now(),
-        }));
-        return;
-      }
-      setAppUpdateState((current) => ({
-        ...current,
-        status: "available",
-        update: {
-          currentVersion: update.currentVersion,
-          version: update.version,
-          date: update.date || "",
-          body: update.body || "",
-        },
-        lastCheckedAt: Date.now(),
-      }));
-      showToast(t("appUpdate.toast.startupAvailable", { version: update.version }), "success");
-    } catch {
-      // 启动静默检查失败不打扰用户;设置页手动检查会展示完整错误。
-    } finally {
-      if (operationRef.current === "startup-check") {
-        operationRef.current = null;
-      }
-    }
-  }, [showToast, t]);
+    await runAppUpdateCheck(false);
+  }, [runAppUpdateCheck]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -156,12 +159,14 @@ export function useAppUpdateFlow({ showToast }) {
   }, [runStartupUpdateCheck]);
 
   const installAppUpdate = useCallback(async () => {
-    if (operationRef.current) {
+    if (operationRef.current && !checkOperationRef.current) {
       return;
     }
-    let update = updateRef.current;
-    if (!update) {
+    let update;
+    if (checkOperationRef.current || !updateRef.current) {
       update = await checkAppUpdate();
+    } else {
+      update = updateRef.current;
     }
     if (!update) {
       return;
@@ -214,7 +219,7 @@ export function useAppUpdateFlow({ showToast }) {
       }));
       showToast(t("appUpdate.toast.restarting"), "success");
     } catch (e) {
-      const message = String(e);
+      const message = toUserErrorMessage(e, t("error.safeRetry"));
       setAppUpdateState((current) => ({
         ...current,
         status: "error",
@@ -231,7 +236,7 @@ export function useAppUpdateFlow({ showToast }) {
       const { relaunch } = await loadAppUpdateApis();
       await relaunch();
     } catch (e) {
-      const message = String(e);
+      const message = toUserErrorMessage(e, t("error.safeRetry"));
       setAppUpdateState((current) => ({
         ...current,
         status: "ready_to_restart",
@@ -265,9 +270,9 @@ export function useAppUpdateFlow({ showToast }) {
         ...current,
         status: "ready_to_restart",
         progress: null,
-        error: t("appUpdate.toast.restartFailed", { message: String(e) }),
+        error: t("appUpdate.toast.restartFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }),
       }));
-      showToast(t("appUpdate.toast.restartFailed", { message: String(e) }), "error");
+      showToast(t("appUpdate.toast.restartFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     } finally {
       if (operationRef.current === "restart") {
         operationRef.current = null;

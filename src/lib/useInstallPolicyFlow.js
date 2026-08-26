@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { DEFAULT_INSTALL_POLICY, normalizeInstallPolicy } from "./installPolicy.mjs";
 import { skillmateApi } from "./skillmateApi.js";
 import { useI18n } from "./i18n.jsx";
+import { toUserErrorMessage } from "./errorMessage.mjs";
 
 export function useInstallPolicyFlow({ showToast }) {
   const { t } = useI18n();
@@ -19,7 +20,7 @@ export function useInstallPolicyFlow({ showToast }) {
       setSavedPolicy(result);
       setError("");
     } catch (e) {
-      setError(String(e));
+      setError(toUserErrorMessage(e, t("error.safeRetry")));
       showToast(t("policy.toast.loadFailed", { message: String(e) }), "error");
     } finally {
       setLoading(false);
@@ -39,7 +40,7 @@ export function useInstallPolicyFlow({ showToast }) {
       })
       .catch((e) => {
         if (cancelled) return;
-        setError(String(e));
+        setError(toUserErrorMessage(e, t("error.safeRetry")));
         showToast(t("policy.toast.loadFailed", { message: String(e) }), "error");
       })
       .finally(() => {
@@ -69,7 +70,7 @@ export function useInstallPolicyFlow({ showToast }) {
       setError("");
       showToast(t("policy.toast.saved"), "success");
     } catch (e) {
-      setError(String(e));
+      setError(toUserErrorMessage(e, t("error.safeRetry")));
       showToast(t("policy.toast.saveFailed", { message: String(e) }), "error");
     } finally {
       setSaving(false);

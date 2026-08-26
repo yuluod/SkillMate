@@ -13,6 +13,7 @@ import {
 } from "../lib/skillmate.mjs";
 import { skillmateApi } from "../lib/skillmateApi.js";
 import { useI18n } from "../lib/i18n.jsx";
+import { toUserErrorMessage } from "../lib/errorMessage.mjs";
 
 function shortHash(value = "") {
   return value.replace(/^sha256:/, "").slice(0, 10) || "—";
@@ -51,7 +52,7 @@ export function DriftSyncModal({ group, onClose, onComplete }) {
     try {
       setPreview(await skillmateApi.drift.preview(sourcePath, targetPaths));
     } catch (reason) {
-      setError(t("drift.error", { message: String(reason) }));
+      setError(t("drift.error", { message: toUserErrorMessage(reason, t("error.safeRetry")) }));
     } finally {
       setBusy("");
     }
@@ -66,7 +67,7 @@ export function DriftSyncModal({ group, onClose, onComplete }) {
       await onComplete(message || t("drift.complete"));
       onClose();
     } catch (reason) {
-      setError(t("drift.error", { message: String(reason) }));
+      setError(t("drift.error", { message: toUserErrorMessage(reason, t("error.safeRetry")) }));
     } finally {
       setBusy("");
     }
@@ -342,9 +343,12 @@ export function TagEditorModal({
   onClose,
 }) {
   const { t } = useI18n();
+  const batch = tagEditor.mode === "add";
   return (
-    <ModalShell title={t("tags.edit")} onClose={onClose}>
-      <p style={{ color: "var(--text2)", fontSize: "0.9rem", marginBottom: 16 }}>{tagEditor.skill?.name}</p>
+    <ModalShell title={t(batch ? "tags.addMany" : "tags.edit")} onClose={onClose}>
+      <p className="modal-intro">{batch
+        ? t("tags.addManyHint", { count: tagEditor.skills.length })
+        : tagEditor.skills[0]?.name}</p>
       <div className="tag-list">
         {tags.map((tag) => (
           <button
@@ -361,7 +365,7 @@ export function TagEditorModal({
       </div>
       <div className="card-actions" style={{ justifyContent: "flex-end", marginTop: 20 }}>
         <button className="btn btn-secondary btn-sm" onClick={onClose}>{t("common.cancel")}</button>
-        <button className="btn btn-primary btn-sm" onClick={saveSkillTags}>{t("common.save")}</button>
+        <button className="btn btn-primary btn-sm" onClick={saveSkillTags} disabled={batch && tagEditor.selected.length === 0}>{t(batch ? "tags.addAction" : "common.save")}</button>
       </div>
     </ModalShell>
   );

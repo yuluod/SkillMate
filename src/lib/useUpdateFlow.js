@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import { skillmateApi } from "./skillmateApi.js";
 import { useI18n } from "./i18n.jsx";
+import { toUserErrorMessage } from "./errorMessage.mjs";
 
 export function useUpdateFlow({ updatable, showToast, loadData }) {
   const { t, language } = useI18n();
@@ -70,13 +71,13 @@ export function useUpdateFlow({ updatable, showToast, loadData }) {
             updating: false,
             hasUpdate: false,
             lagCount: 0,
-            message: t("updates.toast.checkFailed", { message: String(error) }),
+            message: t("updates.toast.checkFailed", { message: toUserErrorMessage(error, t("error.safeRetry")) }),
             syncState: "failed",
           };
         });
         return next;
       });
-      showToast(t("updates.toast.batchFailed", { message: String(error) }), "error");
+      showToast(t("updates.toast.batchFailed", { message: toUserErrorMessage(error, t("error.safeRetry")) }), "error");
     }
   }, [showToast, t, updatable, updateState]);
 
@@ -90,7 +91,7 @@ export function useUpdateFlow({ updatable, showToast, loadData }) {
       showToast(language === "en" ? fallback : (r.message || fallback), hasUpdate ? "warn" : "success");
     } catch (e) {
       setUpdateState(prev => ({ ...prev, [path]: { ...(prev[path] || {}), checking: false } }));
-      showToast(t("updates.toast.checkFailed", { message: String(e) }), "error");
+      showToast(t("updates.toast.checkFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     }
   }, [language, showToast, t]);
 
@@ -103,7 +104,7 @@ export function useUpdateFlow({ updatable, showToast, loadData }) {
       await loadData();
     } catch (e) {
       setUpdateState(prev => ({ ...prev, [path]: { ...(prev[path] || {}), updating: false } }));
-      showToast(t("updates.toast.updateFailed", { message: String(e) }), "error");
+      showToast(t("updates.toast.updateFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     }
   }, [checkUpdate, language, loadData, showToast, t]);
 
