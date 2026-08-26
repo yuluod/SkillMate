@@ -6,6 +6,27 @@
 
 ## [Unreleased]
 
+## [0.0.11] - 2026-08-26
+
+### 新增
+
+- 新增经典、现代与复古三套界面风格，并支持跟随系统、浅色和深色模式。
+- Skills 登记册支持选择当前筛选结果并批量添加标签，保留各 Skill 已有标签。
+- 页面与设置页签支持 URL 深链，可通过前进、后退恢复浏览位置。
+
+### 改进
+
+- 统一概览、Skills、平台、组合、更新和设置页的标题、表单控件与登记册结构。
+- 将来源、结构、风险、共享状态和本地变更收敛为更易扫描的文字签章，并统一 Git、npm、pip 与本地来源颜色。
+- 调整加载失败和更新失败提示，先说明影响与恢复方式，再按需展示可复制诊断信息。
+- 启动更新检查与手动检查复用同一请求，避免并发检查和重复安装流程。
+
+### 修复
+
+- 修复筛选变化后批量操作漏掉已选择 Skill 的问题。
+- 修复登记册列标题缺少无障碍关联，以及窄屏下列语义丢失的问题。
+- 修复经典主题中页面页眉与登记册顶部重复显示分隔线的问题。
+
 ## [0.0.10] - 2026-08-25
 
 ### 改进
@@ -60,7 +81,8 @@
 - 修复 CI 格式检查和 Windows 平台故障注入测试。
 - 发布版本一致性测试不再硬编码版本号。
 
-[Unreleased]: https://github.com/yuluod/SkillMate/compare/v0.0.10...HEAD
+[Unreleased]: https://github.com/yuluod/SkillMate/compare/v0.0.11...HEAD
+[0.0.11]: https://github.com/yuluod/SkillMate/compare/v0.0.10...v0.0.11
 [0.0.10]: https://github.com/yuluod/SkillMate/compare/v0.0.9...v0.0.10
 [0.0.9]: https://github.com/yuluod/SkillMate/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/yuluod/SkillMate/releases/tag/v0.0.8
