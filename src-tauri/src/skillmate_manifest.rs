@@ -1,9 +1,7 @@
 use crate::app_core::{
     assistant_root_by_name, atomic_write, expand_path, project_skill_root_by_name,
 };
-use crate::skill_install::{
-    preview_install_source, preview_local_symlink_install, InstallPreview, PreviewConflict,
-};
+use crate::skill_install::{preview_install_source, InstallPreview, PreviewConflict};
 use crate::skill_install_source::{
     install_target_name, is_git_install_source, parse_git_install_spec,
 };
@@ -199,15 +197,8 @@ pub fn preview_skillmate_manifest_with_existing(
             }
         };
         let effective_source = resolved_manifest_source(skill)?;
-        let mut preview = if skill.install_mode.as_deref() == Some("symlink") {
-            preview_local_symlink_install(
-                &expand_path(effective_source.trim()),
-                &target_root,
-                &target_name,
-            )
-        } else {
-            preview_install_source(&effective_source, &skill.source_kind, &target_root)
-        };
+        let mut preview =
+            preview_install_source(&effective_source, &skill.source_kind, &target_root);
         let target_path = Path::new(&preview.target_path);
         if preview.package_detection.detected_skills.len() != 1 {
             preview.can_apply = false;
@@ -440,11 +431,11 @@ pub fn validate_skillmate_manifest(manifest: &SkillMateManifest) -> Vec<SkillMat
             .filter(|mode| !mode.is_empty())
         {
             None | Some("copy") => {}
-            Some("symlink") if skill.source_kind == "local" => {}
+            Some("symlink") if skill.scope.as_deref() == Some("project") => {}
             Some("symlink") => issues.push(issue(
                 index,
-                "invalid_symlink_source",
-                "symlink 安装只支持本地来源",
+                "invalid_symlink_scope",
+                "symlink 仅用于项目范围",
             )),
             Some(_) => issues.push(issue(
                 index,
@@ -570,6 +561,26 @@ target_name = "writer"
         assert!(issues
             .iter()
             .any(|issue| issue.code == "invalid_target_name"));
+    }
+
+    #[test]
+    fn project_git_skill_accepts_project_deployment_mode() {
+        let manifest = SkillMateManifest {
+            version: 2,
+            reconcile: false,
+            skills: vec![SkillDescriptor {
+                assistant: "Codex".to_string(),
+                source: "owner/repo".to_string(),
+                source_kind: "git".to_string(),
+                target_name: Some("repo".to_string()),
+                scope: Some("project".to_string()),
+                install_mode: Some("symlink".to_string()),
+                project_path: Some("/tmp/project".to_string()),
+                ..Default::default()
+            }],
+        };
+
+        assert!(validate_skillmate_manifest(&manifest).is_empty());
     }
 
     #[test]

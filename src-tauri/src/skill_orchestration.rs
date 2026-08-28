@@ -2,17 +2,22 @@ use crate::app_core::expand_path;
 use crate::install_policy::{evaluate_install_policy, load_install_policy, InstallPolicyInput};
 use crate::managed_installation::{
     cleanup_skill_metadata, find_managed_installation, is_explicitly_managed,
-    list_managed_installations, record_managed_root, refresh_managed_installation,
-    verify_managed_content_unchanged,
+    list_managed_installations, record_managed_path, record_managed_root,
+    refresh_managed_installation, verify_managed_content_unchanged,
 };
 use crate::managed_state::{content_fingerprint, managed_state_origin};
 use crate::operation_plan::{operation_plan_token, verify_operation_plan};
 use crate::skill_install::{
-    install_git_package_at_ref, install_local_package_at_digest,
-    install_local_symlink_package_at_digest, InstallPreview,
+    install_git_package_at_ref, install_local_package_at_digest, preview_install_source,
+    InstallPreview,
 };
 use crate::skill_install_source::{is_git_install_source, parse_git_install_spec};
 use crate::skill_inventory::scan_all_assistants;
+use crate::skill_library::{
+    add_deployment_to_preview, copy_origin_to_deployment, deploy_library_skill, find_deployment,
+    library_root, library_skill_id, register_deployment, register_library_skill,
+    resolve_library_path, reuse_library_preview,
+};
 use crate::skill_model::SkillDescriptor;
 use crate::skill_origin::{load_origin_meta, save_installed_git_meta};
 use crate::skill_profile::{
@@ -59,7 +64,35 @@ pub fn build_current_manifest(db: &Connection) -> Result<SkillMateManifest, Stri
         registered_paths.insert(installation.path.clone());
         if installation.path.exists() || fs::symlink_metadata(&installation.path).is_ok() {
             let mut skill = installation.skill;
-            skill.content_hash = Some(content_fingerprint(&installation.path)?);
+            if skill.assistant == crate::managed_state::LIBRARY_OWNER_NAME {
+                continue;
+            }
+            let content_path = if let Some(deployment) = find_deployment(db, &installation.path)? {
+                let library_installation = find_managed_installation(db, &deployment.library_path)?
+                    .ok_or_else(|| {
+                        format!(
+                            "启用位置缺少 SkillMate 库登记: {}",
+                            installation.path.to_string_lossy()
+                        )
+                    })?;
+                skill.source = library_installation.skill.source;
+                skill.source_kind = library_installation.skill.source_kind;
+                skill.reference = library_installation.skill.reference;
+                skill.subdir = library_installation.skill.subdir;
+                skill.resolved_ref = library_installation.skill.resolved_ref;
+                skill.install_mode = Some(
+                    if skill.scope.as_deref() == Some("project") {
+                        "symlink"
+                    } else {
+                        "copy"
+                    }
+                    .to_string(),
+                );
+                deployment.library_path
+            } else {
+                installation.path.clone()
+            };
+            skill.content_hash = Some(content_fingerprint(&content_path)?);
             skills.push(skill);
         }
     }
@@ -183,6 +216,21 @@ pub fn preview_manifest(
         if preview.install_previews.len() != manifest.skills.len() {
             return Err("manifest 策略检查与安装预览数量不一致".to_string());
         }
+        for (skill, install_preview) in manifest.skills.iter().zip(&mut preview.install_previews) {
+            if install_preview.can_apply {
+                *install_preview = build_manifest_library_preview(db, skill, install_preview)?;
+                if !install_preview.can_apply {
+                    preview.can_apply = false;
+                    preview
+                        .conflicts
+                        .push(crate::skillmate_manifest::SkillMateManifestConflict {
+                            assistant: skill.assistant.clone(),
+                            source: skill.source.clone(),
+                            reason: install_preview.message.clone(),
+                        });
+                }
+            }
+        }
         let policy = load_install_policy(db)?;
         for (skill, install_preview) in manifest.skills.iter().zip(&mut preview.install_previews) {
             let source = resolved_manifest_source(skill)?;
@@ -252,6 +300,62 @@ pub fn preview_manifest(
     preview.plan_token.clear();
     preview.plan_token = operation_plan_token("skillmate-manifest", &(manifest, &preview))?;
     Ok(preview)
+}
+
+fn build_manifest_library_preview(
+    db: &Connection,
+    skill: &SkillDescriptor,
+    direct_preview: &InstallPreview,
+) -> Result<InstallPreview, String> {
+    let direct_action = direct_preview
+        .target_actions
+        .first()
+        .map(|action| action.action.as_str())
+        .unwrap_or_default();
+    if direct_action == "keep" || !matches!(direct_action, "copy" | "replace") {
+        return Ok(direct_preview.clone());
+    }
+
+    let deployment_path = PathBuf::from(&direct_preview.target_path);
+    let deployment_root = deployment_path
+        .parent()
+        .ok_or_else(|| "manifest 目标路径缺少父目录".to_string())?;
+    let effective_source = resolved_manifest_source(skill)?;
+    let library_root = library_root()?;
+    let mut preview = preview_install_source(&effective_source, &skill.source_kind, &library_root);
+    let library_path = PathBuf::from(&preview.target_path);
+    if library_path.exists() && library_skill_matches_manifest(db, &library_path, skill)? {
+        preview = reuse_library_preview(preview);
+    }
+    preview = add_deployment_to_preview(
+        preview,
+        deployment_root,
+        &skill.assistant,
+        skill.scope.as_deref().unwrap_or("global"),
+        direct_action == "replace",
+    );
+    preview.target_path = deployment_path.to_string_lossy().to_string();
+    Ok(preview)
+}
+
+fn library_skill_matches_manifest(
+    db: &Connection,
+    library_path: &Path,
+    skill: &SkillDescriptor,
+) -> Result<bool, String> {
+    let Some(installation) = find_managed_installation(db, library_path)? else {
+        return Ok(false);
+    };
+    let registered_source = resolved_manifest_source(&installation.skill)
+        .unwrap_or_else(|_| installation.skill.source.clone());
+    let expected_source = resolved_manifest_source(skill)?;
+    if installation.skill.source_kind != skill.source_kind || registered_source != expected_source {
+        return Ok(false);
+    }
+    match skill.content_hash.as_deref() {
+        Some(expected) => Ok(content_fingerprint(library_path)? == expected),
+        None => Ok(true),
+    }
 }
 
 #[cfg(test)]
@@ -335,12 +439,11 @@ fn apply_manifest_previewed(
             .parent()
             .ok_or_else(|| "manifest 目标路径缺少父目录".to_string())?
             .to_path_buf();
-        let action = install_preview
+        let has_write = install_preview
             .target_actions
-            .first()
-            .map(|action| action.action.as_str())
-            .unwrap_or_default();
-        if action == "keep" {
+            .iter()
+            .any(|action| matches!(action.action.as_str(), "copy" | "symlink" | "replace"));
+        if !has_write {
             summary.kept += 1;
             continue;
         }
@@ -592,17 +695,50 @@ fn manifest_target_matches(
         if !target_path.exists() && fs::symlink_metadata(target_path).is_err() {
             return Ok(false);
         }
-        let registered_source = resolved_manifest_source(&installation.skill)
-            .unwrap_or_else(|_| installation.skill.source.clone());
+        let deployment = find_deployment(db, target_path)?;
+        let source_skill = match deployment.as_ref() {
+            Some(deployment) => find_managed_installation(db, &deployment.library_path)?
+                .map(|record| record.skill)
+                .ok_or_else(|| {
+                    format!(
+                        "启用位置缺少 SkillMate 库登记: {}",
+                        target_path.to_string_lossy()
+                    )
+                })?,
+            None => installation.skill.clone(),
+        };
+        let registered_source =
+            resolved_manifest_source(&source_skill).unwrap_or_else(|_| source_skill.source.clone());
+        let registered_mode = if deployment.is_some() {
+            if installation.skill.scope.as_deref() == Some("project") {
+                "symlink"
+            } else {
+                "copy"
+            }
+        } else {
+            installation.skill.install_mode.as_deref().unwrap_or("copy")
+        };
+        let expected_mode = if deployment.is_some() {
+            if skill.scope.as_deref() == Some("project") {
+                "symlink"
+            } else {
+                "copy"
+            }
+        } else {
+            skill.install_mode.as_deref().unwrap_or("copy")
+        };
         let metadata_matches = installation.skill.assistant == skill.assistant
-            && installation.skill.source_kind == skill.source_kind
+            && source_skill.source_kind == skill.source_kind
             && registered_source == effective_source
             && installation.skill.scope.as_deref().unwrap_or("global")
                 == skill.scope.as_deref().unwrap_or("global")
-            && installation.skill.install_mode.as_deref().unwrap_or("copy")
-                == skill.install_mode.as_deref().unwrap_or("copy");
+            && registered_mode == expected_mode;
+        let content_path = deployment
+            .as_ref()
+            .map(|deployment| deployment.library_path.as_path())
+            .unwrap_or(target_path);
         let content_matches = match skill.content_hash.as_deref() {
-            Some(expected) => content_fingerprint(target_path)? == expected,
+            Some(expected) => content_fingerprint(content_path)? == expected,
             None => true,
         };
         return Ok(metadata_matches && content_matches);
@@ -651,7 +787,15 @@ fn manifest_target_disposition(
         return Ok(ExistingTargetDisposition::Matching);
     }
     if is_explicitly_managed(db, target_path)? {
-        match verify_managed_content_unchanged(db, target_path) {
+        let content_path = resolve_library_path(db, target_path)?;
+        let content_unchanged = verify_managed_content_unchanged(db, target_path).and_then(|_| {
+            if content_path == target_path {
+                Ok(())
+            } else {
+                verify_managed_content_unchanged(db, &content_path)
+            }
+        });
+        match content_unchanged {
             Ok(()) => Ok(ExistingTargetDisposition::Replaceable),
             Err(_) => Ok(ExistingTargetDisposition::Drifted),
         }
@@ -718,6 +862,11 @@ fn build_profile_diff(
 
 fn manifest_skill_key(skill: &SkillDescriptor) -> String {
     let source = resolved_manifest_source(skill).unwrap_or_else(|_| skill.source.clone());
+    let install_mode = if skill.scope.as_deref() == Some("project") {
+        "symlink"
+    } else {
+        "copy"
+    };
     format!(
         "{}:{}:{}:{}:{}:{}:{}:{}:{}",
         skill.assistant,
@@ -727,7 +876,7 @@ fn manifest_skill_key(skill: &SkillDescriptor) -> String {
             .unwrap_or_else(|| skill.source.clone()),
         skill.source_kind,
         skill.scope.as_deref().unwrap_or("global"),
-        skill.install_mode.as_deref().unwrap_or("copy"),
+        install_mode,
         skill.project_path.as_deref().unwrap_or(""),
         source,
         skill.reference.as_deref().unwrap_or(""),
@@ -740,55 +889,109 @@ fn apply_manifest_skill(
     skill: SkillDescriptor,
     preview: &InstallPreview,
 ) -> Result<(), String> {
-    let target_path = PathBuf::from(&preview.target_path);
-    let target_root = target_path
+    let library_action = preview
+        .target_actions
+        .iter()
+        .find(|action| matches!(action.action.as_str(), "copy" | "keep"))
+        .ok_or_else(|| "manifest 缺少 SkillMate 库写入计划".to_string())?;
+    let deployment_action = preview
+        .target_actions
+        .iter()
+        .find(|action| matches!(action.action.as_str(), "symlink" | "replace"))
+        .ok_or_else(|| "manifest 缺少平台启用计划".to_string())?;
+    let library_path = PathBuf::from(&library_action.target);
+    let library_root = library_path
+        .parent()
+        .ok_or_else(|| "SkillMate 库路径缺少父目录".to_string())?
+        .to_path_buf();
+    let deployment_path = PathBuf::from(&deployment_action.target);
+    let deployment_root = deployment_path
         .parent()
         .ok_or_else(|| "manifest 目标路径缺少父目录".to_string())?
         .to_path_buf();
-    fs::create_dir_all(&target_root).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&library_root).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&deployment_root).map_err(|error| error.to_string())?;
     let effective_source = resolved_manifest_source(&skill)?;
-    let fallback_name = target_path
+    let fallback_name = library_path
         .file_name()
         .and_then(|name| name.to_str())
         .filter(|name| !name.trim().is_empty())
-        .ok_or_else(|| "manifest 目标路径缺少目录名".to_string())?
+        .ok_or_else(|| "SkillMate 库路径缺少目录名".to_string())?
         .to_string();
-    if skill.install_mode.as_deref() == Some("symlink") {
-        let source_path = expand_path(effective_source.trim());
-        install_local_symlink_package_at_digest(
-            &source_path,
-            &target_root,
-            &fallback_name,
-            &skill.assistant,
-            Some(&preview.source_digest),
-        )?;
-        return Ok(());
-    }
-    match skill.source_kind.as_str() {
-        source_kind if is_git_install_source(source_kind) => {
-            let spec = parse_git_install_spec(&effective_source)?;
-            install_git_package_at_ref(
-                spec,
-                &target_root,
-                &fallback_name,
-                &skill.assistant,
-                Some(&preview.resolved_ref),
-                |target_path, spec, outcome| {
-                    save_installed_git_meta(db, target_path, spec, outcome)
-                },
-            )?;
+
+    let skill_id = if library_action.action == "keep" {
+        library_skill_id(db, &library_path)?
+    } else {
+        match skill.source_kind.as_str() {
+            source_kind if is_git_install_source(source_kind) => {
+                let spec = parse_git_install_spec(&effective_source)?;
+                install_git_package_at_ref(
+                    spec,
+                    &library_root,
+                    &fallback_name,
+                    crate::managed_state::LIBRARY_OWNER_NAME,
+                    Some(&preview.resolved_ref),
+                    |target_path, spec, outcome| {
+                        save_installed_git_meta(db, target_path, spec, outcome)
+                    },
+                )?;
+            }
+            "local" => {
+                let source_path = expand_path(effective_source.trim());
+                install_local_package_at_digest(
+                    &source_path,
+                    &library_root,
+                    &fallback_name,
+                    crate::managed_state::LIBRARY_OWNER_NAME,
+                    Some(&preview.source_digest),
+                )?;
+            }
+            _ => return Err("当前 manifest 仅支持 Git 仓库和本地目录来源".to_string()),
         }
-        "local" => {
-            let source_path = expand_path(effective_source.trim());
-            install_local_package_at_digest(
-                &source_path,
-                &target_root,
-                &fallback_name,
-                &skill.assistant,
-                Some(&preview.source_digest),
-            )?;
-        }
-        _ => return Err("当前 manifest 仅支持 Git 仓库和本地目录来源".to_string()),
+        record_managed_path(db, &library_root, &library_path, "library", None)?;
+        let resolved_ref = (!preview.resolved_ref.trim().is_empty())
+            .then_some(preview.resolved_ref.as_str())
+            .or(skill.resolved_ref.as_deref());
+        register_library_skill(
+            db,
+            &library_path,
+            &skill.source,
+            &skill.source_kind,
+            resolved_ref,
+        )?
+    };
+
+    let deploy_mode = deploy_library_skill(&library_path, &deployment_path)?;
+    crate::managed_state::mark_managed_skill(
+        &deployment_root,
+        &skill.assistant,
+        &deployment_path,
+        &format!("symlink:{}", library_path.to_string_lossy()),
+    )?;
+    let scope = skill.scope.as_deref().unwrap_or("global");
+    record_managed_path(
+        db,
+        &deployment_root,
+        &deployment_path,
+        scope,
+        skill.project_path.as_deref(),
+    )?;
+    register_deployment(
+        db,
+        &skill_id,
+        &library_path,
+        &deployment_path,
+        &skill.assistant,
+        scope,
+        skill.project_path.as_deref(),
+        &deploy_mode,
+    )?;
+    copy_origin_to_deployment(db, &library_path, &deployment_path)?;
+    if !refresh_managed_installation(db, &deployment_path, None)? {
+        return Err(format!(
+            "未能刷新启用记录: {}",
+            deployment_path.to_string_lossy()
+        ));
     }
     Ok(())
 }

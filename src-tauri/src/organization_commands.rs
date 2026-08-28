@@ -1,9 +1,11 @@
 use crate::app_core::generate_id;
 use crate::database::parse_legacy_list;
 use crate::operation_coordinator::run_exclusive_operation;
+use crate::skill_library::resolve_library_path;
 use crate::{lock_app_db, AppState};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Tag {
@@ -60,16 +62,23 @@ pub fn add_tag(name: String, color: String) -> Result<Tag, String> {
 
 #[tauri::command]
 pub fn update_skill_tags(skill_path: String, tags: Vec<String>) -> Result<String, String> {
-    run_exclusive_operation(move |db| {
-        let tags_json = serde_json::to_string(&tags).map_err(|error| error.to_string())?;
-        db.execute(
-            "INSERT INTO skill_tags (skill_path, tags, tags_json) VALUES (?, '', ?)
-             ON CONFLICT(skill_path) DO UPDATE SET tags = '', tags_json = excluded.tags_json",
-            params![skill_path, tags_json],
-        )
-        .map_err(|error| error.to_string())?;
-        Ok("已更新".to_string())
-    })
+    run_exclusive_operation(move |db| update_skill_tags_in_db(db, Path::new(&skill_path), &tags))
+}
+
+fn update_skill_tags_in_db(
+    db: &Connection,
+    skill_path: &Path,
+    tags: &[String],
+) -> Result<String, String> {
+    let metadata_path = resolve_library_path(db, skill_path)?;
+    let tags_json = serde_json::to_string(tags).map_err(|error| error.to_string())?;
+    db.execute(
+        "INSERT INTO skill_tags (skill_path, tags, tags_json) VALUES (?, '', ?)
+         ON CONFLICT(skill_path) DO UPDATE SET tags = '', tags_json = excluded.tags_json",
+        params![metadata_path.to_string_lossy().to_string(), tags_json],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok("已更新".to_string())
 }
 
 #[tauri::command]
@@ -146,4 +155,45 @@ pub fn delete_scenario(scenario_id: String) -> Result<String, String> {
             .map_err(|error| error.to_string())?;
         Ok("已删除".to_string())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deployment_tags_are_stored_on_the_library_copy() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE skill_tags (
+                skill_path TEXT PRIMARY KEY, tags TEXT, tags_json TEXT NOT NULL DEFAULT '[]'
+             );
+             CREATE TABLE skill_deployments (
+                target_path TEXT PRIMARY KEY, skill_id TEXT NOT NULL, library_path TEXT NOT NULL,
+                assistant TEXT NOT NULL, scope TEXT NOT NULL, project_path TEXT,
+                deploy_mode TEXT NOT NULL, deployed_at TEXT NOT NULL
+             );",
+        )
+        .unwrap();
+        let library_path = Path::new("/tmp/skillmate/skills/writer");
+        let deployment_path = Path::new("/tmp/.agents/skills/writer");
+        db.execute(
+            "INSERT INTO skill_deployments VALUES (?, 'writer-id', ?, 'Codex', 'global', NULL,
+             'symlink', 'now')",
+            params![
+                deployment_path.to_string_lossy().to_string(),
+                library_path.to_string_lossy().to_string()
+            ],
+        )
+        .unwrap();
+
+        update_skill_tags_in_db(&db, deployment_path, &["writing".to_string()]).unwrap();
+
+        let stored_path = db
+            .query_row("SELECT skill_path FROM skill_tags", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap();
+        assert_eq!(stored_path, library_path.to_string_lossy());
+    }
 }

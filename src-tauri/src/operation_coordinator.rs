@@ -4,11 +4,13 @@ use crate::managed_installation::{
     backfill_managed_roots, find_managed_installation, list_managed_roots,
     prune_missing_managed_installations, record_managed_root, register_managed_root,
 };
+use crate::skill_library::{copy_origin_to_deployment, resolve_library_path};
 use crate::skill_origin::{
     persist_prepared_skill_probe, prepare_skill_probe, prepare_skill_probes, SkillSyncInfo,
 };
 use crate::skill_reconcile::recover_pending_transactions;
 use rusqlite::Connection;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{LockResult, Mutex, MutexGuard};
 
@@ -73,13 +75,19 @@ pub(crate) fn is_known_skill_path(db: &Connection, path: &Path) -> Result<bool, 
 
 pub(crate) fn check_skill_update(path: &Path, force: bool) -> Result<SkillSyncInfo, String> {
     let initial_db = open_db_connection()?;
-    ensure_known_skill_path(&initial_db, path)?;
-    let prepared = prepare_skill_probe(&initial_db, path, force)?;
+    let requested_path = path.to_path_buf();
+    let probe_path = resolve_probe_path(&initial_db, &requested_path)?;
+    let prepared = prepare_skill_probe(&initial_db, &probe_path, force)?;
     drop(initial_db);
 
     run_exclusive_operation(move |db| {
+        ensure_known_skill_path(db, &requested_path)?;
         ensure_known_skill_path(db, prepared.path())?;
-        persist_prepared_skill_probe(db, prepared)
+        let info = persist_prepared_skill_probe(db, prepared)?;
+        if requested_path != probe_path {
+            copy_origin_to_deployment(db, &probe_path, &requested_path)?;
+        }
+        Ok(info)
     })
 }
 
@@ -88,38 +96,64 @@ pub(crate) fn check_skill_updates(
     force: bool,
 ) -> Result<Vec<SkillCheckResult>, String> {
     let initial_db = open_db_connection()?;
-    let mut valid_paths = Vec::new();
+    let mut valid_requests = Vec::new();
     let mut invalid = Vec::new();
     for path in paths {
-        match is_known_skill_path(&initial_db, path) {
-            Ok(true) => valid_paths.push(path.clone()),
-            Ok(false) => invalid.push((
-                path.to_string_lossy().to_string(),
-                Err("只允许检查已发现或受管的 Skill".to_string()),
-            )),
+        match resolve_probe_path(&initial_db, path) {
+            Ok(probe_path) => valid_requests.push((path.clone(), probe_path)),
             Err(error) => invalid.push((
                 path.to_string_lossy().to_string(),
                 Err(format!("检查受管路径失败: {}", error)),
             )),
         }
     }
-    let prepared = prepare_skill_probes(&initial_db, &valid_paths, force);
+    let mut seen = HashSet::new();
+    let probe_paths = valid_requests
+        .iter()
+        .map(|(_, probe_path)| probe_path.clone())
+        .filter(|probe_path| seen.insert(probe_path.clone()))
+        .collect::<Vec<_>>();
+    let prepared = prepare_skill_probes(&initial_db, &probe_paths, force);
     drop(initial_db);
 
     run_exclusive_operation(move |db| {
-        let mut results = prepared
+        let probe_results = prepared
             .into_iter()
             .map(|(path, result)| {
                 let result = result.and_then(|prepared| {
                     ensure_known_skill_path(db, prepared.path())?;
                     persist_prepared_skill_probe(db, prepared)
                 });
-                (path, result)
+                (PathBuf::from(path), result)
+            })
+            .collect::<HashMap<_, _>>();
+        let mut results = valid_requests
+            .into_iter()
+            .map(|(requested_path, probe_path)| {
+                let result = probe_results
+                    .get(&probe_path)
+                    .cloned()
+                    .unwrap_or_else(|| Err("未生成 Skill 检查结果".to_string()));
+                let result = result.and_then(|info| {
+                    ensure_known_skill_path(db, &requested_path)?;
+                    if requested_path != probe_path {
+                        copy_origin_to_deployment(db, &probe_path, &requested_path)?;
+                    }
+                    Ok(info)
+                });
+                (requested_path.to_string_lossy().to_string(), result)
             })
             .collect::<Vec<_>>();
         results.extend(invalid);
         Ok(results)
     })
+}
+
+fn resolve_probe_path(db: &Connection, requested_path: &Path) -> Result<PathBuf, String> {
+    ensure_known_skill_path(db, requested_path)?;
+    let probe_path = resolve_library_path(db, requested_path)?;
+    ensure_known_skill_path(db, &probe_path)?;
+    Ok(probe_path)
 }
 
 pub(crate) fn run_startup_maintenance(db: &Connection) -> Result<StartupMaintenanceReport, String> {
@@ -283,6 +317,66 @@ mod tests {
         .unwrap();
 
         assert!(!is_known_skill_path(&db, &path).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_probe_resolves_deployment_to_library_copy() {
+        let db = startup_database();
+        db.execute_batch(
+            "CREATE TABLE library_skills (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, library_path TEXT NOT NULL UNIQUE,
+                source TEXT NOT NULL, source_kind TEXT NOT NULL, resolved_ref TEXT,
+                content_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+             );
+             CREATE TABLE skill_deployments (
+                target_path TEXT PRIMARY KEY, skill_id TEXT NOT NULL, library_path TEXT NOT NULL,
+                assistant TEXT NOT NULL, scope TEXT NOT NULL, project_path TEXT,
+                deploy_mode TEXT NOT NULL, deployed_at TEXT NOT NULL
+             );",
+        )
+        .unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "skillmate-update-probe-{}-{}",
+            std::process::id(),
+            crate::app_core::generate_id()
+        ));
+        let library_path = root.join("library/writer");
+        let deployment_path = root.join("deployments/writer");
+        fs::create_dir_all(&library_path).unwrap();
+        fs::create_dir_all(deployment_path.parent().unwrap()).unwrap();
+        fs::write(library_path.join("SKILL.md"), "writer").unwrap();
+        std::os::unix::fs::symlink(&library_path, &deployment_path).unwrap();
+        for (path, assistant, scope) in [
+            (
+                &library_path,
+                crate::managed_state::LIBRARY_OWNER_NAME,
+                "library",
+            ),
+            (&deployment_path, "Codex", "global"),
+        ] {
+            db.execute(
+                "INSERT INTO managed_installations VALUES (?, ?, '/tmp/writer', 'git', 'writer',
+                 ?, 'copy', NULL, NULL, NULL, NULL, 'hash', 'now')",
+                rusqlite::params![path.to_string_lossy().to_string(), assistant, scope],
+            )
+            .unwrap();
+        }
+        db.execute(
+            "INSERT INTO skill_deployments VALUES (?, 'skill-1', ?, 'Codex', 'global', NULL,
+             'symlink', 'now')",
+            rusqlite::params![
+                deployment_path.to_string_lossy().to_string(),
+                library_path.to_string_lossy().to_string()
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolve_probe_path(&db, &deployment_path).unwrap(),
+            library_path
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

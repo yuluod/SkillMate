@@ -3,8 +3,12 @@ use crate::skill_structure::{
     SkillStructureInfo,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+
+const MAX_DISCOVERY_DEPTH: usize = 4;
+const MAX_DISCOVERY_DIRECTORIES: usize = 4_096;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
 pub struct PackageDetection {
@@ -143,6 +147,7 @@ impl SkillPackageSource {
 struct CollectedSkills {
     skills: Vec<DetectedSkill>,
     unsafe_paths: bool,
+    scan_limited: bool,
 }
 
 pub fn detect_skill_package(path: &Path) -> PackageDetection {
@@ -204,7 +209,12 @@ pub fn detect_skill_package(path: &Path) -> PackageDetection {
             }
             .to_string(),
             detected_skills: skills,
-            warnings: package_detection_warnings(has_bundle_signal, false, collected.unsafe_paths),
+            warnings: package_detection_warnings(
+                has_bundle_signal,
+                false,
+                collected.unsafe_paths,
+                collected.scan_limited,
+            ),
             needs_model: false,
         };
     }
@@ -218,12 +228,22 @@ pub fn detect_skill_package(path: &Path) -> PackageDetection {
             }
             .to_string(),
             detected_skills: skills,
-            warnings: package_detection_warnings(has_bundle_signal, false, collected.unsafe_paths),
+            warnings: package_detection_warnings(
+                has_bundle_signal,
+                false,
+                collected.unsafe_paths,
+                collected.scan_limited,
+            ),
             needs_model: false,
         };
     }
 
-    let mut warnings = package_detection_warnings(has_bundle_signal, true, collected.unsafe_paths);
+    let mut warnings = package_detection_warnings(
+        has_bundle_signal,
+        true,
+        collected.unsafe_paths,
+        collected.scan_limited,
+    );
     if root_structure.structure_status == "partial" {
         let Ok(resolved) = source.resolve_relative(Path::new(".")) else {
             return PackageDetection {
@@ -255,6 +275,10 @@ pub fn detect_skill_package(path: &Path) -> PackageDetection {
 }
 
 fn collect_child_skills(source: &SkillPackageSource, include_legacy: bool) -> CollectedSkills {
+    if !include_legacy {
+        return collect_standard_skills(source);
+    }
+
     let mut skills = Vec::new();
     let mut unsafe_paths = false;
     let root = &source.canonical_root;
@@ -303,7 +327,68 @@ fn collect_child_skills(source: &SkillPackageSource, include_legacy: bool) -> Co
     CollectedSkills {
         skills,
         unsafe_paths,
+        scan_limited: false,
     }
+}
+
+fn collect_standard_skills(source: &SkillPackageSource) -> CollectedSkills {
+    let mut skills = Vec::new();
+    let mut unsafe_paths = false;
+    let mut scan_limited = false;
+    let mut scanned_directories = 0usize;
+    let mut queue = VecDeque::new();
+    for candidate in safe_immediate_dirs(source, &source.canonical_root, &mut unsafe_paths) {
+        queue.push_back((candidate, 1usize));
+    }
+
+    while let Some((candidate, depth)) = queue.pop_front() {
+        scanned_directories += 1;
+        if scanned_directories > MAX_DISCOVERY_DIRECTORIES {
+            scan_limited = true;
+            break;
+        }
+        if has_standard_entry_document(&candidate) {
+            let structure = analyze_skill_structure(&candidate);
+            match source.relative_path(&candidate) {
+                Ok(relative_path) => {
+                    skills.push(detected_skill(relative_path, &candidate, structure));
+                }
+                Err(_) => unsafe_paths = true,
+            }
+            continue;
+        }
+        if should_skip_discovery_children(&candidate) {
+            continue;
+        }
+        if depth >= MAX_DISCOVERY_DEPTH {
+            if !safe_immediate_dirs(source, &candidate, &mut unsafe_paths).is_empty() {
+                scan_limited = true;
+            }
+            continue;
+        }
+        for child in safe_immediate_dirs(source, &candidate, &mut unsafe_paths) {
+            queue.push_back((child, depth + 1));
+        }
+    }
+
+    skills.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    skills.dedup_by(|left, right| left.relative_path == right.relative_path);
+    CollectedSkills {
+        skills,
+        unsafe_paths,
+        scan_limited,
+    }
+}
+
+fn should_skip_discovery_children(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            matches!(
+                name,
+                ".git" | ".hg" | ".svn" | "node_modules" | "target" | "dist" | "build"
+            )
+        })
 }
 
 fn safe_immediate_dirs(
@@ -403,13 +488,16 @@ fn package_detection_warnings(
     has_bundle_signal: bool,
     no_skills: bool,
     unsafe_paths: bool,
+    scan_limited: bool,
 ) -> Vec<String> {
-    let warnings = package_warnings(has_bundle_signal, no_skills);
+    let mut warnings = package_warnings(has_bundle_signal, no_skills);
     if unsafe_paths {
-        with_unsafe_path_warning(warnings)
-    } else {
-        warnings
+        warnings = with_unsafe_path_warning(warnings);
     }
+    if scan_limited {
+        warnings.push("scan_limit_reached".to_string());
+    }
+    warnings
 }
 
 fn with_unsafe_path_warning(mut warnings: Vec<String>) -> Vec<String> {
@@ -526,6 +614,59 @@ mod tests {
             detection.detected_skills[0].relative_path,
             "skills/writing/writer"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn detects_skills_nested_beneath_plugin_directories() {
+        let root = test_dir("plugin-layout");
+        let review = root.join("engineering/skills/code-review");
+        let contract = root.join("legal/skills/review-contract");
+        fs::create_dir_all(&review).unwrap();
+        fs::create_dir_all(&contract).unwrap();
+        fs::write(
+            review.join("SKILL.md"),
+            "---\nname: code-review\ndescription: Review code\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            contract.join("SKILL.md"),
+            "---\nname: review-contract\ndescription: Review contracts\n---\n",
+        )
+        .unwrap();
+
+        let detection = detect_skill_package(&root);
+
+        assert_eq!(detection.package_kind, "multi_skill");
+        assert_eq!(detection.detected_skills.len(), 2);
+        assert!(detection
+            .detected_skills
+            .iter()
+            .any(|skill| skill.relative_path == "engineering/skills/code-review"));
+        assert!(detection
+            .detected_skills
+            .iter()
+            .any(|skill| skill.relative_path == "legal/skills/review-contract"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reports_when_skill_discovery_reaches_the_depth_limit() {
+        let root = test_dir("depth-limit");
+        let skill = root.join("one/two/three/four/five");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: too-deep\ndescription: Too deep\n---\n",
+        )
+        .unwrap();
+
+        let detection = detect_skill_package(&root);
+
+        assert!(detection.detected_skills.is_empty());
+        assert!(detection
+            .warnings
+            .contains(&"scan_limit_reached".to_string()));
         let _ = fs::remove_dir_all(root);
     }
 

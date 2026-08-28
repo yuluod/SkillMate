@@ -17,6 +17,7 @@ mod skill_drift;
 mod skill_install;
 mod skill_install_source;
 mod skill_inventory;
+mod skill_library;
 mod skill_model;
 mod skill_orchestration;
 mod skill_origin;
@@ -66,22 +67,27 @@ use scenario_manifest::{
 };
 use serde::{Deserialize, Serialize};
 use skill_install::{
-    install_local_package_at_digest, install_local_symlink_package_at_digest,
-    preview_install_source, preview_local_symlink_install, seal_install_preview, InstallPreview,
-    InstallResult, PreparedGitInstall,
+    install_selected_local_package_at_digest, installable_content_fingerprint,
+    preview_selected_local_install_source, seal_install_preview, InstallPreview, InstallResult,
+    PreparedGitInstall,
 };
 use skill_install_source::{
     detect_install_source_rules, install_target_name, is_git_install_source, InstallDetection,
 };
 use skill_inventory::{collect_known_skill_paths, scan_all_assistants};
+use skill_library::{
+    add_deployment_to_preview, copy_origin_to_deployment, deploy_library_skill,
+    is_library_skill_path, library_root, library_skill_id, refresh_deployment_origins,
+    register_deployment, register_library_skill, remove_deployment, resolve_library_path,
+    reuse_library_preview, scan_unassigned_library_skills,
+};
 use skill_orchestration::{
     apply_manifest_with_plan, apply_profile_with_plan, build_current_manifest,
     build_project_manifest, preview_manifest, preview_profile, rollback_profile,
     save_current_profile,
 };
 use skill_origin::{
-    load_origin_meta, save_installed_git_meta as save_git_origin_meta, sync_info_json,
-    update_skill_from_upstream,
+    save_installed_git_meta as save_git_origin_meta, sync_info_json, update_skill_from_upstream,
 };
 use skill_package::PackageDetection;
 use skill_profile::{read_skill_profiles, SkillSetProfilePreview, SkillSetProfileStore};
@@ -208,6 +214,7 @@ pub struct AIAssistant {
     pub skills: Vec<Skill>,
     pub diagnostics: Vec<SkillScanDiagnostic>,
     pub exists: bool,
+    pub supports_project_skills: bool,
 }
 
 #[tauri::command]
@@ -218,6 +225,7 @@ async fn export_library(path: String) -> Result<String, String> {
                 get_all_tags_from_db(db)?,
                 get_scenarios_from_db(db)?,
                 scan_all_assistants(db)?,
+                scan_unassigned_library_skills(db)?,
             );
             write_library_export(path, &export)
         })
@@ -418,6 +426,11 @@ async fn get_all_assistants() -> Result<Vec<AIAssistant>, String> {
 }
 
 #[tauri::command]
+async fn get_library_skills() -> Result<Vec<Skill>, String> {
+    run_blocking_task(|| run_exclusive_operation(scan_unassigned_library_skills)).await?
+}
+
+#[tauri::command]
 fn get_git_backup(state: tauri::State<'_, AppState>) -> Result<GitBackup, String> {
     let db = lock_app_db(&state)?;
     git_backup::load(&db)
@@ -477,21 +490,29 @@ async fn preview_install_skill(
     assistant_name: String,
     install_mode: Option<String>,
     project_path: Option<String>,
+    selected_skill_paths: Option<Vec<String>>,
+    preferred_skill_id: Option<String>,
 ) -> InstallPreview {
     let task_package = package.clone();
     let task_source = source.clone();
     let task_assistant_name = assistant_name.clone();
     let task_install_mode = install_mode.clone();
     let task_project_path = project_path.clone();
+    let task_selected_skill_paths = selected_skill_paths.clone();
+    let task_preferred_skill_id = preferred_skill_id.clone();
     match run_blocking_task(move || {
         let mode = task_install_mode.unwrap_or_else(|| "copy".to_string());
         let policy = open_db_connection().and_then(|db| load_install_policy(&db));
         build_install_request_preview(
-            &task_package,
-            &task_source,
-            &task_assistant_name,
-            &mode,
-            task_project_path.as_deref(),
+            InstallPreviewRequest {
+                package: &task_package,
+                source: &task_source,
+                assistant_name: &task_assistant_name,
+                mode: &mode,
+                project_path: task_project_path.as_deref(),
+                selected_skill_paths: task_selected_skill_paths.as_deref(),
+                preferred_skill_id: task_preferred_skill_id.as_deref(),
+            },
             policy.as_ref().map_err(Clone::clone),
         )
     })
@@ -517,19 +538,52 @@ async fn preview_install_skill(
     }
 }
 
+struct InstallPreviewRequest<'a> {
+    package: &'a str,
+    source: &'a str,
+    assistant_name: &'a str,
+    mode: &'a str,
+    project_path: Option<&'a str>,
+    selected_skill_paths: Option<&'a [String]>,
+    preferred_skill_id: Option<&'a str>,
+}
+
 fn build_install_request_preview(
-    package: &str,
-    source: &str,
-    assistant_name: &str,
-    mode: &str,
-    project_path: Option<&str>,
+    request: InstallPreviewRequest<'_>,
     policy: Result<&InstallPolicyConfig, String>,
 ) -> InstallPreview {
-    let target_root = match install_target_root(assistant_name, mode, project_path) {
+    let InstallPreviewRequest {
+        package,
+        source,
+        assistant_name,
+        mode,
+        project_path,
+        selected_skill_paths,
+        preferred_skill_id,
+    } = request;
+    let deployment_root = if mode == "library" {
+        None
+    } else {
+        match install_target_root(assistant_name, mode, project_path) {
+            Ok(path) => Some(path),
+            Err(err) => {
+                return finalize_install_request_preview(
+                    install_preview_error(err, source.to_string(), String::new()),
+                    package,
+                    source,
+                    assistant_name,
+                    mode,
+                    project_path,
+                    policy,
+                );
+            }
+        }
+    };
+    let library_root = match library_root() {
         Ok(path) => path,
-        Err(err) => {
+        Err(error) => {
             return finalize_install_request_preview(
-                install_preview_error(err, source.to_string(), String::new()),
+                install_preview_error(error, source.to_string(), String::new()),
                 package,
                 source,
                 assistant_name,
@@ -539,19 +593,42 @@ fn build_install_request_preview(
             );
         }
     };
-    let preview = if mode == "symlink" {
-        if source != "local" {
-            install_preview_error(
-                "项目软连接安装仅支持本地目录来源",
-                source.to_string(),
-                target_root.to_string_lossy().to_string(),
-            )
-        } else {
-            let skill_name = install_target_name(package, source).unwrap_or_default();
-            preview_local_symlink_install(&expand_path(package.trim()), &target_root, &skill_name)
+    let preview = if is_git_install_source(source) {
+        let skill_name = install_target_name(package, source).unwrap_or_default();
+        match PreparedGitInstall::prepare_selected(
+            package,
+            selected_skill_paths,
+            preferred_skill_id,
+        ) {
+            Ok(prepared) => prepared.preview(&library_root, &skill_name),
+            Err(error) => {
+                let mut preview = install_preview_error(
+                    error,
+                    "git".to_string(),
+                    library_root.join(&skill_name).to_string_lossy().to_string(),
+                );
+                preview.target_name = skill_name;
+                preview
+            }
         }
     } else {
-        preview_install_source(package, source, &target_root)
+        let preview =
+            preview_selected_local_install_source(package, &library_root, selected_skill_paths);
+        if source == "local" && is_library_skill_path(&expand_path(package.trim())) {
+            reuse_library_preview(preview)
+        } else {
+            preview
+        }
+    };
+    let preview = if let Some(deployment_root) = deployment_root.as_deref() {
+        let scope = if mode == "symlink" {
+            "project"
+        } else {
+            "global"
+        };
+        add_deployment_to_preview(preview, deployment_root, assistant_name, scope, false)
+    } else {
+        library_only_preview(preview)
     };
     finalize_install_request_preview(
         preview,
@@ -562,6 +639,16 @@ fn build_install_request_preview(
         project_path,
         policy,
     )
+}
+
+fn library_only_preview(mut preview: InstallPreview) -> InstallPreview {
+    if preview.can_apply {
+        preview.message = format!(
+            "将 {} 个 Skill 添加到 SkillMate 库",
+            preview.package_detection.detected_skills.len()
+        );
+    }
+    preview
 }
 
 fn finalize_install_request_preview(
@@ -621,78 +708,105 @@ fn apply_policy_to_preview(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn install_skill(
     package: String,
     source: String,
     assistant_name: String,
     install_mode: Option<String>,
     project_path: Option<String>,
+    selected_skill_paths: Option<Vec<String>>,
+    preferred_skill_id: Option<String>,
     plan_token: Option<String>,
 ) -> InstallResult {
-    match run_blocking_task(move || {
-        install_skill_blocking(
-            package,
-            source,
-            assistant_name,
-            install_mode,
-            project_path,
-            plan_token,
-        )
-    })
-    .await
-    {
+    let request = InstallSkillRequest {
+        package,
+        source,
+        assistant_name,
+        install_mode,
+        project_path,
+        selected_skill_paths,
+        preferred_skill_id,
+        plan_token,
+    };
+    match run_blocking_task(move || install_skill_blocking(request)).await {
         Ok(result) => result,
         Err(error) => install_result(false, "安装任务异常终止", error, None),
     }
 }
 
-fn install_skill_blocking(
+struct InstallSkillRequest {
     package: String,
     source: String,
     assistant_name: String,
     install_mode: Option<String>,
     project_path: Option<String>,
+    selected_skill_paths: Option<Vec<String>>,
+    preferred_skill_id: Option<String>,
     plan_token: Option<String>,
-) -> InstallResult {
-    match run_exclusive_operation(move |db| {
-        Ok(install_skill_exclusive(
-            db,
-            package,
-            source,
-            assistant_name,
-            install_mode,
-            project_path,
-            plan_token,
-        ))
-    }) {
+}
+
+fn install_skill_blocking(request: InstallSkillRequest) -> InstallResult {
+    match run_exclusive_operation(move |db| Ok(install_skill_exclusive(db, request))) {
         Ok(result) => result,
         Err(error) => install_result(false, error, "", None),
     }
 }
 
-fn install_skill_exclusive(
-    db: &Connection,
-    package: String,
-    source: String,
-    assistant_name: String,
-    install_mode: Option<String>,
-    project_path: Option<String>,
-    plan_token: Option<String>,
-) -> InstallResult {
+fn install_skill_exclusive(db: &Connection, request: InstallSkillRequest) -> InstallResult {
+    let InstallSkillRequest {
+        package,
+        source,
+        assistant_name,
+        install_mode,
+        project_path,
+        selected_skill_paths,
+        preferred_skill_id,
+        plan_token,
+    } = request;
     let mode = install_mode.unwrap_or_else(|| "copy".to_string());
+    let library_only = mode == "library";
+    let reuse_existing_library =
+        source == "local" && is_library_skill_path(&expand_path(package.trim()));
     let policy = load_install_policy(db);
-    let target_root = match install_target_root(&assistant_name, &mode, project_path.as_deref()) {
+    let deployment_root = if library_only {
+        None
+    } else {
+        match install_target_root(&assistant_name, &mode, project_path.as_deref()) {
+            Ok(path) => Some(path),
+            Err(err) => return install_result(false, err, "", None),
+        }
+    };
+    let library_root = match library_root() {
         Ok(path) => path,
-        Err(err) => return install_result(false, err, "", None),
+        Err(error) => return install_result(false, error, "", None),
     };
     let skill_name = match install_target_name(&package, &source) {
         Ok(name) => name,
         Err(err) => return install_result(false, err, "", None),
     };
-    let (prepared_git, current_preview) = if mode != "symlink" && is_git_install_source(&source) {
-        match PreparedGitInstall::prepare(&package) {
+    let (prepared_git, current_preview) = if is_git_install_source(&source) {
+        match PreparedGitInstall::prepare_selected(
+            &package,
+            selected_skill_paths.as_deref(),
+            preferred_skill_id.as_deref(),
+        ) {
             Ok(prepared) => {
-                let preview = prepared.preview(&target_root, &skill_name);
+                let preview = if let Some(deployment_root) = deployment_root.as_deref() {
+                    add_deployment_to_preview(
+                        prepared.preview(&library_root, &skill_name),
+                        deployment_root,
+                        &assistant_name,
+                        if mode == "symlink" {
+                            "project"
+                        } else {
+                            "global"
+                        },
+                        false,
+                    )
+                } else {
+                    library_only_preview(prepared.preview(&library_root, &skill_name))
+                };
                 (
                     Some(prepared),
                     finalize_install_request_preview(
@@ -710,7 +824,7 @@ fn install_skill_exclusive(
                 let mut preview = install_preview_error(
                     error,
                     "git".to_string(),
-                    target_root.join(&skill_name).to_string_lossy().to_string(),
+                    library_root.join(&skill_name).to_string_lossy().to_string(),
                 );
                 preview.target_name = skill_name.clone();
                 (
@@ -731,11 +845,15 @@ fn install_skill_exclusive(
         (
             None,
             build_install_request_preview(
-                &package,
-                &source,
-                &assistant_name,
-                &mode,
-                project_path.as_deref(),
+                InstallPreviewRequest {
+                    package: &package,
+                    source: &source,
+                    assistant_name: &assistant_name,
+                    mode: &mode,
+                    project_path: project_path.as_deref(),
+                    selected_skill_paths: selected_skill_paths.as_deref(),
+                    preferred_skill_id: preferred_skill_id.as_deref(),
+                },
                 policy.as_ref().map_err(Clone::clone),
             ),
         )
@@ -746,11 +864,15 @@ fn install_skill_exclusive(
     if !current_preview.can_apply {
         return install_result(false, current_preview.message, "", None);
     }
-    if let Err(err) = fs::create_dir_all(&target_root) {
-        return install_result(false, format!("无法创建目标目录: {}", err), "", None);
+    for root in std::iter::once(&library_root).chain(deployment_root.iter()) {
+        if let Err(err) = fs::create_dir_all(root) {
+            return install_result(false, format!("无法创建目标目录: {}", err), "", None);
+        }
     }
 
-    let scope = if mode == "symlink" {
+    let scope = if library_only {
+        "library"
+    } else if mode == "symlink" {
         "project"
     } else {
         "global"
@@ -758,7 +880,7 @@ fn install_skill_exclusive(
     let planned_targets = current_preview
         .target_actions
         .iter()
-        .filter(|action| matches!(action.action.as_str(), "copy" | "symlink"))
+        .filter(|action| matches!(action.action.as_str(), "copy" | "keep" | "symlink"))
         .map(|action| PathBuf::from(&action.target))
         .collect::<Vec<_>>();
     if planned_targets.is_empty() {
@@ -769,68 +891,112 @@ fn install_skill_exclusive(
         Err(error) => return install_result(false, "无法建立安装事务", error, None),
     };
 
-    let operation = if mode == "symlink" {
-        if source != "local" {
-            return install_result(false, "项目软连接安装仅支持本地目录来源", "", None);
-        }
-        let source_path = expand_path(package.trim());
-        install_local_symlink_package_at_digest(
-            &source_path,
-            &target_root,
-            &skill_name,
-            &assistant_name,
-            Some(&current_preview.source_digest),
-        )
-        .map(|structure| {
-            (
-                format!("已软连接安装到 {}", target_root.to_string_lossy()),
-                structure,
-            )
-        })
-    } else {
-        match source.as_str() {
-            source_kind if is_git_install_source(source_kind) => prepared_git
-                .ok_or_else(|| "Git 安装来源尚未准备完成".to_string())
-                .and_then(|prepared| {
-                    prepared.apply(
-                        &target_root,
-                        &skill_name,
-                        &assistant_name,
-                        Some(&current_preview.resolved_ref),
-                        |target_path, spec, outcome| {
-                            save_git_origin_meta(db, target_path, spec, outcome)
-                        },
-                    )
-                })
-                .map(|outcome| (format!("已安装到 {}", assistant_name), outcome.structure)),
-            "local" => {
-                let source_path = expand_path(package.trim());
-                install_local_package_at_digest(
-                    &source_path,
-                    &target_root,
+    let operation = match source.as_str() {
+        source_kind if is_git_install_source(source_kind) => prepared_git
+            .ok_or_else(|| "Git 安装来源尚未准备完成".to_string())
+            .and_then(|prepared| {
+                prepared.apply(
+                    &library_root,
                     &skill_name,
-                    &assistant_name,
-                    Some(&current_preview.source_digest),
+                    "SkillMate",
+                    Some(&current_preview.resolved_ref),
+                    |target_path, spec, outcome| {
+                        save_git_origin_meta(db, target_path, spec, outcome)
+                    },
                 )
-                .map(|structure| (format!("已安装到 {}", assistant_name), structure))
-            }
-            _ => Err("当前版本仅支持 Git 仓库和本地目录安装".to_string()),
+            })
+            .map(|outcome| outcome.structure),
+        "local" if reuse_existing_library => {
+            let source_path = expand_path(package.trim());
+            installable_content_fingerprint(&source_path).and_then(|digest| {
+                if digest != current_preview.source_digest {
+                    return Err("SkillMate 库内容在预览后发生变化，请重新检查结构".to_string());
+                }
+                let structure = skill_structure::analyze_skill_structure(&source_path);
+                if structure.structure_status == "complete" {
+                    Ok(structure)
+                } else {
+                    Err("SkillMate 库中的 Skill 结构不再有效".to_string())
+                }
+            })
         }
+        "local" => {
+            let source_path = expand_path(package.trim());
+            install_selected_local_package_at_digest(
+                &source_path,
+                &library_root,
+                &skill_name,
+                "SkillMate",
+                Some(&current_preview.source_digest),
+                selected_skill_paths.as_deref(),
+            )
+        }
+        _ => Err("当前版本仅支持 Git 仓库和本地目录安装".to_string()),
     };
 
-    let (message, structure) = match operation {
+    let structure = match operation {
         Ok(result) => result,
         Err(error) => return rollback_install_result(&mut transaction, "安装失败", error),
     };
-    if let Err(error) = finalize_install_registration(
+    let library_paths = current_preview
+        .target_actions
+        .iter()
+        .filter(|action| matches!(action.action.as_str(), "copy" | "keep"))
+        .map(|action| PathBuf::from(&action.target))
+        .collect::<Vec<_>>();
+    let deployment_paths = current_preview
+        .target_actions
+        .iter()
+        .filter(|action| action.action == "symlink")
+        .map(|action| PathBuf::from(&action.target))
+        .collect::<Vec<_>>();
+    if (!library_only && library_paths.len() != deployment_paths.len())
+        || (library_only && !deployment_paths.is_empty())
+    {
+        return rollback_install_result(
+            &mut transaction,
+            "安装失败",
+            "SkillMate 库与启用计划不一致".to_string(),
+        );
+    }
+    let registration = finalize_library_install_registration(
         db,
-        &target_root,
+        &package,
+        &source,
+        &assistant_name,
         scope,
         project_path.as_deref(),
-        &planned_targets,
-    ) {
+        &library_root,
+        deployment_root.as_deref(),
+        &library_paths,
+        &deployment_paths,
+        current_preview.resolved_ref.as_str(),
+        reuse_existing_library,
+    );
+    if let Err(error) = registration {
         return rollback_install_result(&mut transaction, "记录受管状态失败", error);
     }
+    let message = if library_only {
+        "已添加到 SkillMate 库".to_string()
+    } else if reuse_existing_library {
+        format!(
+            "已在 {} 中启用",
+            if scope == "project" {
+                "当前项目"
+            } else {
+                &assistant_name
+            }
+        )
+    } else {
+        format!(
+            "已添加到 SkillMate，并在 {} 中启用",
+            if scope == "project" {
+                "当前项目"
+            } else {
+                &assistant_name
+            }
+        )
+    };
     match transaction.commit() {
         Ok(None) => install_result(true, message, "", Some(structure)),
         Ok(Some(warning)) => install_result(true, message, warning, Some(structure)),
@@ -838,20 +1004,68 @@ fn install_skill_exclusive(
     }
 }
 
-fn finalize_install_registration(
+#[allow(clippy::too_many_arguments)]
+fn finalize_library_install_registration(
     db: &Connection,
-    target_root: &Path,
+    package: &str,
+    source: &str,
+    assistant_name: &str,
     scope: &str,
     project_path: Option<&str>,
-    targets: &[PathBuf],
+    library_root: &Path,
+    deployment_root: Option<&Path>,
+    library_paths: &[PathBuf],
+    deployment_paths: &[PathBuf],
+    resolved_ref: &str,
+    reuse_existing_library: bool,
 ) -> Result<(), String> {
-    for path in targets {
-        record_managed_path(db, target_root, path, scope, project_path)?;
-        let resolved_ref = load_origin_meta(db, &path.to_string_lossy())?
-            .map(|meta| meta.installed_ref)
-            .filter(|value| !value.trim().is_empty());
-        if !refresh_managed_installation(db, path, resolved_ref.as_deref())? {
-            return Err(format!("未能刷新受管安装记录: {}", path.to_string_lossy()));
+    let mut skill_ids = Vec::with_capacity(library_paths.len());
+    for library_path in library_paths {
+        record_managed_path(db, library_root, library_path, "library", None)?;
+        let skill_id = if reuse_existing_library {
+            library_skill_id(db, library_path)?
+        } else {
+            register_library_skill(
+                db,
+                library_path,
+                package,
+                source,
+                (!resolved_ref.trim().is_empty()).then_some(resolved_ref),
+            )?
+        };
+        skill_ids.push(skill_id);
+    }
+    if deployment_paths.is_empty() {
+        return Ok(());
+    }
+    let deployment_root = deployment_root.ok_or_else(|| "启用计划缺少目标目录".to_string())?;
+    for ((library_path, skill_id), deployment_path) in
+        library_paths.iter().zip(skill_ids).zip(deployment_paths)
+    {
+        let deploy_mode = deploy_library_skill(library_path, deployment_path)?;
+        managed_state::mark_managed_skill(
+            deployment_root,
+            assistant_name,
+            deployment_path,
+            &format!("symlink:{}", library_path.to_string_lossy()),
+        )?;
+        record_managed_path(db, deployment_root, deployment_path, scope, project_path)?;
+        register_deployment(
+            db,
+            &skill_id,
+            library_path,
+            deployment_path,
+            assistant_name,
+            scope,
+            project_path,
+            &deploy_mode,
+        )?;
+        copy_origin_to_deployment(db, library_path, deployment_path)?;
+        if !refresh_managed_installation(db, deployment_path, None)? {
+            return Err(format!(
+                "未能刷新启用记录: {}",
+                deployment_path.to_string_lossy()
+            ));
         }
     }
     Ok(())
@@ -922,6 +1136,8 @@ fn install_preview_error(
         plan_token: String::new(),
         source_digest: String::new(),
         resolved_ref: String::new(),
+        available_skills: vec![],
+        selection_required: false,
     }
 }
 
@@ -954,6 +1170,7 @@ async fn delete_skill(path: String) -> Result<String, String> {
                     )),
                 };
             }
+            remove_deployment(db, &p)?;
             match transaction.commit() {
                 Ok(None) => Ok("已删除".to_string()),
                 Ok(Some(warning)) => Ok(format!("已删除；{}", warning)),
@@ -1057,7 +1274,7 @@ async fn unlink_symlink_skill(path: String) -> Result<String, String> {
             }
             let metadata = fs::symlink_metadata(&p).map_err(|e| e.to_string())?;
             if !metadata.file_type().is_symlink() {
-                return Err("目标不是软连接".to_string());
+                return Err("当前启用位置不是可解除的连接".to_string());
             }
             let registry_managed = find_managed_installation(db, &p)?.filter(|installation| {
                 installation.skill.install_mode.as_deref() == Some("symlink")
@@ -1068,7 +1285,7 @@ async fn unlink_symlink_skill(path: String) -> Result<String, String> {
                 return Err("不允许解除非受管路径".to_string());
             }
             if !is_explicitly_managed(db, &p)? {
-                return Err("只允许解除 SkillMate 创建的软连接".to_string());
+                return Err("只允许停用 SkillMate 创建的启用位置".to_string());
             }
             verify_managed_content_unchanged(db, &p)?;
             let mut transaction =
@@ -1082,8 +1299,8 @@ async fn unlink_symlink_skill(path: String) -> Result<String, String> {
                 };
             }
             match transaction.commit() {
-                Ok(None) => Ok("已解除软连接".to_string()),
-                Ok(Some(warning)) => Ok(format!("已解除软连接；{}", warning)),
+                Ok(None) => Ok("已停用".to_string()),
+                Ok(Some(warning)) => Ok(format!("已停用；{}", warning)),
                 Err(error) => Err(error),
             }
         })
@@ -1219,14 +1436,17 @@ async fn update_from_upstream(path: String) -> Result<String, String> {
     run_blocking_task(move || {
         run_exclusive_operation(|db| {
             let p = expand_path(path.trim());
-            if !is_known_skill_path(db, &p)? {
+            let library_path = resolve_library_path(db, &p)?;
+            if !is_known_skill_path(db, &p)? && !is_known_skill_path(db, &library_path)? {
                 return Err("只允许更新已发现或受管的 Skill".to_string());
             }
-            if !is_explicitly_managed(db, &p)? {
+            if !is_explicitly_managed(db, &library_path)? {
                 return Err("只允许更新 SkillMate 管理的 Git 快照".to_string());
             }
-            verify_managed_content_unchanged(db, &p)?;
-            update_skill_from_upstream(db, &p)
+            verify_managed_content_unchanged(db, &library_path)?;
+            let result = update_skill_from_upstream(db, &library_path)?;
+            refresh_deployment_origins(db, &library_path)?;
+            Ok(result)
         })
     })
     .await?
@@ -1397,6 +1617,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_all_assistants,
+            get_library_skills,
             get_all_tags,
             add_tag,
             update_skill_tags,
@@ -1497,6 +1718,17 @@ mod tests {
                 root_path TEXT PRIMARY KEY, scope TEXT NOT NULL,
                 project_path TEXT, updated_at TEXT NOT NULL
             );
+            CREATE TABLE library_skills (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, library_path TEXT NOT NULL UNIQUE,
+                source TEXT NOT NULL, source_kind TEXT NOT NULL, resolved_ref TEXT,
+                content_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE skill_deployments (
+                target_path TEXT PRIMARY KEY, skill_id TEXT NOT NULL, library_path TEXT NOT NULL,
+                assistant TEXT NOT NULL, scope TEXT NOT NULL, project_path TEXT,
+                deploy_mode TEXT NOT NULL, deployed_at TEXT NOT NULL,
+                FOREIGN KEY(skill_id) REFERENCES library_skills(id) ON DELETE RESTRICT
+            );
             CREATE TABLE install_policy (
                 id INTEGER PRIMARY KEY, mode TEXT NOT NULL DEFAULT 'off',
                 block_risky_content INTEGER NOT NULL DEFAULT 0,
@@ -1516,6 +1748,7 @@ mod tests {
     fn manifest_apply_is_idempotent_for_managed_project_skill() {
         let db = test_db();
         let root = test_dir("manifest-idempotent");
+        let _library_guard = skill_library::use_test_library_root(root.join("library"));
         let source = root.join("writer");
         let project = root.join("project");
         fs::create_dir_all(&source).unwrap();
@@ -1544,6 +1777,10 @@ mod tests {
         let target = project_skill_root_by_name("Codex", &project)
             .unwrap()
             .join("writer");
+        assert!(fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_symlink());
         db.execute(
             "INSERT INTO skill_tags (skill_path, tags, tags_json) VALUES (?, '', '[\"writing\"]')",
             params![target.to_string_lossy().to_string()],
@@ -1584,9 +1821,53 @@ mod tests {
     }
 
     #[test]
-    fn manifest_reconcile_rejects_drifted_managed_skill() {
+    fn exported_manifest_with_content_hash_keeps_existing_deployment() {
+        let db = test_db();
+        let root = test_dir("manifest-export-idempotent");
+        let _library_guard = skill_library::use_test_library_root(root.join("library"));
+        let source = root.join("writer");
+        let project = root.join("project");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(
+            source.join("SKILL.md"),
+            "---\nname: writer\ndescription: 写作\n---\n",
+        )
+        .unwrap();
+        let initial = SkillMateManifest {
+            version: 2,
+            reconcile: false,
+            skills: vec![SkillDescriptor {
+                assistant: "Codex".to_string(),
+                source: source.to_string_lossy().to_string(),
+                source_kind: "local".to_string(),
+                target_name: Some("writer".to_string()),
+                scope: Some("project".to_string()),
+                install_mode: Some("copy".to_string()),
+                project_path: Some(project.to_string_lossy().to_string()),
+                ..Default::default()
+            }],
+        };
+        apply_manifest(&db, &initial).unwrap();
+        let exported = build_current_manifest(&db).unwrap();
+        assert!(exported.skills[0].content_hash.is_some());
+
+        let preview = preview_manifest(&db, &exported).unwrap();
+        let reapplied = apply_manifest(&db, &exported).unwrap();
+
+        assert_eq!(preview.actions.len(), 1);
+        assert_eq!(preview.actions[0].kind, "keep");
+        assert_eq!(
+            (reapplied.installed, reapplied.removed, reapplied.kept),
+            (0, 0, 1)
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn manifest_reconcile_can_disable_deployment_after_library_content_changes() {
         let db = test_db();
         let root = test_dir("manifest-drift");
+        let _library_guard = skill_library::use_test_library_root(root.join("library"));
         let source = root.join("writer");
         let project = root.join("project");
         fs::create_dir_all(&source).unwrap();
@@ -1621,19 +1902,340 @@ mod tests {
         };
 
         let preview = preview_manifest(&db, &empty).unwrap();
-        let error = apply_manifest(&db, &empty).unwrap_err();
+        let result = apply_manifest(&db, &empty).unwrap();
+        let library_path = root.join("library/writer");
 
-        assert!(!preview.can_apply);
-        assert!(preview
-            .conflicts
-            .iter()
-            .any(|conflict| conflict.reason.contains("偏离安装时状态")));
-        assert!(error.contains("冲突"));
+        assert!(preview.can_apply);
+        assert_eq!(result.removed, 1);
+        assert!(!target.exists());
         assert_eq!(
-            fs::read_to_string(target.join("SKILL.md")).unwrap(),
+            fs::read_to_string(library_path.join("SKILL.md")).unwrap(),
             "user change"
         );
-        assert!(find_managed_installation(&db, &target).unwrap().is_some());
+        assert!(find_managed_installation(&db, &target).unwrap().is_none());
+        assert!(find_managed_installation(&db, &library_path)
+            .unwrap()
+            .is_some());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn deployment_inventory_reports_changes_to_library_content() {
+        let db = test_db();
+        let root = test_dir("deployment-library-drift");
+        let _library_guard = skill_library::use_test_library_root(root.join("library"));
+        let source = root.join("writer");
+        let project = root.join("project");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(
+            source.join("SKILL.md"),
+            "---\nname: writer\ndescription: 写作\n---\n",
+        )
+        .unwrap();
+        let manifest = SkillMateManifest {
+            version: 2,
+            reconcile: false,
+            skills: vec![SkillDescriptor {
+                assistant: "Codex".to_string(),
+                source: source.to_string_lossy().to_string(),
+                source_kind: "local".to_string(),
+                target_name: Some("writer".to_string()),
+                scope: Some("project".to_string()),
+                install_mode: Some("copy".to_string()),
+                project_path: Some(project.to_string_lossy().to_string()),
+                ..Default::default()
+            }],
+        };
+        apply_manifest(&db, &manifest).unwrap();
+        let deployment_path = project_skill_root_by_name("Codex", &project)
+            .unwrap()
+            .join("writer");
+        fs::write(
+            deployment_path.join("SKILL.md"),
+            "---\nname: writer\ndescription: 已修改\n---\n",
+        )
+        .unwrap();
+
+        let assistants = scan_all_assistants(&db).unwrap();
+        let skill = assistants
+            .iter()
+            .flat_map(|assistant| &assistant.skills)
+            .find(|skill| skill.inventory.path == deployment_path.to_string_lossy())
+            .unwrap();
+
+        assert!(skill
+            .structure
+            .structure_warnings
+            .contains(&"managed_content_changed".to_string()));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn adding_to_library_and_enabling_are_independent_operations() {
+        let db = test_db();
+        let root = test_dir("add-then-enable");
+        let library_root = root.join("library");
+        let _library_guard = skill_library::use_test_library_root(library_root.clone());
+        let source = root.join("source/writer");
+        let project = root.join("project");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(
+            source.join("SKILL.md"),
+            "---\nname: writer\ndescription: 写作\n---\n",
+        )
+        .unwrap();
+        let policy = InstallPolicyConfig::default();
+        let source_value = source.to_string_lossy().to_string();
+
+        let add_preview = build_install_request_preview(
+            InstallPreviewRequest {
+                package: &source_value,
+                source: "local",
+                assistant_name: "",
+                mode: "library",
+                project_path: None,
+                selected_skill_paths: None,
+                preferred_skill_id: None,
+            },
+            Ok(&policy),
+        );
+        assert!(add_preview.can_apply, "{}", add_preview.message);
+        assert!(add_preview
+            .target_actions
+            .iter()
+            .all(|action| action.action != "symlink"));
+        let add_result = install_skill_exclusive(
+            &db,
+            InstallSkillRequest {
+                package: source_value,
+                source: "local".to_string(),
+                assistant_name: String::new(),
+                install_mode: Some("library".to_string()),
+                project_path: None,
+                selected_skill_paths: None,
+                preferred_skill_id: None,
+                plan_token: Some(add_preview.plan_token),
+            },
+        );
+        assert!(
+            add_result.success,
+            "{}: {}",
+            add_result.message, add_result.output
+        );
+
+        let library_path = library_root.join("writer");
+        let library_count: i64 = db
+            .query_row("SELECT COUNT(*) FROM library_skills", [], |row| row.get(0))
+            .unwrap();
+        let deployment_count: i64 = db
+            .query_row("SELECT COUNT(*) FROM skill_deployments", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(library_count, 1);
+        assert_eq!(deployment_count, 0);
+        assert!(library_path.join("SKILL.md").is_file());
+
+        let library_value = library_path.to_string_lossy().to_string();
+        let project_value = project.to_string_lossy().to_string();
+        let enable_preview = build_install_request_preview(
+            InstallPreviewRequest {
+                package: &library_value,
+                source: "local",
+                assistant_name: "Codex",
+                mode: "symlink",
+                project_path: Some(&project_value),
+                selected_skill_paths: None,
+                preferred_skill_id: None,
+            },
+            Ok(&policy),
+        );
+        assert!(enable_preview.can_apply, "{}", enable_preview.message);
+        assert_eq!(
+            enable_preview
+                .target_actions
+                .iter()
+                .filter(|action| action.action == "symlink")
+                .count(),
+            1
+        );
+        let enable_result = install_skill_exclusive(
+            &db,
+            InstallSkillRequest {
+                package: library_value,
+                source: "local".to_string(),
+                assistant_name: "Codex".to_string(),
+                install_mode: Some("symlink".to_string()),
+                project_path: Some(project_value),
+                selected_skill_paths: None,
+                preferred_skill_id: None,
+                plan_token: Some(enable_preview.plan_token),
+            },
+        );
+        assert!(
+            enable_result.success,
+            "{}: {}",
+            enable_result.message, enable_result.output
+        );
+
+        let target = project_skill_root_by_name("Codex", &project)
+            .unwrap()
+            .join("writer");
+        let library_count: i64 = db
+            .query_row("SELECT COUNT(*) FROM library_skills", [], |row| row.get(0))
+            .unwrap();
+        let deployment_count: i64 = db
+            .query_row("SELECT COUNT(*) FROM skill_deployments", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(library_count, 1);
+        assert_eq!(deployment_count, 1);
+        assert!(fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::canonicalize(target).unwrap(),
+            fs::canonicalize(library_path).unwrap()
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_multi_skill_install_only_adds_selected_directories() {
+        let db = test_db();
+        let root = test_dir("local-selected-skills");
+        let library_root = root.join("library");
+        let _library_guard = skill_library::use_test_library_root(library_root.clone());
+        let source = root.join("source");
+        for name in ["reader", "writer"] {
+            let skill = source.join(name);
+            fs::create_dir_all(&skill).unwrap();
+            fs::write(
+                skill.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {name}\n---\n"),
+            )
+            .unwrap();
+        }
+        let policy = InstallPolicyConfig::default();
+        let source_value = source.to_string_lossy().to_string();
+        let unselected_preview = build_install_request_preview(
+            InstallPreviewRequest {
+                package: &source_value,
+                source: "local",
+                assistant_name: "",
+                mode: "library",
+                project_path: None,
+                selected_skill_paths: None,
+                preferred_skill_id: None,
+            },
+            Ok(&policy),
+        );
+        assert!(unselected_preview.selection_required);
+        assert!(!unselected_preview.can_apply);
+        assert_eq!(unselected_preview.available_skills.len(), 2);
+        let selected = vec!["writer".to_string()];
+        let preview = build_install_request_preview(
+            InstallPreviewRequest {
+                package: &source_value,
+                source: "local",
+                assistant_name: "",
+                mode: "library",
+                project_path: None,
+                selected_skill_paths: Some(&selected),
+                preferred_skill_id: None,
+            },
+            Ok(&policy),
+        );
+
+        assert!(preview.can_apply, "{}", preview.message);
+        assert_eq!(preview.available_skills.len(), 2);
+        assert_eq!(preview.target_actions.len(), 1);
+        assert!(preview.target_actions[0].target.ends_with("writer"));
+        let result = install_skill_exclusive(
+            &db,
+            InstallSkillRequest {
+                package: source_value,
+                source: "local".to_string(),
+                assistant_name: String::new(),
+                install_mode: Some("library".to_string()),
+                project_path: None,
+                selected_skill_paths: Some(selected),
+                preferred_skill_id: None,
+                plan_token: Some(preview.plan_token),
+            },
+        );
+
+        assert!(result.success, "{}: {}", result.message, result.output);
+        assert!(library_root.join("writer/SKILL.md").is_file());
+        assert!(!library_root.join("reader").exists());
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM library_skills", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn library_scan_recovers_skill_after_deployment_disappears() {
+        let db = test_db();
+        let root = test_dir("library-scan-prune");
+        let library_root = root.join("library");
+        let deployment_root = root.join("deployments");
+        let library_path = library_root.join("writer");
+        let deployment_path = deployment_root.join("writer");
+        let _library_guard = skill_library::use_test_library_root(library_root.clone());
+        fs::create_dir_all(&library_path).unwrap();
+        fs::write(
+            library_path.join("SKILL.md"),
+            "---\nname: writer\ndescription: 写作\n---\n",
+        )
+        .unwrap();
+        managed_state::mark_managed_skill(
+            &library_root,
+            managed_state::LIBRARY_OWNER_NAME,
+            &library_path,
+            "local:/tmp/writer",
+        )
+        .unwrap();
+        record_managed_path(&db, &library_root, &library_path, "library", None).unwrap();
+        let skill_id =
+            register_library_skill(&db, &library_path, "/tmp/writer", "local", None).unwrap();
+        deploy_library_skill(&library_path, &deployment_path).unwrap();
+        managed_state::mark_managed_skill(
+            &deployment_root,
+            "Codex",
+            &deployment_path,
+            &format!("symlink:{}", library_path.to_string_lossy()),
+        )
+        .unwrap();
+        record_managed_path(&db, &deployment_root, &deployment_path, "global", None).unwrap();
+        register_deployment(
+            &db,
+            &skill_id,
+            &library_path,
+            &deployment_path,
+            "Codex",
+            "global",
+            None,
+            "symlink",
+        )
+        .unwrap();
+        fs::remove_file(&deployment_path).unwrap();
+
+        let skills = scan_unassigned_library_skills(&db).unwrap();
+
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].inventory.name, "writer");
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM skill_deployments", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1720,14 +2322,27 @@ mod tests {
     #[test]
     fn install_rollback_handles_registry_refresh_failure() {
         let db = test_db();
-        let root = test_dir("install-refresh-failure");
-        fs::create_dir_all(&root).unwrap();
-        let target = root.join("writer");
-        let mut transaction =
-            ReconcileTransaction::prepare_managed(&db, &[], std::slice::from_ref(&target)).unwrap();
-        fs::create_dir_all(&target).unwrap();
-        fs::write(target.join("SKILL.md"), "writer").unwrap();
-        managed_state::mark_managed_skill(&root, "Codex", &target, "local:/tmp/writer").unwrap();
+        let base = test_dir("install-refresh-failure");
+        let library_root = base.join("library");
+        let deployment_root = base.join("deployments");
+        let library_path = library_root.join("writer");
+        let deployment_path = deployment_root.join("writer");
+        fs::create_dir_all(&base).unwrap();
+        let mut transaction = ReconcileTransaction::prepare_managed(
+            &db,
+            &[],
+            &[library_path.clone(), deployment_path.clone()],
+        )
+        .unwrap();
+        fs::create_dir_all(&library_path).unwrap();
+        fs::write(library_path.join("SKILL.md"), "writer").unwrap();
+        managed_state::mark_managed_skill(
+            &library_root,
+            "SkillMate",
+            &library_path,
+            "local:/tmp/writer",
+        )
+        .unwrap();
         db.execute_batch(
             "CREATE TRIGGER discard_managed_insert
              AFTER INSERT ON managed_installations
@@ -1737,21 +2352,33 @@ mod tests {
         )
         .unwrap();
 
-        let error = finalize_install_registration(
+        let error = finalize_library_install_registration(
             &db,
-            &root,
+            "/tmp/writer",
+            "local",
+            "Codex",
             "global",
             None,
-            std::slice::from_ref(&target),
+            &library_root,
+            Some(&deployment_root),
+            std::slice::from_ref(&library_path),
+            std::slice::from_ref(&deployment_path),
+            "",
+            false,
         )
         .unwrap_err();
         rollback_install_attempt(&mut transaction).unwrap();
 
-        assert!(error.contains("未能刷新受管安装记录"));
-        assert!(!target.exists());
-        assert!(!root.join(managed_state::STATE_FILE_NAME).exists());
-        assert!(find_managed_installation(&db, &target).unwrap().is_none());
-        let _ = fs::remove_dir_all(root);
+        assert!(error.contains("未能刷新启用记录"), "{error}");
+        assert!(!library_path.exists());
+        assert!(fs::symlink_metadata(&deployment_path).is_err());
+        assert!(!deployment_root
+            .join(managed_state::STATE_FILE_NAME)
+            .exists());
+        assert!(find_managed_installation(&db, &deployment_path)
+            .unwrap()
+            .is_none());
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]
@@ -1915,6 +2542,7 @@ mod tests {
                 ai_type: "skill".into(),
                 icon: "codex".into(),
                 exists: true,
+                supports_project_skills: true,
                 diagnostics: vec![],
                 skills: vec![Skill {
                     inventory: SkillInventoryFields {
@@ -1923,7 +2551,7 @@ mod tests {
                         path: "/tmp/a".into(),
                         skill_type: "skill-folder".into(),
                         source: "GitHub".into(),
-                        source_type: "git".into(),
+                        source_type: "deployment".into(),
                         size: "1 KB".into(),
                         modified: "".into(),
                         tags: vec!["1".into()],
@@ -1948,7 +2576,7 @@ mod tests {
                         last_sync_at: None,
                         managed_by_app: false,
                         can_sync: false,
-                        symlink_source: None,
+                        symlink_source: Some("/tmp/skillmate/skills/skill-a".into()),
                     },
                     structure: SkillStructureFields {
                         structure_status: "complete".into(),
@@ -1959,6 +2587,7 @@ mod tests {
                     },
                 }],
             }],
+            vec![],
         );
 
         assert_eq!(export.version, 1);
@@ -1966,7 +2595,68 @@ mod tests {
         assert_eq!(export.scenarios.len(), 1);
         assert_eq!(export.skills.len(), 1);
         assert_eq!(export.skills[0].assistant, "Codex");
-        assert_eq!(export.skills[0].path, "/tmp/a");
+        assert_eq!(export.skills[0].path, "/tmp/skillmate/skills/skill-a");
+    }
+
+    #[test]
+    fn current_manifest_exports_deployment_source_without_internal_library_record() {
+        let db = test_db();
+        let root = test_dir("library-manifest");
+        let source = root.join("source");
+        let library_root = root.join("library");
+        let deployment_root = root.join("deployments");
+        let library_path = library_root.join("writer");
+        let deployment_path = deployment_root.join("writer");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&library_path).unwrap();
+        fs::write(
+            library_path.join("SKILL.md"),
+            "---\nname: writer\ndescription: 写作\n---\n",
+        )
+        .unwrap();
+        deploy_library_skill(&library_path, &deployment_path).unwrap();
+        managed_state::mark_managed_skill(
+            &library_root,
+            managed_state::LIBRARY_OWNER_NAME,
+            &library_path,
+            &format!("local:{}", source.to_string_lossy()),
+        )
+        .unwrap();
+        record_managed_path(&db, &library_root, &library_path, "library", None).unwrap();
+        let skill_id =
+            register_library_skill(&db, &library_path, &source.to_string_lossy(), "local", None)
+                .unwrap();
+        managed_state::mark_managed_skill(
+            &deployment_root,
+            "Codex",
+            &deployment_path,
+            &format!("symlink:{}", library_path.to_string_lossy()),
+        )
+        .unwrap();
+        record_managed_path(&db, &deployment_root, &deployment_path, "global", None).unwrap();
+        register_deployment(
+            &db,
+            &skill_id,
+            &library_path,
+            &deployment_path,
+            "Codex",
+            "global",
+            None,
+            "symlink",
+        )
+        .unwrap();
+
+        let manifest = build_current_manifest(&db).unwrap();
+
+        assert_eq!(manifest.skills.len(), 1);
+        assert_eq!(manifest.skills[0].assistant, "Codex");
+        assert_eq!(manifest.skills[0].source, source.to_string_lossy());
+        assert_eq!(manifest.skills[0].install_mode.as_deref(), Some("copy"));
+        assert_eq!(
+            manifest.skills[0].content_hash,
+            Some(managed_state::content_fingerprint(&library_path).unwrap())
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -2407,6 +3097,78 @@ mod tests {
         let error = get_scenarios_from_db(&db).unwrap_err();
 
         assert!(error.contains("场景 broken 的 skill_ids_json 损坏"));
+    }
+
+    #[test]
+    fn library_reuse_only_accepts_the_existing_library_directory() {
+        let root = test_dir("library-reuse-preview");
+        let existing = root.join("writer");
+        let missing = root.join("missing");
+        fs::create_dir_all(&existing).unwrap();
+        let mut preview = install_preview_error(
+            "目标目录已存在",
+            "local".to_string(),
+            existing.to_string_lossy().to_string(),
+        );
+        preview.target_actions = vec![
+            skill_install::PreviewAction {
+                action: "skip".to_string(),
+                source: existing.to_string_lossy().to_string(),
+                target: existing.to_string_lossy().to_string(),
+                reason: "目标目录已存在".to_string(),
+            },
+            skill_install::PreviewAction {
+                action: "skip".to_string(),
+                source: missing.to_string_lossy().to_string(),
+                target: missing.to_string_lossy().to_string(),
+                reason: "目标目录已存在".to_string(),
+            },
+        ];
+        preview.conflicts = vec![
+            skill_install::PreviewConflict {
+                target: existing.to_string_lossy().to_string(),
+                reason: "target_exists".to_string(),
+            },
+            skill_install::PreviewConflict {
+                target: missing.to_string_lossy().to_string(),
+                reason: "target_exists".to_string(),
+            },
+        ];
+        preview.package_detection.warnings = vec!["target_exists".to_string()];
+
+        let preview = reuse_library_preview(preview);
+
+        assert_eq!(preview.target_actions[0].action, "keep");
+        assert_eq!(preview.target_actions[1].action, "skip");
+        assert_eq!(preview.conflicts.len(), 1);
+        assert_eq!(preview.conflicts[0].target, missing.to_string_lossy());
+        assert!(!preview.can_apply);
+        assert!(preview
+            .package_detection
+            .warnings
+            .contains(&"target_exists".to_string()));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn alternate_discovery_target_ignores_primary_path_and_reports_existing_alias() {
+        let root = test_dir("alternate-discovery-target");
+        let primary = root.join("primary/writer");
+        let alternate = root.join("alternate/writer");
+        fs::create_dir_all(&primary).unwrap();
+        fs::create_dir_all(&alternate).unwrap();
+
+        let found = skill_library::find_existing_alternate_target(
+            &primary,
+            &[
+                primary.clone(),
+                alternate.clone(),
+                root.join("missing/writer"),
+            ],
+        );
+
+        assert_eq!(found.as_deref(), Some(alternate.as_path()));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

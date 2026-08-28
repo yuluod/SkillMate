@@ -6,6 +6,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 pub const STATE_FILE_NAME: &str = ".skillmate-state.json";
+pub const LIBRARY_OWNER_NAME: &str = "SkillMate";
 const STATE_SCHEMA_VERSION: u32 = 2;
 const MAX_FINGERPRINT_FILES: usize = 10_000;
 const MAX_FINGERPRINT_BYTES: u64 = 256 * 1024 * 1024;
@@ -207,10 +208,11 @@ fn write_managed_state(root: &Path, state: &SkillMateState) -> Result<(), String
 }
 
 fn validate_and_normalize_state(root: &Path, state: &mut SkillMateState) -> Result<bool, String> {
-    let supported_assistants = assistant_definitions()
+    let mut supported_assistants = assistant_definitions()
         .iter()
         .map(|assistant| assistant.name)
         .collect::<std::collections::HashSet<_>>();
+    supported_assistants.insert(LIBRARY_OWNER_NAME);
     let mut seen = std::collections::HashSet::new();
     let mut changed = false;
     for entry in &mut state.managed_skills {
@@ -533,6 +535,20 @@ mod tests {
         let error = read_managed_state(&root).unwrap_err();
 
         assert!(error.contains("受管状态文件损坏"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn library_owner_is_valid_managed_state() {
+        let root = test_dir("library-owner");
+        let skill = root.join("writer");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), "writer").unwrap();
+
+        mark_managed_skill(&root, LIBRARY_OWNER_NAME, &skill, "local:/tmp/writer").unwrap();
+
+        let state = read_managed_state(&root).unwrap();
+        assert_eq!(state.managed_skills[0].assistant, LIBRARY_OWNER_NAME);
         let _ = fs::remove_dir_all(root);
     }
 

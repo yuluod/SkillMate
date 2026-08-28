@@ -1,8 +1,9 @@
 use crate::app_core::{atomic_write, expand_path};
 use crate::operation_plan::operation_plan_token;
-use crate::{AIAssistant, Scenario, Tag};
+use crate::{AIAssistant, Scenario, Skill, Tag};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -41,18 +42,44 @@ pub fn build_library_export(
     tags: Vec<Tag>,
     scenarios: Vec<Scenario>,
     assistants: Vec<AIAssistant>,
+    library_skills: Vec<Skill>,
 ) -> LibraryExport {
     let mut skills = Vec::new();
+    let mut exported_paths = HashSet::new();
     for assistant in assistants {
         for skill in assistant.skills {
+            let path = if skill.inventory.source_type == "deployment" {
+                skill
+                    .origin
+                    .symlink_source
+                    .clone()
+                    .unwrap_or_else(|| skill.inventory.path.clone())
+            } else {
+                skill.inventory.path.clone()
+            };
+            if !exported_paths.insert(path.clone()) {
+                continue;
+            }
             skills.push(LibrarySkillRecord {
                 name: skill.inventory.name,
-                path: skill.inventory.path,
+                path,
                 assistant: assistant.name.clone(),
                 source_type: skill.inventory.source_type,
                 tags: skill.inventory.tags,
             });
         }
+    }
+    for skill in library_skills {
+        if !exported_paths.insert(skill.inventory.path.clone()) {
+            continue;
+        }
+        skills.push(LibrarySkillRecord {
+            name: skill.inventory.name,
+            path: skill.inventory.path,
+            assistant: "SkillMate".to_string(),
+            source_type: skill.inventory.source_type,
+            tags: skill.inventory.tags,
+        });
     }
 
     LibraryExport {

@@ -60,11 +60,38 @@ struct SkillTagsRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct LibrarySkillRow {
+    id: String,
+    name: String,
+    source: String,
+    source_kind: String,
+    resolved_ref: Option<String>,
+    content_hash: String,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SkillDeploymentRow {
+    skill_id: String,
+    library_path: String,
+    assistant: String,
+    scope: String,
+    project_path: Option<String>,
+    deploy_mode: String,
+    deployed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PathMetadataCheckpoint {
     path: PathBuf,
     origin: Option<OriginMetadataRow>,
     installation: Option<ManagedInstallationRow>,
     tags: Option<SkillTagsRow>,
+    #[serde(default)]
+    library_skill: Option<LibrarySkillRow>,
+    #[serde(default)]
+    deployment: Option<SkillDeploymentRow>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,7 +150,19 @@ impl ManagedMetadataCheckpoint {
             .unchecked_transaction()
             .map_err(|error| error.to_string())?;
         for checkpoint in &self.paths {
+            clear_deployment_metadata(&transaction, checkpoint)?;
+        }
+        for checkpoint in &self.paths {
+            clear_library_skill_metadata(&transaction, checkpoint)?;
+        }
+        for checkpoint in &self.paths {
             restore_path_metadata(&transaction, checkpoint)?;
+        }
+        for checkpoint in &self.paths {
+            restore_library_skill_metadata(&transaction, checkpoint)?;
+        }
+        for checkpoint in &self.paths {
+            restore_deployment_metadata(&transaction, checkpoint)?;
         }
         for checkpoint in &self.managed_roots {
             restore_managed_root(&transaction, checkpoint)?;
@@ -251,11 +290,60 @@ fn capture_path_metadata(db: &Connection, path: PathBuf) -> Result<PathMetadataC
         )
         .optional()
         .map_err(|error| error.to_string())?;
+    let library_skill = if table_exists(db, "library_skills")? {
+        db.query_row(
+            "SELECT id, name, source, source_kind, resolved_ref, content_hash,
+                    created_at, updated_at
+             FROM library_skills WHERE library_path = ?",
+            [&key],
+            |row| {
+                Ok(LibrarySkillRow {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    source: row.get(2)?,
+                    source_kind: row.get(3)?,
+                    resolved_ref: row.get(4)?,
+                    content_hash: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+    } else {
+        None
+    };
+    let deployment = if table_exists(db, "skill_deployments")? {
+        db.query_row(
+            "SELECT skill_id, library_path, assistant, scope, project_path,
+                    deploy_mode, deployed_at
+             FROM skill_deployments WHERE target_path = ?",
+            [&key],
+            |row| {
+                Ok(SkillDeploymentRow {
+                    skill_id: row.get(0)?,
+                    library_path: row.get(1)?,
+                    assistant: row.get(2)?,
+                    scope: row.get(3)?,
+                    project_path: row.get(4)?,
+                    deploy_mode: row.get(5)?,
+                    deployed_at: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+    } else {
+        None
+    };
     Ok(PathMetadataCheckpoint {
         path,
         origin,
         installation,
         tags,
+        library_skill,
+        deployment,
     })
 }
 
@@ -329,6 +417,105 @@ fn restore_path_metadata(
         )
         .map_err(|error| error.to_string())?;
     }
+    Ok(())
+}
+
+fn clear_deployment_metadata(
+    db: &Connection,
+    checkpoint: &PathMetadataCheckpoint,
+) -> Result<(), String> {
+    let key = checkpoint.path.to_string_lossy().to_string();
+    if table_exists(db, "skill_deployments")? {
+        db.execute(
+            "DELETE FROM skill_deployments WHERE target_path = ?",
+            [&key],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn clear_library_skill_metadata(
+    db: &Connection,
+    checkpoint: &PathMetadataCheckpoint,
+) -> Result<(), String> {
+    if checkpoint.library_skill.is_some() {
+        return Ok(());
+    }
+    let key = checkpoint.path.to_string_lossy().to_string();
+    if table_exists(db, "library_skills")? {
+        db.execute("DELETE FROM library_skills WHERE library_path = ?", [&key])
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn restore_library_skill_metadata(
+    db: &Connection,
+    checkpoint: &PathMetadataCheckpoint,
+) -> Result<(), String> {
+    let Some(row) = &checkpoint.library_skill else {
+        return Ok(());
+    };
+    if !table_exists(db, "library_skills")? {
+        return Ok(());
+    }
+    db.execute(
+        "INSERT INTO library_skills (
+            id, name, library_path, source, source_kind, resolved_ref, content_hash,
+            created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(library_path) DO UPDATE SET
+            name = excluded.name,
+            source = excluded.source,
+            source_kind = excluded.source_kind,
+            resolved_ref = excluded.resolved_ref,
+            content_hash = excluded.content_hash,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at",
+        params![
+            &row.id,
+            &row.name,
+            checkpoint.path.to_string_lossy().to_string(),
+            &row.source,
+            &row.source_kind,
+            &row.resolved_ref,
+            &row.content_hash,
+            &row.created_at,
+            &row.updated_at,
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn restore_deployment_metadata(
+    db: &Connection,
+    checkpoint: &PathMetadataCheckpoint,
+) -> Result<(), String> {
+    let Some(row) = &checkpoint.deployment else {
+        return Ok(());
+    };
+    if !table_exists(db, "skill_deployments")? {
+        return Ok(());
+    }
+    db.execute(
+        "INSERT INTO skill_deployments (
+            target_path, skill_id, library_path, assistant, scope, project_path,
+            deploy_mode, deployed_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        params![
+            checkpoint.path.to_string_lossy().to_string(),
+            &row.skill_id,
+            &row.library_path,
+            &row.assistant,
+            &row.scope,
+            &row.project_path,
+            &row.deploy_mode,
+            &row.deployed_at,
+        ],
+    )
+    .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -682,13 +869,20 @@ pub fn cleanup_skill_metadata(db: &Connection, target_path: &Path) -> Result<(),
 }
 
 pub fn prune_missing_managed_installations(db: &Connection) -> Result<usize, String> {
-    let missing = list_managed_installations(db)?
-        .into_iter()
-        .filter(|installation| {
-            !installation.path.exists() && std::fs::symlink_metadata(&installation.path).is_err()
-        })
-        .map(|installation| installation.path)
-        .collect::<Vec<_>>();
+    let mut missing_deployments = Vec::new();
+    let mut missing_installations = Vec::new();
+    for installation in list_managed_installations(db)? {
+        if !managed_path_is_missing(&installation.path) {
+            continue;
+        }
+        if is_registered_deployment(db, &installation.path)? {
+            missing_deployments.push(installation.path);
+        } else {
+            missing_installations.push(installation.path);
+        }
+    }
+    missing_deployments.append(&mut missing_installations);
+    let missing = missing_deployments;
     if missing.is_empty() {
         return Ok(0);
     }
@@ -719,7 +913,43 @@ pub fn prune_missing_managed_installations(db: &Connection) -> Result<usize, Str
     Ok(missing.len())
 }
 
+fn managed_path_is_missing(path: &Path) -> bool {
+    if path.exists() {
+        return false;
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata.file_type().is_symlink(),
+        Err(_) => true,
+    }
+}
+
+fn is_registered_deployment(db: &Connection, path: &Path) -> Result<bool, String> {
+    if !table_exists(db, "skill_deployments")? {
+        return Ok(false);
+    }
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM skill_deployments WHERE target_path = ?)",
+        [path.to_string_lossy().to_string()],
+        |row| row.get::<_, bool>(0),
+    )
+    .map_err(|error| error.to_string())
+}
+
 fn delete_path_metadata(db: &Connection, path: &str) -> Result<(), String> {
+    if table_exists(db, "skill_deployments")? {
+        db.execute(
+            "DELETE FROM skill_deployments WHERE target_path = ?",
+            params![path],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    if table_exists(db, "library_skills")? {
+        db.execute(
+            "DELETE FROM library_skills WHERE library_path = ?",
+            params![path],
+        )
+        .map_err(|error| format!("该 Skill 仍在平台或项目中启用，请先停用后再删除: {error}"))?;
+    }
     db.execute(
         "DELETE FROM skill_origin_meta WHERE skill_path = ?",
         params![path],
@@ -733,6 +963,15 @@ fn delete_path_metadata(db: &Connection, path: &str) -> Result<(), String> {
     )
     .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+fn table_exists(db: &Connection, table: &str) -> Result<bool, String> {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)",
+        [table],
+        |row| row.get::<_, bool>(0),
+    )
+    .map_err(|error| error.to_string())
 }
 
 fn parse_state_origin(origin: &str) -> (String, String, String) {
@@ -788,6 +1027,134 @@ mod tests {
             serde_json::from_str(r#"{"paths":[],"roots":[]}"#).unwrap();
 
         assert!(checkpoint.managed_roots.is_empty());
+    }
+
+    #[test]
+    fn metadata_checkpoint_removes_deployments_before_library_rows() {
+        let db = database();
+        db.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE library_skills (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, library_path TEXT NOT NULL UNIQUE,
+                source TEXT NOT NULL, source_kind TEXT NOT NULL, resolved_ref TEXT,
+                content_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+             );
+             CREATE TABLE skill_deployments (
+                target_path TEXT PRIMARY KEY, skill_id TEXT NOT NULL, library_path TEXT NOT NULL,
+                assistant TEXT NOT NULL, scope TEXT NOT NULL, project_path TEXT,
+                deploy_mode TEXT NOT NULL, deployed_at TEXT NOT NULL,
+                FOREIGN KEY(skill_id) REFERENCES library_skills(id) ON DELETE RESTRICT
+             );",
+        )
+        .unwrap();
+        let library_path = PathBuf::from("/tmp/a-skillmate-library/writer");
+        let deployment_path = PathBuf::from("/tmp/z-agent-skills/writer");
+        let checkpoint = ManagedMetadataCheckpoint::capture(
+            &db,
+            &[library_path.clone(), deployment_path.clone()],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO library_skills VALUES (?, 'writer', ?, 'local', 'local', NULL,
+             'hash', 'now', 'now')",
+            params!["skill-1", library_path.to_string_lossy().to_string()],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO skill_deployments VALUES (?, 'skill-1', ?, 'Codex', 'global', NULL,
+             'symlink', 'now')",
+            params![
+                deployment_path.to_string_lossy().to_string(),
+                library_path.to_string_lossy().to_string()
+            ],
+        )
+        .unwrap();
+
+        checkpoint.restore(&db).unwrap();
+
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM skill_deployments", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM library_skills", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn metadata_checkpoint_preserves_unrelated_library_deployments() {
+        let db = database();
+        db.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE library_skills (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, library_path TEXT NOT NULL UNIQUE,
+                source TEXT NOT NULL, source_kind TEXT NOT NULL, resolved_ref TEXT,
+                content_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+             );
+             CREATE TABLE skill_deployments (
+                target_path TEXT PRIMARY KEY, skill_id TEXT NOT NULL, library_path TEXT NOT NULL,
+                assistant TEXT NOT NULL, scope TEXT NOT NULL, project_path TEXT,
+                deploy_mode TEXT NOT NULL, deployed_at TEXT NOT NULL,
+                FOREIGN KEY(skill_id) REFERENCES library_skills(id) ON DELETE RESTRICT
+             );",
+        )
+        .unwrap();
+        let library_path = PathBuf::from("/tmp/skillmate-library/writer");
+        let first = PathBuf::from("/tmp/agent-a/writer");
+        let second = PathBuf::from("/tmp/agent-b/writer");
+        db.execute(
+            "INSERT INTO library_skills VALUES (?, 'writer', ?, 'old/source', 'local', NULL,
+             'old-hash', 'old-created', 'old-updated')",
+            params!["skill-1", library_path.to_string_lossy().to_string()],
+        )
+        .unwrap();
+        for target in [&first, &second] {
+            db.execute(
+                "INSERT INTO skill_deployments VALUES (?, 'skill-1', ?, 'Codex', 'global', NULL,
+                 'symlink', 'old')",
+                params![
+                    target.to_string_lossy().to_string(),
+                    library_path.to_string_lossy().to_string()
+                ],
+            )
+            .unwrap();
+        }
+        let checkpoint =
+            ManagedMetadataCheckpoint::capture(&db, &[library_path.clone(), first.clone()])
+                .unwrap();
+        db.execute(
+            "UPDATE library_skills SET source = 'new/source' WHERE library_path = ?",
+            [library_path.to_string_lossy().to_string()],
+        )
+        .unwrap();
+        db.execute(
+            "DELETE FROM skill_deployments WHERE target_path = ?",
+            [first.to_string_lossy().to_string()],
+        )
+        .unwrap();
+
+        checkpoint.restore(&db).unwrap();
+
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM skill_deployments", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT source FROM library_skills WHERE library_path = ?",
+                [library_path.to_string_lossy().to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "old/source"
+        );
     }
 
     #[test]
@@ -866,6 +1233,87 @@ mod tests {
         std::fs::create_dir_all(&skill).unwrap();
         std::fs::write(skill.join("SKILL.md"), "replacement").unwrap();
         assert!(!is_explicitly_managed(&db, &skill).unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prunes_broken_deployment_before_missing_library_record() {
+        let db = database();
+        db.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE library_skills (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, library_path TEXT NOT NULL UNIQUE,
+                source TEXT NOT NULL, source_kind TEXT NOT NULL, resolved_ref TEXT,
+                content_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+             );
+             CREATE TABLE skill_deployments (
+                target_path TEXT PRIMARY KEY, skill_id TEXT NOT NULL, library_path TEXT NOT NULL,
+                assistant TEXT NOT NULL, scope TEXT NOT NULL, project_path TEXT,
+                deploy_mode TEXT NOT NULL, deployed_at TEXT NOT NULL,
+                FOREIGN KEY(skill_id) REFERENCES library_skills(id) ON DELETE RESTRICT
+             );",
+        )
+        .unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "skillmate-managed-broken-deployment-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let library_root = root.join("a-library");
+        let deployment_root = root.join("z-deployments");
+        let library_path = library_root.join("writer");
+        let deployment_path = deployment_root.join("writer");
+        std::fs::create_dir_all(&library_path).unwrap();
+        std::fs::create_dir_all(&deployment_root).unwrap();
+        std::fs::write(library_path.join("SKILL.md"), "writer").unwrap();
+        std::os::unix::fs::symlink(&library_path, &deployment_path).unwrap();
+        mark_managed_skill(
+            &library_root,
+            crate::managed_state::LIBRARY_OWNER_NAME,
+            &library_path,
+            "local:/tmp/writer",
+        )
+        .unwrap();
+        mark_managed_skill(
+            &deployment_root,
+            "Codex",
+            &deployment_path,
+            &format!("symlink:{}", library_path.to_string_lossy()),
+        )
+        .unwrap();
+        record_managed_root(&db, &library_root, "library", None).unwrap();
+        record_managed_root(&db, &deployment_root, "global", None).unwrap();
+        db.execute(
+            "INSERT INTO library_skills VALUES (?, 'writer', ?, 'local:/tmp/writer', 'local',
+             NULL, 'hash', 'now', 'now')",
+            params!["skill-1", library_path.to_string_lossy().to_string()],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO skill_deployments VALUES (?, 'skill-1', ?, 'Codex', 'global', NULL,
+             'symlink', 'now')",
+            params![
+                deployment_path.to_string_lossy().to_string(),
+                library_path.to_string_lossy().to_string()
+            ],
+        )
+        .unwrap();
+        std::fs::remove_dir_all(&library_path).unwrap();
+
+        assert_eq!(prune_missing_managed_installations(&db).unwrap(), 2);
+        for table in [
+            "managed_installations",
+            "library_skills",
+            "skill_deployments",
+        ] {
+            assert_eq!(
+                db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 

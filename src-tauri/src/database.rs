@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-const DB_SCHEMA_VERSION: i64 = 6;
+const DB_SCHEMA_VERSION: i64 = 7;
 static DATABASE_INITIALIZATION_ERROR: OnceLock<String> = OnceLock::new();
 
 fn database_path() -> Result<PathBuf, String> {
@@ -113,6 +113,28 @@ fn migrate_database(connection: &Connection) -> Result<(), String> {
                  scope TEXT NOT NULL DEFAULT 'global',
                  project_path TEXT,
                  updated_at TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS library_skills (
+                 id TEXT PRIMARY KEY,
+                 name TEXT NOT NULL UNIQUE,
+                 library_path TEXT NOT NULL UNIQUE,
+                 source TEXT NOT NULL,
+                 source_kind TEXT NOT NULL,
+                 resolved_ref TEXT,
+                 content_hash TEXT NOT NULL,
+                 created_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS skill_deployments (
+                 target_path TEXT PRIMARY KEY,
+                 skill_id TEXT NOT NULL,
+                 library_path TEXT NOT NULL,
+                 assistant TEXT NOT NULL,
+                 scope TEXT NOT NULL,
+                 project_path TEXT,
+                 deploy_mode TEXT NOT NULL,
+                 deployed_at TEXT NOT NULL,
+                 FOREIGN KEY(skill_id) REFERENCES library_skills(id) ON DELETE RESTRICT
              );
              CREATE TABLE IF NOT EXISTS install_policy (
                  id INTEGER PRIMARY KEY,

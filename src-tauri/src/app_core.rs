@@ -14,7 +14,7 @@ pub struct AssistantDefinition {
     pub icon: &'static str,
     global_install_path: &'static str,
     global_discovery_paths: &'static [&'static str],
-    project_install_path: &'static str,
+    project_install_path: Option<&'static str>,
     recursive_discovery_depth: usize,
 }
 
@@ -29,8 +29,13 @@ impl AssistantDefinition {
             .map(|path| expand_path(path))
     }
 
-    pub fn project_install_root(self, project_path: &Path) -> PathBuf {
-        project_path.join(self.project_install_path)
+    pub fn project_install_root(self, project_path: &Path) -> Option<PathBuf> {
+        self.project_install_path
+            .map(|path| project_path.join(path))
+    }
+
+    pub fn supports_project_skills(self) -> bool {
+        self.project_install_path.is_some()
     }
 
     pub fn recursive_discovery_depth(self) -> usize {
@@ -137,7 +142,7 @@ pub fn assistant_definitions() -> &'static [AssistantDefinition] {
             icon: "claude",
             global_install_path: "~/.claude/skills",
             global_discovery_paths: &["~/.claude/skills"],
-            project_install_path: ".claude/skills",
+            project_install_path: Some(".claude/skills"),
             recursive_discovery_depth: 2,
         },
         AssistantDefinition {
@@ -146,7 +151,7 @@ pub fn assistant_definitions() -> &'static [AssistantDefinition] {
             icon: "codex",
             global_install_path: "~/.agents/skills",
             global_discovery_paths: &["~/.agents/skills", "~/.codex/skills"],
-            project_install_path: ".agents/skills",
+            project_install_path: Some(".agents/skills"),
             recursive_discovery_depth: 6,
         },
         AssistantDefinition {
@@ -155,7 +160,7 @@ pub fn assistant_definitions() -> &'static [AssistantDefinition] {
             icon: "openclaw",
             global_install_path: "~/.openclaw/skills",
             global_discovery_paths: &["~/.openclaw/skills", "~/.agents/skills"],
-            project_install_path: "skills",
+            project_install_path: Some("skills"),
             recursive_discovery_depth: 6,
         },
         AssistantDefinition {
@@ -165,7 +170,7 @@ pub fn assistant_definitions() -> &'static [AssistantDefinition] {
             global_install_path: "~/.gemini/skills",
             // Gemini 在同一层级中优先采用共享别名，再回退原生目录。
             global_discovery_paths: &["~/.agents/skills", "~/.gemini/skills"],
-            project_install_path: ".gemini/skills",
+            project_install_path: Some(".gemini/skills"),
             recursive_discovery_depth: 2,
         },
         AssistantDefinition {
@@ -174,7 +179,7 @@ pub fn assistant_definitions() -> &'static [AssistantDefinition] {
             icon: "cursor",
             global_install_path: "~/.cursor/skills",
             global_discovery_paths: &["~/.cursor/skills"],
-            project_install_path: ".cursor/skills",
+            project_install_path: Some(".cursor/skills"),
             recursive_discovery_depth: 2,
         },
         AssistantDefinition {
@@ -183,7 +188,7 @@ pub fn assistant_definitions() -> &'static [AssistantDefinition] {
             icon: "opencode",
             global_install_path: "~/.config/opencode/skills",
             global_discovery_paths: &["~/.config/opencode/skills"],
-            project_install_path: ".opencode/skills",
+            project_install_path: Some(".opencode/skills"),
             recursive_discovery_depth: 2,
         },
         AssistantDefinition {
@@ -192,7 +197,7 @@ pub fn assistant_definitions() -> &'static [AssistantDefinition] {
             icon: "copilot",
             global_install_path: "~/.copilot/skills",
             global_discovery_paths: &["~/.copilot/skills"],
-            project_install_path: ".github/skills",
+            project_install_path: Some(".github/skills"),
             recursive_discovery_depth: 2,
         },
     ]
@@ -210,8 +215,9 @@ pub fn project_skill_root_by_name(name: &str, project_path: &Path) -> Result<Pat
     assistant_definitions()
         .iter()
         .find(|assistant| assistant.name == name)
-        .map(|assistant| assistant.project_install_root(project_path))
-        .ok_or_else(|| format!("不支持的助手: {}", name))
+        .ok_or_else(|| format!("不支持的助手: {}", name))?
+        .project_install_root(project_path)
+        .ok_or_else(|| format!("{} 目前仅支持全局 Skills", name))
 }
 
 pub fn managed_skill_roots() -> Vec<PathBuf> {
@@ -582,7 +588,7 @@ mod tests {
                 assert!(discovery.iter().any(|root| root.ends_with(path)));
             }
             assert_eq!(
-                assistant.project_install_root(project),
+                assistant.project_install_root(project).unwrap(),
                 project.join(expected.project_install)
             );
         }

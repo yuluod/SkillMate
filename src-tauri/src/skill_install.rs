@@ -52,6 +52,8 @@ pub struct InstallPreview {
     pub plan_token: String,
     pub source_digest: String,
     pub resolved_ref: String,
+    pub available_skills: Vec<DetectedSkill>,
+    pub selection_required: bool,
 }
 
 #[derive(Serialize)]
@@ -107,6 +109,16 @@ pub struct PreparedGitInstall {
     package_detection: PackageDetection,
     source_digest: String,
     resolved_ref: String,
+    available_skills: Vec<DetectedSkill>,
+    selection_required: bool,
+    selection_message: String,
+}
+
+struct InstallSkillSelection {
+    detection: PackageDetection,
+    available_skills: Vec<DetectedSkill>,
+    required: bool,
+    message: String,
 }
 
 struct TempGitSource {
@@ -154,6 +166,28 @@ impl PreparedGitInstall {
         Self::from_spec(parse_git_install_spec(package)?)
     }
 
+    pub fn prepare_selected(
+        package: &str,
+        selected_paths: Option<&[String]>,
+        preferred_skill_id: Option<&str>,
+    ) -> Result<Self, String> {
+        let mut prepared = Self::prepare(package)?;
+        let selection = select_install_skills(
+            prepared.package_detection,
+            selected_paths,
+            preferred_skill_id,
+        )?;
+        prepared.package_detection = selection.detection;
+        prepared.available_skills = selection.available_skills;
+        prepared.selection_required = selection.required;
+        prepared.selection_message = selection.message;
+        prepared.source_digest = package_content_fingerprint(
+            prepared.checkout.source_path(),
+            &prepared.package_detection,
+        )?;
+        Ok(prepared)
+    }
+
     fn from_spec(spec: GitInstallSpec) -> Result<Self, String> {
         ensure_git_available()?;
         let checkout = TempGitSource::prepare(&spec)?;
@@ -161,17 +195,21 @@ impl PreparedGitInstall {
         let source_digest =
             package_content_fingerprint(checkout.source_path(), &package_detection)?;
         let resolved_ref = git_output(checkout.repo_path(), &["rev-parse", "HEAD"])?;
+        let available_skills = package_detection.detected_skills.clone();
         Ok(Self {
             spec,
             checkout,
             package_detection,
             source_digest,
             resolved_ref,
+            available_skills,
+            selection_required: false,
+            selection_message: String::new(),
         })
     }
 
     pub fn preview(&self, target_root: &Path, fallback_name: &str) -> InstallPreview {
-        build_install_preview_with_source(
+        let preview = build_install_preview_with_source(
             self.package_detection.clone(),
             target_root,
             fallback_name,
@@ -179,6 +217,13 @@ impl PreparedGitInstall {
             target_root.join(fallback_name).exists(),
             self.source_digest.clone(),
             self.resolved_ref.clone(),
+        );
+        apply_install_selection(
+            preview,
+            self.available_skills.clone(),
+            self.selection_required,
+            &self.selection_message,
+            target_root,
         )
     }
 
@@ -251,6 +296,108 @@ impl PreparedGitInstall {
         }
         result
     }
+}
+
+fn select_install_skills(
+    mut detection: PackageDetection,
+    selected_paths: Option<&[String]>,
+    preferred_skill_id: Option<&str>,
+) -> Result<InstallSkillSelection, String> {
+    let all_skills = detection.detected_skills.clone();
+    if let Some(selected_paths) = selected_paths {
+        let selected = selected_paths
+            .iter()
+            .map(|path| path.trim())
+            .filter(|path| !path.is_empty())
+            .collect::<HashSet<_>>();
+        if selected.is_empty() {
+            detection.detected_skills.clear();
+            let required = !all_skills.is_empty();
+            return Ok(InstallSkillSelection {
+                detection,
+                available_skills: all_skills,
+                required,
+                message: "请选择至少一个要安装的 Skill".to_string(),
+            });
+        }
+        let matched = all_skills
+            .iter()
+            .filter(|skill| selected.contains(skill.relative_path.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        if matched.len() != selected.len() {
+            return Err("所选 Skill 已不在当前仓库中，请重新分析仓库".to_string());
+        }
+        detection.detected_skills = matched;
+        return Ok(InstallSkillSelection {
+            detection,
+            available_skills: all_skills,
+            required: false,
+            message: String::new(),
+        });
+    }
+
+    if let Some(preferred_skill_id) = preferred_skill_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let matches = all_skills
+            .iter()
+            .filter(|skill| skill_matches_market_id(skill, preferred_skill_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if matches.len() == 1 {
+            detection.detected_skills = matches.clone();
+            return Ok(InstallSkillSelection {
+                detection,
+                available_skills: matches,
+                required: false,
+                message: String::new(),
+            });
+        }
+        detection.detected_skills.clear();
+        let message = if matches.is_empty() {
+            format!("仓库中未找到市场 Skill：{preferred_skill_id}")
+        } else {
+            format!("仓库中存在多个名为 {preferred_skill_id} 的 Skill，请选择具体目录")
+        };
+        return Ok(InstallSkillSelection {
+            detection,
+            available_skills: if matches.is_empty() {
+                all_skills
+            } else {
+                matches
+            },
+            required: true,
+            message,
+        });
+    }
+
+    if all_skills.len() > 1 {
+        detection.detected_skills.clear();
+        return Ok(InstallSkillSelection {
+            detection,
+            available_skills: all_skills,
+            required: true,
+            message: "仓库包含多个 Skills，请选择要安装的项目".to_string(),
+        });
+    }
+
+    Ok(InstallSkillSelection {
+        detection,
+        available_skills: all_skills,
+        required: false,
+        message: String::new(),
+    })
+}
+
+fn skill_matches_market_id(skill: &DetectedSkill, preferred_skill_id: &str) -> bool {
+    let preferred = preferred_skill_id.trim_matches('/');
+    skill.relative_path == preferred
+        || Path::new(&skill.relative_path)
+            .file_name()
+            .is_some_and(|name| name == preferred)
+        || skill.title.as_deref() == Some(preferred)
 }
 
 #[derive(Default)]
@@ -474,6 +621,24 @@ pub fn remove_existing_path(path: &Path) -> Result<(), String> {
 }
 
 pub fn preview_install_source(package: &str, source: &str, target_root: &Path) -> InstallPreview {
+    preview_install_source_with_selection(package, source, target_root, None, false)
+}
+
+pub fn preview_selected_local_install_source(
+    package: &str,
+    target_root: &Path,
+    selected_paths: Option<&[String]>,
+) -> InstallPreview {
+    preview_install_source_with_selection(package, "local", target_root, selected_paths, true)
+}
+
+fn preview_install_source_with_selection(
+    package: &str,
+    source: &str,
+    target_root: &Path,
+    selected_paths: Option<&[String]>,
+    apply_selection: bool,
+) -> InstallPreview {
     let skill_name = match install_target_name(package, source) {
         Ok(name) => name,
         Err(err) => {
@@ -512,15 +677,37 @@ pub fn preview_install_source(package: &str, source: &str, target_root: &Path) -
         "local" => {
             let source_path = expand_path(package.trim());
             let package_detection = detect_skill_package(&source_path);
-            package_content_fingerprint(&source_path, &package_detection).map(|source_digest| {
-                build_install_preview_with_source(
-                    package_detection,
-                    target_root,
-                    &skill_name,
-                    source_kind,
-                    target_exists,
-                    source_digest,
-                    String::new(),
+            let selection = if apply_selection {
+                select_install_skills(package_detection, selected_paths, None)
+            } else {
+                let available_skills = package_detection.detected_skills.clone();
+                Ok(InstallSkillSelection {
+                    detection: package_detection,
+                    available_skills,
+                    required: false,
+                    message: String::new(),
+                })
+            };
+            selection.and_then(|selection| {
+                package_content_fingerprint(&source_path, &selection.detection).map(
+                    |source_digest| {
+                        let preview = build_install_preview_with_source(
+                            selection.detection,
+                            target_root,
+                            &skill_name,
+                            source_kind,
+                            target_exists,
+                            source_digest,
+                            String::new(),
+                        );
+                        apply_install_selection(
+                            preview,
+                            selection.available_skills,
+                            selection.required,
+                            &selection.message,
+                            target_root,
+                        )
+                    },
                 )
             })
         }
@@ -560,6 +747,27 @@ pub fn preview_install_source(package: &str, source: &str, target_root: &Path) -
     }
 }
 
+fn apply_install_selection(
+    mut preview: InstallPreview,
+    available_skills: Vec<DetectedSkill>,
+    selection_required: bool,
+    selection_message: &str,
+    target_root: &Path,
+) -> InstallPreview {
+    preview.available_skills = available_skills;
+    preview.selection_required = selection_required;
+    if selection_required {
+        preview.can_install = false;
+        preview.can_apply = false;
+        preview.message = selection_message.to_string();
+        preview.conflicts.push(PreviewConflict {
+            target: target_root.to_string_lossy().to_string(),
+            reason: "skill_selection_required".to_string(),
+        });
+    }
+    preview
+}
+
 pub fn install_local_package_at_digest(
     source_path: &Path,
     target_root: &Path,
@@ -568,6 +776,46 @@ pub fn install_local_package_at_digest(
     expected_source_digest: Option<&str>,
 ) -> Result<SkillStructureInfo, String> {
     let package = detect_skill_package(source_path);
+    install_detected_local_package_at_digest(
+        source_path,
+        target_root,
+        fallback_name,
+        assistant_name,
+        expected_source_digest,
+        package,
+    )
+}
+
+pub fn install_selected_local_package_at_digest(
+    source_path: &Path,
+    target_root: &Path,
+    fallback_name: &str,
+    assistant_name: &str,
+    expected_source_digest: Option<&str>,
+    selected_paths: Option<&[String]>,
+) -> Result<SkillStructureInfo, String> {
+    let selection = select_install_skills(detect_skill_package(source_path), selected_paths, None)?;
+    if selection.required {
+        return Err(selection.message);
+    }
+    install_detected_local_package_at_digest(
+        source_path,
+        target_root,
+        fallback_name,
+        assistant_name,
+        expected_source_digest,
+        selection.detection,
+    )
+}
+
+fn install_detected_local_package_at_digest(
+    source_path: &Path,
+    target_root: &Path,
+    fallback_name: &str,
+    assistant_name: &str,
+    expected_source_digest: Option<&str>,
+    package: PackageDetection,
+) -> Result<SkillStructureInfo, String> {
     let source_digest = package_content_fingerprint(source_path, &package)?;
     verify_source_digest(expected_source_digest, &source_digest)?;
     let source = SkillPackageSource::open(source_path)?;
@@ -618,6 +866,7 @@ pub fn install_local_package_at_digest(
     result
 }
 
+#[cfg(test)]
 pub fn preview_local_symlink_install(
     source_path: &Path,
     target_root: &Path,
@@ -668,6 +917,7 @@ pub fn install_local_symlink_package(
     )
 }
 
+#[cfg(test)]
 pub fn install_local_symlink_package_at_digest(
     source_path: &Path,
     target_root: &Path,
@@ -757,7 +1007,7 @@ pub fn install_git_package_at_ref(
     )
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 fn create_dir_symlink(source: &Path, target: &Path) -> Result<(), String> {
     if !source.is_dir() {
         return Err(format!(
@@ -771,7 +1021,7 @@ fn create_dir_symlink(source: &Path, target: &Path) -> Result<(), String> {
     std::os::unix::fs::symlink(source, target).map_err(|e| e.to_string())
 }
 
-#[cfg(windows)]
+#[cfg(all(test, windows))]
 fn create_dir_symlink(source: &Path, target: &Path) -> Result<(), String> {
     if !source.is_dir() {
         return Err(format!(
@@ -936,6 +1186,7 @@ struct InstallPreviewDraft {
 
 fn install_preview(draft: InstallPreviewDraft) -> InstallPreview {
     let structure = draft.structure.unwrap_or_default();
+    let available_skills = draft.package_detection.detected_skills.clone();
     InstallPreview {
         can_install: draft.can_install,
         can_apply: draft.can_apply,
@@ -955,6 +1206,8 @@ fn install_preview(draft: InstallPreviewDraft) -> InstallPreview {
         plan_token: String::new(),
         source_digest: draft.source_digest,
         resolved_ref: draft.resolved_ref,
+        available_skills,
+        selection_required: false,
     }
 }
 
@@ -1100,6 +1353,7 @@ fn build_install_preview_with_source(
     })
 }
 
+#[cfg(test)]
 fn build_symlink_install_preview(
     package_detection: PackageDetection,
     source_root: &Path,
@@ -1115,6 +1369,7 @@ fn build_symlink_install_preview(
     )
 }
 
+#[cfg(test)]
 fn build_symlink_install_preview_with_source(
     mut package_detection: PackageDetection,
     source_root: &Path,
@@ -1553,6 +1808,49 @@ mod tests {
             features: vec!["skill_md".to_string()],
             warnings: vec![],
         }
+    }
+
+    #[test]
+    fn market_skill_id_selects_one_exact_skill_from_repository() {
+        let mut contract = complete_detected_skill("legal/skills/review-contract");
+        contract.title = Some("review-contract".to_string());
+        let detection = PackageDetection {
+            package_kind: "multi_skill".to_string(),
+            detected_skills: vec![
+                complete_detected_skill("engineering/skills/code-review"),
+                contract,
+            ],
+            warnings: vec![],
+            needs_model: false,
+        };
+
+        let selection = select_install_skills(detection, None, Some("review-contract")).unwrap();
+
+        assert!(!selection.required);
+        assert_eq!(selection.detection.detected_skills.len(), 1);
+        assert_eq!(
+            selection.detection.detected_skills[0].relative_path,
+            "legal/skills/review-contract"
+        );
+    }
+
+    #[test]
+    fn multi_skill_repository_requires_an_explicit_selection() {
+        let detection = PackageDetection {
+            package_kind: "multi_skill".to_string(),
+            detected_skills: vec![
+                complete_detected_skill("skills/writer"),
+                complete_detected_skill("skills/reviewer"),
+            ],
+            warnings: vec![],
+            needs_model: false,
+        };
+
+        let selection = select_install_skills(detection, None, None).unwrap();
+
+        assert!(selection.required);
+        assert!(selection.detection.detected_skills.is_empty());
+        assert_eq!(selection.available_skills.len(), 2);
     }
 
     fn is_windows_symlink_permission_error(error: &std::io::Error) -> bool {

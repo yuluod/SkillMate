@@ -1,6 +1,7 @@
 use crate::app_core::{assistant_definitions, format_size, AssistantDefinition};
 use crate::managed_installation::{list_managed_installations, ManagedInstallation};
 use crate::managed_state::{content_fingerprint, managed_state_entry, STATE_FILE_NAME};
+use crate::skill_library::{find_deployment, resolve_library_path};
 use crate::skill_origin::{build_sync_info_with_cache, OriginInferenceCache};
 use crate::skill_structure::{detect_skill_entry, inspect_skill_for_inventory, SkillEntryKind};
 use crate::{
@@ -90,6 +91,7 @@ pub fn scan_all_assistants(db: &Connection) -> Result<Vec<AIAssistant>, String> 
             skills,
             diagnostics,
             exists,
+            supports_project_skills: assistant.supports_project_skills(),
         });
     }
     Ok(assistants)
@@ -204,6 +206,19 @@ fn has_entry_document(path: &Path) -> bool {
 pub fn collect_known_skill_paths(db: &Connection) -> Result<Vec<String>, String> {
     let managed_installations = list_managed_installations(db)?;
     let mut paths = HashMap::<PathBuf, String>::new();
+    for installation in &managed_installations {
+        if installation.skill.assistant == crate::managed_state::LIBRARY_OWNER_NAME
+            && (installation.path.exists() || fs::symlink_metadata(&installation.path).is_ok())
+        {
+            let identity = installation
+                .path
+                .canonicalize()
+                .unwrap_or_else(|_| installation.path.clone());
+            paths
+                .entry(identity)
+                .or_insert_with(|| installation.path.to_string_lossy().to_string());
+        }
+    }
     for assistant in assistant_definitions() {
         let (mut entries, _) = collect_assistant_skill_entries(assistant);
         let mut seen = entries.iter().cloned().collect::<HashSet<_>>();
@@ -225,7 +240,7 @@ pub fn collect_known_skill_paths(db: &Connection) -> Result<Vec<String>, String>
     Ok(paths)
 }
 
-fn build_skill(
+pub(crate) fn build_skill(
     db: &Connection,
     managed: &ManagedSkill,
     origin_cache: &mut OriginInferenceCache,
@@ -241,10 +256,11 @@ fn build_skill(
                 .unwrap_or_default()
         })
         .unwrap_or_default();
+    let metadata_path = resolve_library_path(db, ep).unwrap_or_else(|_| ep.to_path_buf());
     let tag_record = db
         .query_row(
             "SELECT tags_json, COALESCE(tags, '') FROM skill_tags WHERE skill_path = ?",
-            [ep.to_string_lossy().to_string()],
+            [metadata_path.to_string_lossy().to_string()],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )
         .optional();
@@ -270,6 +286,11 @@ fn build_skill(
         Err(_) => (Vec::new(), Some("skill_tags_unavailable".to_string())),
     };
     let sync_info = build_sync_info_with_cache(db, ep, origin_cache);
+    let deployment = find_deployment(db, ep).ok().flatten();
+    let content_path = deployment
+        .as_ref()
+        .map(|deployment| deployment.library_path.as_path())
+        .unwrap_or(ep);
     let state_result = ep
         .parent()
         .map(|root| managed_state_entry(root, ep))
@@ -280,13 +301,25 @@ fn build_skill(
     };
     let state_origin = state_entry.as_ref().map(|entry| entry.origin.clone());
     let state_managed = state_entry.is_some();
+    let content_state_result = if content_path == ep {
+        Ok(None)
+    } else {
+        content_path
+            .parent()
+            .map(|root| managed_state_entry(root, content_path))
+            .unwrap_or(Ok(None))
+    };
+    let (content_state_entry, content_state_error) = match content_state_result {
+        Ok(entry) => (entry, None),
+        Err(error) => (None, Some(error)),
+    };
     let symlink_source = state_origin
         .as_deref()
         .and_then(|origin| origin.strip_prefix("symlink:"))
         .map(|source| source.to_string());
     let inspection = inspect_skill_for_inventory(ep);
     let mut structure = inspection.structure;
-    if state_error.is_some() {
+    if state_error.is_some() || content_state_error.is_some() {
         structure
             .structure_warnings
             .push("managed_state_invalid".to_string());
@@ -294,27 +327,36 @@ fn build_skill(
     if let Some(warning) = tag_warning {
         structure.structure_warnings.push(warning);
     }
-    if let Some(entry) = &state_entry {
-        if content_fingerprint(ep)
+    let deployment_changed = state_entry.as_ref().is_some_and(|entry| {
+        content_fingerprint(ep)
             .map(|fingerprint| fingerprint != entry.last_seen_hash)
             .unwrap_or(true)
-        {
-            structure
-                .structure_warnings
-                .push("managed_content_changed".to_string());
-        }
+    });
+    let library_content_changed = content_state_entry.as_ref().is_some_and(|entry| {
+        content_fingerprint(content_path)
+            .map(|fingerprint| fingerprint != entry.last_seen_hash)
+            .unwrap_or(true)
+    });
+    if deployment_changed || library_content_changed {
+        structure
+            .structure_warnings
+            .push("managed_content_changed".to_string());
     }
     let upstream_url = if !sync_info.meta.resolved_locator.is_empty() {
         sync_info.meta.resolved_locator.clone()
     } else {
         sync_info.meta.origin_locator.clone()
     };
-    let source_type = if symlink_source.is_some() {
+    let is_deployment = deployment.is_some();
+    let source_type = if is_deployment {
+        "deployment".to_string()
+    } else if symlink_source.is_some() {
         "symlink".to_string()
     } else {
         sync_info.meta.origin_kind.clone()
     };
     let source = match source_type.as_str() {
+        "deployment" => "SkillMate".to_string(),
         "symlink" => "项目软连接".to_string(),
         "git" if upstream_url.contains("github.com") => "GitHub".to_string(),
         "git" => "Git".to_string(),
@@ -341,7 +383,7 @@ fn build_skill(
             description: structure.manifest_description.clone().unwrap_or_default(),
             readme: inspection.preview,
             version: inspection.version.unwrap_or_else(|| "未知".to_string()),
-            content_hash: content_fingerprint(ep).unwrap_or_default(),
+            content_hash: content_fingerprint(content_path).unwrap_or_default(),
         },
         origin: SkillOriginFields {
             upstream_url,
