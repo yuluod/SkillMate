@@ -71,6 +71,7 @@ export const skillmateApi = Object.freeze({
   }),
   market: Object.freeze({
     search: (source, query) => invoke("search_market", { source, query }),
+    openSource: (url) => invoke("open_external_url", { url }),
   }),
   drift: Object.freeze({
     preview: (sourcePath, targetPaths) => invoke("preview_sync_skill_copies", { sourcePath, targetPaths }),

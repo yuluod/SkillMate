@@ -2100,17 +2100,14 @@ body {
 
 .dashboard {
   display: grid;
-  gap: 24px;
+  gap: 20px;
 }
 
 .dashboard-status {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
-  padding: 14px 18px;
-  border: var(--border-w) solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--bg2);
+  justify-content: flex-end;
   align-items: center;
 }
 
@@ -2187,6 +2184,7 @@ body {
 .market-query { position: relative; }
 .market-query .icon { position: absolute; left: 11px; bottom: 12px; color: var(--text3); }
 .market-query input { padding-left: 35px; }
+.market-source-note { color: var(--text3); font-size: 0.74rem; line-height: 1.4; }
 .market-empty { padding: 22px 0 4px; color: var(--text3); text-align: center; font-size: 0.82rem; }
 .market-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 4px; }
 .market-result { min-width: 0; padding: 15px; border: var(--border-w) solid var(--border); border-radius: var(--radius-lg); display: grid; gap: 10px; background: var(--control); }
@@ -2197,7 +2195,6 @@ body {
 .market-result p { min-height: 2.8em; color: var(--text2); font-size: 0.8rem; line-height: 1.4; }
 .market-result-meta { min-height: 18px; display: flex; gap: 12px; color: var(--text3); font-size: 0.72rem; }
 .market-result-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.market-result-actions a { text-decoration: none; }
 
 .modal-intro { margin: -4px 0 18px; color: var(--text2); line-height: 1.5; }
 .drift-modal { max-width: 760px; }

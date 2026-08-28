@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AssistantsView, SkillsView, UpdatesView } from "./InventoryViews.jsx";
+import DashboardView from "./DashboardView.jsx";
 import { InstallModal, PreviewModal } from "./SkillMateModals.jsx";
 import SettingsView from "./SettingsView.jsx";
 import ScenarioView from "./ScenarioView.jsx";
@@ -128,6 +129,69 @@ describe("Dashboard 数据加载", () => {
 
     await expect(skillmateApi.inventory.loadDashboard()).rejects.toThrow("助手目录不可读");
     expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("概览优先展示 Skill 查找并说明实际检索来源", () => {
+    const { container } = render(
+      <DashboardView
+        stats={{ skills: 21, assistants: 4, updates: 0, structureIssues: 0, securityRisks: 0, localChanges: 0, driftGroups: 0, diagnostics: 0 }}
+        tagCount={4}
+        driftGroups={[]}
+        onNavigate={vi.fn()}
+        onMarketInstall={vi.fn()}
+        onOpenDrift={vi.fn()}
+      />
+    );
+
+    const sections = [...container.querySelectorAll(".dashboard-section")];
+    expect(sections[0].classList.contains("market-search")).toBe(true);
+    expect(screen.getByText(/skills\.sh 公共 Skill 索引/)).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("查找来源"), { target: { value: "github" } });
+    expect(screen.getByText(/GitHub 仓库/)).toBeTruthy();
+  });
+
+  it("市场结果使用系统浏览器打开来源，安装动作只进入检查流程", async () => {
+    const onMarketInstall = vi.fn();
+    invoke.mockImplementation(async (command) => {
+      if (command === "search_market") return {
+        items: [{
+          id: "github:owner/repo",
+          source: "github",
+          name: "repo",
+          description: "测试 Skill",
+          repository: "owner/repo",
+          stars: 10,
+          installs: 0,
+          url: "https://github.com/owner/repo",
+          installSource: "https://github.com/owner/repo.git",
+        }],
+      };
+      if (command === "open_external_url") return null;
+      throw new Error(`未处理命令: ${command}`);
+    });
+
+    render(
+      <DashboardView
+        stats={{ skills: 0, assistants: 0, updates: 0, structureIssues: 0, securityRisks: 0, localChanges: 0, driftGroups: 0, diagnostics: 0 }}
+        tagCount={0}
+        driftGroups={[]}
+        onNavigate={vi.fn()}
+        onMarketInstall={onMarketInstall}
+        onOpenDrift={vi.fn()}
+      />
+    );
+
+    fireEvent.change(screen.getByPlaceholderText("搜索写作、测试、PDF..."), { target: { value: "repo" } });
+    fireEvent.click(screen.getByRole("button", { name: "查找" }));
+    await screen.findByText("owner/repo");
+
+    fireEvent.click(screen.getByRole("button", { name: "查看来源" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_external_url", { url: "https://github.com/owner/repo" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "检查后安装" }));
+    expect(onMarketInstall).toHaveBeenCalledTimes(1);
+    expect(invoke).not.toHaveBeenCalledWith("install_skill", expect.anything());
   });
 
   it("结构验证失败时仍展示 Skill 文档和诊断", async () => {
