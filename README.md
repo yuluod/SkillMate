@@ -52,11 +52,13 @@ Git 来源支持普通仓库地址、GitHub shorthand、GitHub tree URL，以及
 - `https://github.com/example/skills.git#main:skills/writer`
 - `https://github.com/example/skills/tree/main/skills/writer`
 
-安装前会先生成结构预览、风险提示和写入计划。Git 来源的预览会临时克隆仓库；安装时不会把仓库的 `.git`、`.hg`、`.svn` 目录带入助手目录，但会单独保存来源、引用、子目录和已安装提交，普通仓库与仓库子目录都可以继续检查和更新。
+安装前会先生成结构预览、风险提示和写入计划。Git 来源的预览会临时克隆仓库；添加时不会保留 `.git`、`.hg`、`.svn` 目录，但会单独保存来源、引用、子目录和已安装提交，普通仓库与仓库子目录都可以继续检查和更新。
 
-本地目录默认复制到目标平台目录。对于本地目录来源，也可以选择“链接到项目”，把 Skill 软连接到对应平台的项目目录：Codex 使用 `.agents/skills`，Claude Code 使用 `.claude/skills`，Gemini CLI 使用 `.gemini/skills`，OpenClaw 使用 `skills`，Cursor 使用 `.cursor/skills`，OpenCode 使用 `.opencode/skills`，GitHub Copilot 使用 `.github/skills`。项目级安装同样会写入受管注册，后续可以安全预览、导出或解除软连接。
+添加与启用是两个独立动作。添加只把 Skill 复制到系统应用数据目录下的 SkillMate 统一库（`skillmate/skills`），不要求选择平台或项目；需要使用时，再从 Skill 列表选择平台，并启用到所有项目或指定项目。统一库是 SkillMate 管理的唯一主副本，平台目录只保存指向主副本的目录连接，不再维护第二份内容；停用只移除启用位置，主副本仍保留在库中，可以稍后重新启用。
 
-全局安装会写入各助手当前推荐的目录。为兼容既有安装，扫描时还会发现 Codex 的 `~/.codex/skills`，以及 OpenClaw、Gemini CLI 可复用的 `~/.agents/skills`；兼容目录只参与发现，不会改变新安装的目标路径。
+项目范围使用各平台约定的目录：Codex 使用 `.agents/skills`，Claude Code 使用 `.claude/skills`，Gemini CLI 使用 `.gemini/skills`，OpenClaw 使用 `skills`，Cursor 使用 `.cursor/skills`，OpenCode 使用 `.opencode/skills`，GitHub Copilot 使用 `.github/skills`。当前支持的平台都支持全局与项目范围；Windows 创建目录连接需要开启开发者模式。
+
+SkillMate 仍会发现 Agent、插件、项目或其他工具自行安装的 Skill，包括 Codex 的 `~/.codex/skills` 以及 OpenClaw、Gemini CLI 可复用的 `~/.agents/skills`。这些外部内容默认只读展示，不会被自动移动、覆盖或接管；目标位置存在同名内容时，新启用计划会明确阻止写入。
 
 安装输入会先经过本地规则识别，不需要模型 API。规则无法判断的自然语言或复杂说明会标记为“可用模型辅助识别”，但当前版本不会自动调用模型。
 
