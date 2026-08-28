@@ -108,6 +108,7 @@ export function InstallModal({
   onClose,
 }) {
   const { t } = useI18n();
+  const workflow = flow.workflow || "add";
   const {
     source: {
       kind: src,
@@ -134,6 +135,12 @@ export function InstallModal({
       primaryAction: installPrimaryAction,
       runPrimaryAction: runInstallPrimaryAction,
     },
+    selection = {
+      availableSkills: [],
+      selectedPaths: [],
+      required: false,
+      toggle: () => {},
+    },
     disclosure: {
       detailsOpen: installDetailsOpen,
       setDetailsOpen: setInstallDetailsOpen,
@@ -144,35 +151,75 @@ export function InstallModal({
     commandPreview: cmd,
   } = flow;
   return (
-    <ModalShell title={t("install.title")} icon="plus" className="install-modal" onClose={onClose}>
-      <div className="form">
-        <label htmlFor="install-source">{t("install.source")}</label>
-        <input id="install-source" value={pkg} onChange={e => setPkg(e.target.value)} placeholder={t("install.sourcePlaceholder")} />
-      </div>
-      {installDetectionView && (
+    <ModalShell title={t(workflow === "enable" ? "enable.title" : "install.title")} icon={workflow === "enable" ? "check" : "plus"} className="install-modal" onClose={onClose}>
+      {workflow === "add" ? (
+        <div className="form">
+          <label htmlFor="install-source">{t("install.source")}</label>
+          <input id="install-source" value={pkg} onChange={e => setPkg(e.target.value)} placeholder={t("install.sourcePlaceholder")} />
+        </div>
+      ) : (
+        <div className="install-compact success">
+          <span>{t("enable.librarySource")}</span>
+          <strong>{pkg.split(/[\\/]/).filter(Boolean).pop() || pkg}</strong>
+          <p className="registry-path">{pkg}</p>
+        </div>
+      )}
+      {workflow === "add" && installDetectionView && (
         <div className={`install-compact ${installDetectionView.tone}`}>
           <span>{installDetectionView.sourceLabel}</span>
           <strong>{installDetectionView.summary}</strong>
           {installDetectionView.warningSummary && <p>{installDetectionView.warningSummary}</p>}
         </div>
       )}
-      <div className="install-target">
-        <div className="form">
-          <label htmlFor="install-assistant">{t("install.target")}</label>
-          <select id="install-assistant" value={installAssistant} onChange={e => setInstallAssistant(e.target.value)}>
-            {assistants.map((assistant) => (
-              <option key={assistant.name} value={assistant.name}>{assistant.name}</option>
-            ))}
-          </select>
+      {workflow === "add" && (selection.required || selection.availableSkills.length > 1) && selection.availableSkills.length > 0 && (
+        <fieldset className="install-skill-selection">
+          <legend>{t("install.selectSkills")}</legend>
+          <p>{t("install.selectSkillsHint", { count: selection.availableSkills.length })}</p>
+          <div className="install-skill-options">
+            {selection.availableSkills.map((skill) => {
+              const title = skill.title || skill.relative_path.split("/").pop();
+              return (
+                <label className="install-skill-option" key={skill.relative_path}>
+                  <input
+                    type="checkbox"
+                    checked={selection.selectedPaths.includes(skill.relative_path)}
+                    onChange={() => selection.toggle(skill.relative_path)}
+                  />
+                  <span>
+                    <strong>{title}</strong>
+                    <small>{skill.relative_path}</small>
+                    {skill.description && <small>{skill.description}</small>}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+          {selection.required && selection.selectedPaths.length === 0 && (
+            <p className="install-selection-required" role="status">{t("install.selectionRequired")}</p>
+          )}
+        </fieldset>
+      )}
+      {workflow === "enable" && (
+        <div className="install-target">
+          <div className="form">
+            <label htmlFor="install-assistant">{t("install.target")}</label>
+            <select id="install-assistant" value={installAssistant} onChange={e => setInstallAssistant(e.target.value)}>
+              {assistants.map((assistant) => (
+                <option key={assistant.name} value={assistant.name}>{assistant.name}</option>
+              ))}
+            </select>
+          </div>
+          <div className="form install-scope-field">
+            <label htmlFor="install-scope">{t("install.scope")}</label>
+            <select id="install-scope" value={installMode} onChange={e => setInstallMode(e.target.value)}>
+              <option value="copy">{t("install.scope.global")}</option>
+              {showProjectLinkOption && <option value="symlink">{t("install.scope.project")}</option>}
+            </select>
+            <small className="form-help">{t(showProjectLinkOption ? (installMode === "symlink" ? "enable.targetHint.project" : "enable.targetHint.global") : "install.targetHint.globalOnly")}</small>
+          </div>
         </div>
-        {showProjectLinkOption && (
-          <label className="install-switch">
-            <input type="checkbox" checked={installMode === "symlink"} onChange={e => setInstallMode(e.target.checked ? "symlink" : "copy")} />
-            <span>{t("install.linkProject")}</span>
-          </label>
-        )}
-      </div>
-      {showProjectLinkOption && installMode === "symlink" && (
+      )}
+      {workflow === "enable" && showProjectLinkOption && installMode === "symlink" && (
         <div className="install-project">
           <div className="form">
             <label htmlFor="install-project-path">{t("install.projectPath")}</label>
@@ -188,7 +235,7 @@ export function InstallModal({
           )}
         </div>
       )}
-      {(showInstallAdvancedOptions || installAdvancedOpen) && (
+      {workflow === "add" && (showInstallAdvancedOptions || installAdvancedOpen) && (
         <div className="install-advanced">
           <div className="form">
             <label htmlFor="install-source-kind">{t("install.sourceType")}</label>
@@ -203,27 +250,41 @@ export function InstallModal({
       {installStructurePreview && (
         <div className={`structure-preview install-preview-card ${installPreviewView?.tone || (installStructurePreview.can_install === false ? "error" : getStructureStatusTone(installStructurePreview.structure_status))}`}>
           <div className="structure-preview-head">
-            <span>{t("install.plan")}</span>
-            <strong>{t(installPreviewView?.canApply && installPreviewCurrent ? "install.ready" : "install.needsCheck")}</strong>
+            <span>{t(workflow === "enable" ? "enable.plan" : "install.plan")}</span>
+            <strong>{t(installPreviewView?.canApply && installPreviewCurrent
+              ? (workflow === "enable" ? "enable.ready" : "install.ready")
+              : "install.needsCheck")}</strong>
           </div>
           <ul className="install-summary-list">
-            {buildInstallPreviewSummary(installStructurePreview, t).slice(0, 4).map((line, index) => (
+            {buildInstallPreviewSummary(installStructurePreview, t).map((line, index) => (
               <li key={`${line}-${index}`}>{line}</li>
             ))}
           </ul>
+          {installPreviewView?.actions?.length > 0 && (
+            <div className="install-plan-actions" aria-label={t("install.planWrites")}>
+              {installPreviewView.actions.map((action) => (
+                <div key={`${action.action}-${action.target}`}>
+                  <span className="stamp muted">{action.label}</span>
+                  <span><strong>{action.source}</strong><small>{action.target}</small></span>
+                </div>
+              ))}
+            </div>
+          )}
           {!installPreviewCurrent && <p>{t("install.stale")}</p>}
         </div>
       )}
       <button className="btn btn-primary full install-primary" onClick={runInstallPrimaryAction} disabled={installPrimaryAction.disabled || loading}>
-        <Icon name={installPrimaryAction.icon} size={16} />{t(installPrimaryAction.action === "install" ? "install.install" : "install.review")}
+        <Icon name={installPrimaryAction.icon} size={16} />{installPrimaryAction.label}
       </button>
       <div className="install-secondary-actions">
         <button className="btn btn-ghost btn-sm" onClick={() => setInstallDetailsOpen(!installDetailsOpen)}>
           <Icon name="preview" size={14} />{t(installDetailsOpen ? "install.hideDetails" : "install.showDetails")}
         </button>
-        <button className="btn btn-ghost btn-sm" onClick={() => setInstallAdvancedOpen(!installAdvancedOpen)}>
-          <Icon name="settings" size={14} />{t(installAdvancedOpen ? "install.hideAdvanced" : "install.showAdvanced")}
-        </button>
+        {workflow === "add" && (
+          <button className="btn btn-ghost btn-sm" onClick={() => setInstallAdvancedOpen(!installAdvancedOpen)}>
+            <Icon name="settings" size={14} />{t(installAdvancedOpen ? "install.hideAdvanced" : "install.showAdvanced")}
+          </button>
+        )}
       </div>
       {installDetailsOpen && (
         <div className="install-details">

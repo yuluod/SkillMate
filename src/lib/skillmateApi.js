@@ -13,7 +13,10 @@ export function invokeSkillMateCommand(command, args) {
 }
 
 async function loadDashboard() {
-  const assistants = await invoke("get_all_assistants");
+  const [assistants, librarySkills] = await Promise.all([
+    invoke("get_all_assistants"),
+    invoke("get_library_skills"),
+  ]);
   const [tagsResult, scenariosResult, gitResult] = await Promise.allSettled([
     invoke("get_all_tags"),
     invoke("get_scenarios"),
@@ -28,6 +31,7 @@ async function loadDashboard() {
 
   return {
     assistants,
+    librarySkills,
     tags: optionalValue("tags", "标签", tagsResult, []),
     scenarios: optionalValue("scenarios", "组合", scenariosResult, []),
     git: optionalValue("git", "Git 备份", gitResult, {
@@ -94,12 +98,14 @@ export const skillmateApi = Object.freeze({
   install: Object.freeze({
     detectSource: (input) => invoke("detect_install_source", { input }),
     previewProjectTargets: (projectPath) => invoke("preview_project_skill_targets", { projectPath }),
-    preview: ({ packageValue, source, assistantName, installMode, projectPath }) => invoke("preview_install_skill", {
+    preview: ({ packageValue, source, assistantName, installMode, projectPath, selectedSkillPaths, preferredSkillId }) => invoke("preview_install_skill", {
       package: packageValue,
       source,
       assistantName,
       installMode,
       projectPath,
+      selectedSkillPaths,
+      preferredSkillId,
     }),
   }),
   updates: Object.freeze({

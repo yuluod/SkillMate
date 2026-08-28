@@ -16,9 +16,10 @@ import {
   buildAppUpdateView,
   buildDashboardStats,
   buildDriftGroups,
+  buildScenarioSkillInventory,
   buildUniqueSkillInventory,
   filterSkillsByScenario,
-  getMarketInstallSource,
+  getMarketInstallRequest,
 } from "./lib/skillmate.mjs";
 import { useI18n } from "./lib/i18n.jsx";
 import { useAppUpdateFlow } from "./lib/useAppUpdateFlow.js";
@@ -33,7 +34,7 @@ import { createResettableTimer } from "./lib/toastTimer.mjs";
 import { toUserErrorMessage } from "./lib/errorMessage.mjs";
 import { skillmateApi } from "./lib/skillmateApi.js";
 
-const EMPTY_DATA = { assistants: [], tags: [], scenarios: [], git: { enabled: false, remote_url: "" } };
+const EMPTY_DATA = { assistants: [], librarySkills: [], tags: [], scenarios: [], git: { enabled: false, remote_url: "" } };
 const THEME_STORAGE_KEY = "skillmate-theme-mode";
 const THEME_MODES = ["system", "light", "dark"];
 const SKIN_STORAGE_KEY = "skillmate-skin";
@@ -341,11 +342,12 @@ function App() {
     setLoading(true);
     setLoadError(null);
     try {
-      const { assistants, tags, scenarios, git, diagnostics = [] } = await skillmateApi.inventory.loadDashboard();
+      const { assistants, librarySkills, tags, scenarios, git, diagnostics = [] } = await skillmateApi.inventory.loadDashboard();
       if (!mountedRef.current || requestId !== loadRequestRef.current) return;
       const failedSections = new Set(diagnostics.map((item) => item.section));
       setData((current) => ({
         assistants,
+        librarySkills,
         tags: failedSections.has("tags") ? current.tags : tags,
         scenarios: failedSections.has("scenarios") ? current.scenarios : scenarios,
         git: failedSections.has("git") ? current.git : git,
@@ -391,15 +393,27 @@ function App() {
   );
 
   const allSkills = useMemo(() => {
-    return buildUniqueSkillInventory(data.assistants);
-  }, [data.assistants]);
+    const deployed = buildUniqueSkillInventory(data.assistants);
+    const inLibrary = data.librarySkills.map((skill) => ({
+      ...skill,
+      in_library: true,
+      ai: t("skills.library"),
+      aiIcon: "skillmate",
+      availableIn: [],
+    }));
+    return [...deployed, ...inLibrary];
+  }, [data.assistants, data.librarySkills, t]);
   const driftGroups = useMemo(() => buildDriftGroups(data.assistants), [data.assistants]);
-  const dashboardStats = useMemo(() => buildDashboardStats(data.assistants), [data.assistants]);
+  const scenarioSkills = useMemo(() => buildScenarioSkillInventory(allSkills), [allSkills]);
+  const dashboardStats = useMemo(
+    () => buildDashboardStats(data.assistants, data.librarySkills),
+    [data.assistants, data.librarySkills]
+  );
 
   const scenarioFlow = useScenarioFlow({
     scenarios: data.scenarios,
-    allSkills,
-    selectableSkills: allSkills,
+    allSkills: scenarioSkills,
+    selectableSkills: scenarioSkills,
     showToast,
     loadData,
     setView,
@@ -684,12 +698,17 @@ function App() {
   }
 
   function installMarketSkill(item) {
-    const source = getMarketInstallSource(item);
-    if (!source) {
+    const request = getMarketInstallRequest(item);
+    if (!request) {
       showToast(t("market.error", { message: t("common.unknown") }), "error");
       return;
     }
-    installFlow.source.prepare(source);
+    installFlow.source.prepare(request.source, request.preferredSkillId);
+    setInstallOpen(true);
+  }
+
+  function enableLibrarySkill(skill) {
+    installFlow.source.prepare(skill.symlink_source || skill.path, "", "local", "enable");
     setInstallOpen(true);
   }
 
@@ -799,7 +818,10 @@ function App() {
               allSkillCount={allSkills.length}
               selectedTagCount={selectedTags.length}
               tags={tags}
-              onInstall={() => setInstallOpen(true)}
+              onInstall={() => {
+                installFlow.startAdd();
+                setInstallOpen(true);
+              }}
               onClearFilters={() => {
                 clearSearch();
                 setTags(current => current.map(tag => ({ ...tag, selected: false })));
@@ -808,6 +830,7 @@ function App() {
               onEditTags={openTagEditor}
               onOpenDirectory={openDir}
               onPreview={openPreview}
+              onEnable={enableLibrarySkill}
               onUnlink={unlinkSymlink}
               onRemove={remove}
               selectedSkillPaths={selectedSkillPaths}
@@ -822,7 +845,7 @@ function App() {
           )}
 
           {view === "scenarios" && (
-            <ScenarioView scenarios={data.scenarios} skills={allSkills} flow={scenarioFlow} />
+            <ScenarioView scenarios={data.scenarios} skills={scenarioSkills} flow={scenarioFlow} />
           )}
 
           {view === "updates" && (

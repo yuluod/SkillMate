@@ -21,10 +21,12 @@ import {
   buildInstallStructureSummary,
   buildPackageDetectionSummary,
   buildScenarioManifestPreviewSummary,
+  buildScenarioSkillInventory,
   buildSkillCardView,
   buildUniqueSkillInventory,
   buildDriftGroups,
   buildDashboardStats,
+  getMarketInstallRequest,
   getMarketInstallSource,
   buildSkillMateManifestPreviewSummary,
   buildSkillDescription,
@@ -67,20 +69,67 @@ test("跨助手同名 Skill 只有内容哈希不同时才形成漂移组", () =
 });
 
 test("工作台统计汇总风险、更新、诊断和内容漂移", () => {
+  const stats = buildDashboardStats(
+    [
+      {
+        name: "Codex", exists: true, diagnostics: [{ code: "x" }], skills: [
+          { name: "writer", path: "/a/writer", content_hash: "one", sync_state: "behind", managed_by_app: true, structure_status: "partial", structure_warnings: ["contains_scripts", "managed_content_changed"] },
+        ],
+      },
+      { name: "Cursor", exists: true, diagnostics: [], skills: [{ name: "writer", path: "/b/writer", content_hash: "two", managed_by_app: true, structure_status: "complete", structure_warnings: [] }] },
+    ],
+    [{ name: "reader", path: "/library/reader", structure_status: "complete", structure_warnings: [] }]
+  );
+  assert.deepEqual(stats, { skills: 3, assistants: 2, updates: 1, structureIssues: 1, securityRisks: 1, localChanges: 1, driftGroups: 1, diagnostics: 1 });
+});
+
+test("工作台按 SkillMate 库主副本统计多个启用位置", () => {
   const stats = buildDashboardStats([
     {
-      name: "Codex", exists: true, diagnostics: [{ code: "x" }], skills: [
-        { name: "writer", path: "/a/writer", content_hash: "one", sync_state: "behind", managed_by_app: true, structure_status: "partial", structure_warnings: ["contains_scripts", "managed_content_changed"] },
-      ],
+      name: "Codex", exists: true, skills: [{
+        name: "writer",
+        path: "/codex/writer",
+        symlink_source: "/library/writer",
+        source_type: "deployment",
+        sync_state: "behind",
+        structure_status: "partial",
+        structure_warnings: ["contains_scripts"],
+      }],
     },
-    { name: "Cursor", exists: true, diagnostics: [], skills: [{ name: "writer", path: "/b/writer", content_hash: "two", managed_by_app: true, structure_status: "complete", structure_warnings: [] }] },
+    {
+      name: "Claude Code", exists: true, skills: [{
+        name: "writer",
+        path: "/claude/writer",
+        symlink_source: "/library/writer",
+        source_type: "deployment",
+        sync_state: "behind",
+        structure_status: "partial",
+        structure_warnings: ["contains_scripts"],
+      }],
+    },
   ]);
-  assert.deepEqual(stats, { skills: 2, assistants: 2, updates: 1, structureIssues: 1, securityRisks: 1, localChanges: 1, driftGroups: 1, diagnostics: 1 });
+
+  assert.equal(stats.skills, 1);
+  assert.equal(stats.updates, 1);
+  assert.equal(stats.structureIssues, 1);
+  assert.equal(stats.securityRisks, 1);
 });
 
 test("市场结果优先使用后端给出的安全安装来源", () => {
   assert.equal(getMarketInstallSource({ installSource: "owner/repo#main:skills/writer", repository: "owner/repo" }), "owner/repo#main:skills/writer");
   assert.equal(getMarketInstallSource({ repository: "owner/repo" }), "https://github.com/owner/repo.git");
+});
+
+test("skills.sh 市场安装请求保留具体 Skill 身份", () => {
+  assert.deepEqual(getMarketInstallRequest({
+    source: "skills-sh",
+    repository: "anthropics/knowledge-work-plugins",
+    install_source: "https://github.com/anthropics/knowledge-work-plugins.git",
+    skill_id: "review-contract",
+  }), {
+    source: "https://github.com/anthropics/knowledge-work-plugins.git",
+    preferredSkillId: "review-contract",
+  });
 });
 
 function readAppSource() {
@@ -234,6 +283,8 @@ test("安装预览视图应当映射动作、冲突和包 warning", () => {
       skills: [{ relative_path: "writer", structure_status: "complete" }],
       actions: [{ action: "skip", source: "writer", target: "/tmp/writer", reason: "目标目录已存在", label: "跳过" }],
       conflicts: [{ target: "/tmp/writer", reason: "target_exists" }],
+      availableSkills: [{ relative_path: "writer", structure_status: "complete" }],
+      selectionRequired: false,
       needsModel: false,
       policy: {
         mode: "off",
@@ -288,16 +339,17 @@ test("安装预览视图应当映射项目软连接动作", () => {
   );
 });
 
-test("安装主按钮应当在预览通过后从检查切换为安装", () => {
+test("添加与启用流程应当使用各自的主操作", () => {
   assert.deepEqual(
     buildInstallPrimaryAction({
       packageValue: "https://github.com/example/cool-skill",
+      source: "git",
       preview: null,
       previewCurrent: false,
       previewingInstall: false,
       loading: false,
     }),
-    { action: "preview", label: "检查结构", icon: "preview", disabled: false }
+    { action: "preview", label: "分析仓库", icon: "preview", disabled: false }
   );
 
   assert.deepEqual(
@@ -308,7 +360,20 @@ test("安装主按钮应当在预览通过后从检查切换为安装", () => {
       previewingInstall: false,
       loading: false,
     }),
-    { action: "install", label: "安装", icon: "plus", disabled: false }
+    { action: "install", label: "添加到库", icon: "plus", disabled: false }
+  );
+
+  assert.deepEqual(
+    buildInstallPrimaryAction({
+      packageValue: "/tmp/skillmate/skills/writer",
+      source: "local",
+      preview: { can_apply: true },
+      previewCurrent: true,
+      previewingInstall: false,
+      loading: false,
+      workflow: "enable",
+    }),
+    { action: "install", label: "启用", icon: "check", disabled: false }
   );
 });
 
@@ -345,20 +410,18 @@ test("安装预览 token 应当绑定来源、目标和项目路径", () => {
   );
 });
 
-test("项目软连接入口只应当对本地目录来源展示", () => {
+test("项目范围入口由平台能力决定，与来源无关", () => {
   assert.equal(
     shouldShowProjectLinkOption({
-      source: "git",
-      detection: { normalized_source: "git" },
+      supportsProjectSkills: true,
     }),
-    false
+    true
   );
   assert.equal(
     shouldShowProjectLinkOption({
-      source: "git",
-      detection: { normalized_source: "local" },
+      supportsProjectSkills: false,
     }),
-    true
+    false
   );
 });
 
@@ -509,10 +572,18 @@ test("安装预览必须体现目标助手和来源", () => {
   assert.equal(
     buildInstallCommandPreview({
       source: "git",
+      installMode: "library",
+    }),
+    "添加到 SkillMate 库，暂不启用"
+  );
+
+  assert.equal(
+    buildInstallCommandPreview({
+      source: "git",
       packageValue: "https://github.com/example/cool-skill.git",
       assistantName: "Codex",
     }),
-    "克隆 Git 仓库到 Codex Skills 目录"
+    "在 Codex 中全局启用"
   );
 
   assert.equal(
@@ -521,7 +592,7 @@ test("安装预览必须体现目标助手和来源", () => {
       packageValue: "/tmp/cool-skill",
       assistantName: "Claude Code",
     }),
-    "复制本地目录到 Claude Code Skills 目录"
+    "在 Claude Code 中全局启用"
   );
 
   assert.equal(
@@ -531,7 +602,7 @@ test("安装预览必须体现目标助手和来源", () => {
       installMode: "symlink",
       projectPath: "/tmp/project",
     }),
-    "将本地目录软连接到 /tmp/project 的 Codex Skills 目录"
+    "在 /tmp/project 的 Codex 中启用"
   );
 });
 
@@ -595,7 +666,7 @@ test("安装来源识别摘要应当输出来源、引用和目标", () => {
       target_name: "writer",
       needs_model: false,
     }),
-    "识别为Git 仓库子目录 · 高置信度 · 引用 main · 子目录 skills/writer · 目标 writer"
+    "已识别为 Git 仓库子目录 · 引用 main · 子目录 skills/writer · 目标 writer"
   );
 
   assert.equal(
@@ -604,7 +675,7 @@ test("安装来源识别摘要应当输出来源、引用和目标", () => {
       confidence: "low",
       needs_model: true,
     }),
-    "识别为未知来源 · 低置信度 · 可用模型辅助识别"
+    "尚未识别来源 · 可用模型辅助识别"
   );
 });
 
@@ -634,7 +705,7 @@ test("安装来源识别视图应当集中卡片所需展示数据", () => {
     {
       title: "本地规则",
       tone: "success",
-      summary: "识别为Git 仓库子目录 · 高置信度 · 引用 main · 子目录 skills/writer · 目标 writer",
+      summary: "已识别为 Git 仓库子目录 · 引用 main · 子目录 skills/writer · 目标 writer",
       warningSummary: "",
       sourceLabel: "Git 仓库子目录",
       confidenceLabel: "高置信度",
@@ -707,6 +778,7 @@ test("Skill 卡片视图应当优先使用 manifest 标题和说明", () => {
       sourceLabel: "Git",
       canSync: true,
       hasUpdate: true,
+      canEnable: false,
       canDelete: true,
       canUnlink: false,
       availableIn: [],
@@ -752,6 +824,43 @@ test("不同逻辑路径即使名称相同也保持为独立安装位置", () =>
   ]);
 });
 
+test("场景按 SkillMate 库主副本合并多个启用位置", () => {
+  const inventory = buildScenarioSkillInventory([
+    {
+      path: "/project/.agents/skills/writer",
+      symlink_source: "/library/writer",
+      source_type: "deployment",
+      name: "writer",
+      availableIn: [{ name: "Codex", icon: "codex" }],
+    },
+    {
+      path: "/project/.claude/skills/writer",
+      symlink_source: "/library/writer",
+      source_type: "deployment",
+      name: "writer",
+      availableIn: [{ name: "Claude Code", icon: "claude" }],
+    },
+  ]);
+
+  assert.equal(inventory.length, 1);
+  assert.equal(inventory[0].path, "/library/writer");
+  assert.deepEqual(inventory[0].availableIn, [
+    { name: "Codex", icon: "codex" },
+    { name: "Claude Code", icon: "claude" },
+  ]);
+  assert.deepEqual(
+    filterSkillsByScenario({
+      skills: [{
+        path: "/project/.agents/skills/writer",
+        symlink_source: "/library/writer",
+        source_type: "deployment",
+      }],
+      activeScenarioPaths: ["/library/writer"],
+    }).map((skill) => skill.path),
+    ["/project/.agents/skills/writer"]
+  );
+});
+
 test("Skill 卡片应当显式汇总静态风险与受管漂移", () => {
   const view = buildSkillCardView({
     name: "network-skill",
@@ -795,6 +904,12 @@ test("Skill 卡片动作只应暴露受管删除或软连接解除", () => {
       symlinkUnlink: true,
     }
   );
+});
+
+test("SkillMate 库主副本与部署都可以继续启用到其他范围", () => {
+  assert.equal(buildSkillCardView({ in_library: true }).canEnable, true);
+  assert.equal(buildSkillCardView({ source_type: "deployment" }).canEnable, true);
+  assert.equal(buildSkillCardView({ source_type: "local" }).canEnable, false);
 });
 
 test("场景选择必须保存稳定路径而不是临时 ID", () => {

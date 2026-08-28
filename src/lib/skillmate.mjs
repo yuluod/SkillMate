@@ -36,6 +36,7 @@ const STRUCTURE_WARNING_LABELS = {
   structure_preview_failed: "结构预览失败",
   entry_document_truncated: "入口文档过大，仅分析前 1 MB",
   safety_scan_incomplete: "安全扫描达到上限，结果可能不完整",
+  scan_limit_reached: "仓库目录较多，发现结果可能不完整",
   plan_token_failed: "无法生成稳定操作计划",
   duplicate_target: "安装计划包含重复目标",
   target_exists: "目标目录已存在",
@@ -159,47 +160,54 @@ function localizedMap(t, prefix, value, fallbackMap, fallbackKey) {
 }
 
 export function buildInstallCommandPreview({ source, assistantName, installMode, projectPath, t }) {
+  if (installMode === "library") {
+    return localized(t, "install.command.library", "添加到 SkillMate 库，暂不启用");
+  }
   if (installMode === "symlink") {
-    return localized(t, "install.command.symlink", "将本地目录软连接到 {project} 的 {assistant} Skills 目录", {
+    return localized(t, "install.command.symlink", "在 {project} 的 {assistant} 中启用", {
       project: projectPath || localized(t, "install.command.project", "项目"),
       assistant: assistantName || localized(t, "install.command.target", "目标"),
     });
   }
-  if (source === "local") {
-    return localized(t, "install.command.copy", "复制本地目录到 {assistant} Skills 目录", {
-      assistant: assistantName || localized(t, "install.command.target", "目标"),
-    });
-  }
-  return localized(t, "install.command.clone", "克隆 Git 仓库到 {assistant} Skills 目录", {
+  return localized(t, source === "local" ? "install.command.copy" : "install.command.clone", "在 {assistant} 中全局启用", {
     assistant: assistantName || localized(t, "install.command.target", "目标"),
   });
 }
 
-export function buildInstallPreviewToken({ packageValue, source, assistantName, installMode, projectPath }) {
+function normalizeInstallSkillPaths(paths) {
+  return [...new Set((Array.isArray(paths) ? paths : [])
+    .map((path) => String(path || "").trim())
+    .filter(Boolean))].sort();
+}
+
+export function buildInstallPreviewToken({ packageValue, source, assistantName, installMode, projectPath, selectedSkillPaths, preferredSkillId }) {
   return {
     packageValue: (packageValue || "").trim(),
     source: source || "",
     assistantName: assistantName || "",
     installMode: installMode || "copy",
     projectPath: (projectPath || "").trim(),
+    selectedSkillPaths: normalizeInstallSkillPaths(selectedSkillPaths),
+    preferredSkillId: (preferredSkillId || "").trim(),
   };
 }
 
-export function isInstallPreviewCurrent({ previewToken, packageValue, source, assistantName, installMode, projectPath }) {
+export function isInstallPreviewCurrent({ previewToken, packageValue, source, assistantName, installMode, projectPath, selectedSkillPaths, preferredSkillId }) {
   if (!previewToken) {
     return false;
   }
-  const current = buildInstallPreviewToken({ packageValue, source, assistantName, installMode, projectPath });
+  const current = buildInstallPreviewToken({ packageValue, source, assistantName, installMode, projectPath, selectedSkillPaths, preferredSkillId });
   return previewToken.packageValue === current.packageValue
     && previewToken.source === current.source
     && previewToken.assistantName === current.assistantName
     && previewToken.installMode === current.installMode
-    && previewToken.projectPath === current.projectPath;
+    && previewToken.projectPath === current.projectPath
+    && JSON.stringify(previewToken.selectedSkillPaths || []) === JSON.stringify(current.selectedSkillPaths)
+    && (previewToken.preferredSkillId || "") === current.preferredSkillId;
 }
 
-export function shouldShowProjectLinkOption({ source, detection }) {
-  const detectedSource = detection?.normalized_source || detection?.source_kind || source;
-  return detectedSource === "local" || source === "local";
+export function shouldShowProjectLinkOption({ supportsProjectSkills = true }) {
+  return supportsProjectSkills !== false;
 }
 
 export function shouldShowInstallAdvancedOptions({ advancedOpen, detection }) {
@@ -218,25 +226,47 @@ export function shouldShowInstallAdvancedOptions({ advancedOpen, detection }) {
 
 export function buildInstallPrimaryAction({
   packageValue,
+  source,
   preview,
   previewCurrent,
   previewingInstall,
   loading,
+  selectionRequired = false,
+  selectedSkillCount = 0,
+  workflow = "add",
   t,
 }) {
   const hasInput = Boolean((packageValue || "").trim());
   const canApply = Boolean(preview?.can_apply ?? preview?.can_install);
-  const disabled = !hasInput || previewingInstall || loading;
+  const waitingForSelection = selectionRequired && selectedSkillCount === 0;
+  const disabled = !hasInput || previewingInstall || loading || waitingForSelection;
   if (previewingInstall) {
-    return { action: "preview", label: localized(t, "install.action.checking", "检查中..."), icon: "preview", disabled: true };
+    return { action: "preview", label: localized(t, "install.action.analyzing", "分析中..."), icon: "preview", disabled: true };
+  }
+  if (waitingForSelection) {
+    return { action: "preview", label: localized(t, "install.action.selectSkill", "请先选择 Skill"), icon: "preview", disabled: true };
   }
   if (preview && previewCurrent && canApply) {
-    return { action: "install", label: localized(t, "install.action.install", "安装"), icon: "plus", disabled };
+    return {
+      action: "install",
+      label: workflow === "enable"
+        ? localized(t, "install.action.enable", "启用")
+        : localized(t, "install.action.add", "添加到库"),
+      icon: workflow === "enable" ? "check" : "plus",
+      disabled,
+    };
   }
   if (preview && previewCurrent && !canApply) {
-    return { action: "preview", label: localized(t, "install.action.recheck", "重新检查"), icon: "preview", disabled };
+    return { action: "preview", label: localized(t, "install.action.reanalyze", "重新分析"), icon: "preview", disabled };
   }
-  return { action: "preview", label: localized(t, "install.action.inspect", "检查结构"), icon: "preview", disabled };
+  return {
+    action: "preview",
+    label: source === "local"
+      ? localized(t, "install.action.analyzeDirectory", "分析目录")
+      : localized(t, "install.action.analyzeRepository", "分析仓库"),
+    icon: "preview",
+    disabled,
+  };
 }
 
 export function normalizeSkillStructure(skill) {
@@ -279,8 +309,9 @@ export function buildInstallDetectionSummary(detection, t) {
     return "";
   }
   const label = getInstallSourceLabel(detection.source_kind, t);
-  const confidence = getInstallConfidenceLabel(detection.confidence, t);
-  const parts = [localized(t, "install.detection.identified", "识别为{source}", { source: label }), confidence];
+  const parts = [detection.source_kind === "unknown"
+    ? localized(t, "install.detection.unrecognized", "尚未识别来源")
+    : localized(t, "install.detection.identified", "已识别为 {source}", { source: label })];
   if (detection.reference) {
     parts.push(localized(t, "install.detection.reference", "引用 {value}", { value: detection.reference }));
   }
@@ -367,6 +398,8 @@ export function buildInstallPreviewView(preview, t) {
       label: localized(t, `install.previewAction.${action.action}`, PREVIEW_ACTION_LABELS[action.action] || action.action),
     })),
     conflicts,
+    availableSkills: Array.isArray(preview.available_skills) ? preview.available_skills : (packageDetection.detected_skills || []),
+    selectionRequired: Boolean(preview.selection_required),
     needsModel: Boolean(packageDetection.needs_model),
     policy: {
       mode: policy.mode || "off",
@@ -422,7 +455,7 @@ export function buildValidationSummary(report, t) {
 
 export function buildSkillCardView(skill, t) {
   const structure = normalizeSkillStructure(skill);
-  const isSymlink = skill?.source_type === "symlink";
+  const isSymlink = ["symlink", "deployment"].includes(skill?.source_type);
   const isManaged = Boolean(skill?.managed_by_app);
   const securityWarnings = structure.warnings.filter((warning) => SECURITY_WARNING_CODES.has(warning));
   const availableIn = Array.isArray(skill?.availableIn) && skill.availableIn.length > 0
@@ -442,6 +475,7 @@ export function buildSkillCardView(skill, t) {
     sourceLabel: skill?.source || localized(t, "source.unmanaged", "未托管"),
     canSync: Boolean(skill?.can_sync),
     hasUpdate: Boolean(skill?.has_update),
+    canEnable: Boolean(skill?.in_library || skill?.source_type === "deployment"),
     canDelete: isManaged && !isSymlink,
     canUnlink: isManaged && isSymlink,
     availableIn,
@@ -476,6 +510,32 @@ export function buildUniqueSkillInventory(assistants) {
     }
   }
   return [...byPath.values()];
+}
+
+export function buildScenarioSkillInventory(skills) {
+  const byIdentity = new Map();
+  for (const skill of Array.isArray(skills) ? skills : []) {
+    const identity = skill?.source_type === "deployment" && skill?.symlink_source
+      ? skill.symlink_source
+      : skill?.path;
+    if (!identity) continue;
+    const existing = byIdentity.get(identity);
+    const availability = Array.isArray(skill?.availableIn) ? skill.availableIn : [];
+    if (existing) {
+      for (const platform of availability) {
+        if (!existing.availableIn.some((item) => item.name === platform.name)) {
+          existing.availableIn.push(platform);
+        }
+      }
+      continue;
+    }
+    byIdentity.set(identity, {
+      ...skill,
+      path: identity,
+      availableIn: [...availability],
+    });
+  }
+  return [...byIdentity.values()];
 }
 
 export function buildDriftGroups(assistants) {
@@ -525,8 +585,11 @@ export function buildDriftGroups(assistants) {
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
-export function buildDashboardStats(assistants) {
-  const skills = buildUniqueSkillInventory(assistants);
+export function buildDashboardStats(assistants, librarySkills = []) {
+  const skills = buildScenarioSkillInventory([
+    ...buildUniqueSkillInventory(assistants),
+    ...(Array.isArray(librarySkills) ? librarySkills : []),
+  ]);
   const driftGroups = buildDriftGroups(assistants);
   let updates = 0;
   let structureIssues = 0;
@@ -561,6 +624,20 @@ export function getMarketInstallSource(item) {
   }
   const repository = typeof item?.repository === "string" ? item.repository.trim() : "";
   return repository ? `https://github.com/${repository}.git` : "";
+}
+
+export function getMarketInstallRequest(item) {
+  const source = getMarketInstallSource(item);
+  if (!source) {
+    return null;
+  }
+  const preferredSkillId = typeof item?.skillId === "string"
+    ? item.skillId.trim()
+    : (typeof item?.skill_id === "string" ? item.skill_id.trim() : "");
+  return {
+    source,
+    preferredSkillId: item?.source === "skills-sh" ? preferredSkillId : "",
+  };
 }
 
 export function buildSkillDescription(skill) {
@@ -850,7 +927,12 @@ export function buildAppUpdateView(state, locale = "zh-CN") {
 }
 
 export function resolveScenarioSkills({ scenario, allSkills }) {
-  const skillMap = new Map(allSkills.map((skill) => [skill.path, skill]));
+  const skillMap = new Map(allSkills.map((skill) => [
+    skill?.source_type === "deployment" && skill?.symlink_source
+      ? skill.symlink_source
+      : skill.path,
+    skill,
+  ]));
   return scenario.skill_ids.map((path) => ({
     path,
     exists: skillMap.has(path),
@@ -864,5 +946,9 @@ export function formatScenarioCopyText(paths) {
 
 export function filterSkillsByScenario({ skills, activeScenarioPaths }) {
   const allowed = new Set(activeScenarioPaths);
-  return skills.filter((skill) => allowed.has(skill.path));
+  return skills.filter((skill) => allowed.has(
+    skill?.source_type === "deployment" && skill?.symlink_source
+      ? skill.symlink_source
+      : skill.path
+  ));
 }

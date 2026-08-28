@@ -1678,6 +1678,7 @@ body {
 .form { margin-bottom: 14px; }
 .form label { display: block; font-size: 0.83rem; color: var(--text2); margin-bottom: 6px; font-weight: 650; }
 .form-label { display: block; margin-bottom: 6px; color: var(--text2); font-size: 0.83rem; font-weight: 650; }
+.form-help { display: block; margin-top: 6px; color: var(--text3); font-size: 0.75rem; line-height: 1.4; }
 .form textarea {
   min-height: 88px;
   resize: vertical;
@@ -1748,28 +1749,62 @@ body {
 
 .install-target {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  align-items: end;
+  align-items: start;
 }
 
-.install-switch {
-  min-height: 40px;
-  margin-bottom: 14px;
-  padding: 0 12px;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  background: var(--control);
+.install-target .form { min-width: 0; }
+
+.install-skill-selection {
+  min-width: 0;
+  margin: 0 0 14px;
+  padding: 0;
   border: var(--border-w) solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text2);
-  font-size: 0.85rem;
-  cursor: pointer;
-  white-space: nowrap;
+  border-radius: var(--radius);
+  overflow: hidden;
 }
 
-.install-switch input { margin: 0; accent-color: var(--accent); }
+.install-skill-selection legend {
+  width: 100%;
+  padding: 10px 12px 4px;
+  color: var(--text);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.install-skill-selection > p {
+  margin: 0;
+  padding: 0 12px 10px;
+  color: var(--text3);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.install-skill-options {
+  max-height: 240px;
+  overflow-y: auto;
+  border-top: var(--border-w) solid var(--rule);
+}
+
+.install-skill-option {
+  min-height: 54px;
+  padding: 9px 12px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  color: var(--text2);
+  cursor: pointer;
+}
+
+.install-skill-option + .install-skill-option { border-top: var(--border-w) solid var(--rule); }
+.install-skill-option:hover { background: var(--control); }
+.install-skill-option input { margin: 3px 0 0; accent-color: var(--accent); }
+.install-skill-option > span { min-width: 0; display: grid; gap: 2px; }
+.install-skill-option strong { color: var(--text); font-size: 0.84rem; }
+.install-skill-option small { overflow: hidden; color: var(--text3); font-size: 0.74rem; text-overflow: ellipsis; white-space: nowrap; }
+.install-skill-selection .install-selection-required { padding-top: 9px; border-top: var(--border-w) solid var(--rule); color: var(--warn); }
 
 .install-project,
 .install-advanced,
@@ -1795,6 +1830,29 @@ body {
   color: var(--text2);
   font-size: 0.8rem;
 }
+
+.install-plan-actions {
+  max-height: 220px;
+  margin-top: 10px;
+  overflow-y: auto;
+  border-top: var(--border-w) solid var(--rule);
+}
+
+.install-plan-actions > div {
+  min-width: 0;
+  padding: 8px 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+}
+
+.install-plan-actions > div + div { border-top: var(--border-w) solid var(--rule); }
+.install-plan-actions > div > span:last-child { min-width: 0; display: grid; gap: 2px; }
+.install-plan-actions strong,
+.install-plan-actions small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.install-plan-actions strong { color: var(--text); font-size: 0.78rem; }
+.install-plan-actions small { color: var(--text3); font-family: var(--mono); font-size: 0.72rem; }
 
 .install-primary { margin-top: 10px; }
 
@@ -2764,6 +2822,8 @@ body {
 }
 
 @media (max-width: 620px) {
+  .install-target { grid-template-columns: 1fr; gap: 0; }
+
   [data-skin="ledger"] .nav-item.active {
     width: 100%;
     margin-right: 0;

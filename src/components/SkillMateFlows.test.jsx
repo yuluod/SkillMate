@@ -34,6 +34,7 @@ vi.mock("@tauri-apps/plugin-process", () => updaterMocks.process);
 
 function installFlow(overrides = {}) {
   return {
+    workflow: "add",
     source: {
       kind: "git",
       setKind: vi.fn(),
@@ -92,7 +93,7 @@ function installFlow(overrides = {}) {
       setAdvancedOpen: vi.fn(),
       showAdvancedOptions: false,
     },
-    commandPreview: "克隆 Git 仓库到 Codex Skills 目录",
+    commandPreview: "添加到 SkillMate 库，暂不启用",
     ...overrides,
   };
 }
@@ -105,6 +106,7 @@ describe("Dashboard 数据加载", () => {
   it("可选模块失败时仍返回助手和其他可用数据", async () => {
     invoke.mockImplementation(async (command) => {
       if (command === "get_all_assistants") return [{ name: "Codex", skills: [] }];
+      if (command === "get_library_skills") return [{ name: "writer", path: "/tmp/skillmate/skills/writer" }];
       if (command === "get_all_tags") throw new Error("标签数据库不可用");
       if (command === "get_scenarios") return [{ id: "writing", name: "写作" }];
       if (command === "get_git_backup") return { enabled: true, repo_path: "/tmp/backup" };
@@ -114,6 +116,7 @@ describe("Dashboard 数据加载", () => {
     const result = await skillmateApi.inventory.loadDashboard();
 
     expect(result.assistants).toEqual([{ name: "Codex", skills: [] }]);
+    expect(result.librarySkills).toEqual([{ name: "writer", path: "/tmp/skillmate/skills/writer" }]);
     expect(result.tags).toEqual([]);
     expect(result.scenarios).toEqual([{ id: "writing", name: "写作" }]);
     expect(result.git).toEqual({ enabled: true, repo_path: "/tmp/backup" });
@@ -128,7 +131,7 @@ describe("Dashboard 数据加载", () => {
     invoke.mockRejectedValueOnce(new Error("助手目录不可读"));
 
     await expect(skillmateApi.inventory.loadDashboard()).rejects.toThrow("助手目录不可读");
-    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledTimes(2);
   });
 
   it("概览优先展示 Skill 查找并说明实际检索来源", () => {
@@ -189,7 +192,7 @@ describe("Dashboard 数据加载", () => {
     fireEvent.click(screen.getByRole("button", { name: "查看来源" }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_external_url", { url: "https://github.com/owner/repo" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "检查后安装" }));
+    fireEvent.click(screen.getByRole("button", { name: "检查并添加" }));
     expect(onMarketInstall).toHaveBeenCalledTimes(1);
     expect(invoke).not.toHaveBeenCalledWith("install_skill", expect.anything());
   });
@@ -335,9 +338,159 @@ describe("外观偏好与登记册布局", () => {
     expect(packageRender.container.querySelector(".stamp-source")?.classList.contains("npm")).toBe(true);
     expect(packageRender.container.querySelectorAll('.registry-row[role="row"] > [role="cell"]')).toHaveLength(4);
   });
+
+  it("库中未启用的 Skill 提供直接启用操作", async () => {
+    const user = userEvent.setup();
+    const onEnable = vi.fn();
+    const skill = {
+      path: "/tmp/skillmate/skills/writer",
+      name: "writer",
+      source: "Local",
+      source_type: "local",
+      managed_by_app: true,
+      in_library: true,
+      tags: [],
+      size: "1 KB",
+      ai: "SkillMate 库",
+      structure_status: "complete",
+      structure_warnings: [],
+    };
+    render(
+      <SkillsView
+        skills={[skill]}
+        allSkillCount={1}
+        selectedTagCount={0}
+        tags={[]}
+        onInstall={vi.fn()}
+        onClearFilters={vi.fn()}
+        onEditTags={vi.fn()}
+        onOpenDirectory={vi.fn()}
+        onPreview={vi.fn()}
+        onEnable={onEnable}
+        onUnlink={vi.fn()}
+        onRemove={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "启用 writer" }));
+
+    expect(onEnable).toHaveBeenCalledWith(skill);
+  });
 });
 
 describe("安装流程交互", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+  });
+
+  it("添加只显示来源，启用才显示平台与范围", () => {
+    const addFlow = installFlow();
+    const { rerender } = render(
+      <InstallModal flow={addFlow} assistants={[{ name: "Codex" }]} loading={false} onClose={vi.fn()} />
+    );
+
+    expect(screen.getByRole("heading", { name: "添加 Skill" })).toBeTruthy();
+    expect(screen.getByLabelText("Skill 来源")).toBeTruthy();
+    expect(screen.queryByLabelText("使用平台")).toBeNull();
+
+    const enableFlow = installFlow({
+      workflow: "enable",
+      source: {
+        ...addFlow.source,
+        kind: "local",
+        package: "/tmp/skillmate/skills/writer",
+      },
+      commandPreview: "在 Codex 中全局启用",
+    });
+    rerender(
+      <InstallModal flow={enableFlow} assistants={[{ name: "Codex" }]} loading={false} onClose={vi.fn()} />
+    );
+
+    expect(screen.getByRole("heading", { name: "启用 Skill" })).toBeTruthy();
+    expect(screen.getByLabelText("使用平台")).toBeTruthy();
+    expect(screen.getByLabelText("生效范围")).toBeTruthy();
+    expect(screen.queryByLabelText("Skill 来源")).toBeNull();
+  });
+
+  it("添加预览只写入统一库且不携带平台或项目", async () => {
+    vi.useFakeTimers();
+    invoke.mockImplementation(async (command) => {
+      if (command === "detect_install_source") {
+        return {
+          detector: "rules",
+          source_kind: "local",
+          normalized_source: "local",
+          original_input: "/tmp/writer",
+          confidence: "high",
+          warnings: [],
+          needs_model: false,
+        };
+      }
+      if (command === "preview_install_skill") {
+        return {
+          can_install: true,
+          can_apply: true,
+          message: "将 1 个 Skill 添加到 SkillMate 库",
+          structure_status: "complete",
+          structure_features: [],
+          structure_warnings: [],
+          package_detection: {
+            package_kind: "single_skill",
+            detected_skills: [{ relative_path: ".", structure_status: "complete" }],
+            warnings: [],
+            needs_model: false,
+          },
+          target_actions: [{ action: "copy", source: "/tmp/writer", target: "/tmp/library/writer", reason: "添加到统一库" }],
+          conflicts: [],
+          plan_token: "add-plan",
+        };
+      }
+      throw new Error(`未处理命令: ${command}`);
+    });
+    const { result, unmount } = renderHook(() => useInstallFlow({
+      installOpen: true,
+      assistants: [{ name: "Codex", supports_project_skills: true }],
+      setInstallOpen: vi.fn(),
+      showToast: vi.fn(),
+      loadData: vi.fn(),
+      setLoading: vi.fn(),
+    }));
+
+    try {
+      act(() => result.current.source.prepare("/tmp/writer", "", "local", "add"));
+      await act(async () => vi.advanceTimersByTimeAsync(250));
+
+      expect(result.current.workflow).toBe("add");
+      expect(invoke).toHaveBeenCalledWith("preview_install_skill", expect.objectContaining({
+        package: "/tmp/writer",
+        source: "local",
+        assistantName: "",
+        installMode: "library",
+        projectPath: "",
+      }));
+    } finally {
+      unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it("从 SkillMate 库启用时保留本地来源类型", () => {
+    const { result } = renderHook(() => useInstallFlow({
+      installOpen: false,
+      assistants: [],
+      setInstallOpen: vi.fn(),
+      showToast: vi.fn(),
+      loadData: vi.fn(),
+      setLoading: vi.fn(),
+    }));
+
+    act(() => result.current.source.prepare("/tmp/skillmate/skills/writer", "", "local", "enable"));
+
+    expect(result.current.source.kind).toBe("local");
+    expect(result.current.source.package).toBe("/tmp/skillmate/skills/writer");
+    expect(result.current.workflow).toBe("enable");
+  });
+
   it("手动选择来源后不再被自动识别结果覆盖", async () => {
     vi.useFakeTimers();
     const detection = {
@@ -392,6 +545,36 @@ describe("安装流程交互", () => {
     rerender(<InstallModal flow={flow} assistants={[{ name: "Codex" }]} loading={false} onClose={vi.fn()} />);
     expect(screen.getByText("安装策略阻止了 1 项风险")).toBeTruthy();
     expect(screen.getByText(/Git 主机 example.com 不在信任列表/)).toBeTruthy();
+  });
+
+  it("多 Skill 仓库要求明确选择并展示完整目标计划", async () => {
+    const user = userEvent.setup();
+    const flow = installFlow();
+    const toggle = vi.fn();
+    flow.selection = {
+      availableSkills: [
+        { relative_path: "engineering/skills/code-review", title: "code-review", description: "审查代码", structure_status: "complete" },
+        { relative_path: "legal/skills/review-contract", title: "review-contract", description: "审查合同", structure_status: "complete" },
+      ],
+      selectedPaths: [],
+      required: true,
+      toggle,
+    };
+    flow.preview.structure.package_detection = {
+      package_kind: "multi_skill",
+      detected_skills: [],
+      warnings: [],
+    };
+    flow.preview.structure.target_path = "/Users/test/.agents/skills";
+    flow.preview.structure.message = "仓库包含多个 Skills，请选择要安装的项目";
+
+    render(<InstallModal flow={flow} assistants={[{ name: "Codex" }]} loading={false} onClose={vi.fn()} />);
+
+    expect(screen.getByText("选择要添加的 Skill")).toBeTruthy();
+    expect(screen.getByText("仓库包含多个 Skills，请选择要安装的项目")).toBeTruthy();
+    expect(screen.getByText("多 Skill · 0 个 Skill")).toBeTruthy();
+    await user.click(screen.getByRole("checkbox", { name: /review-contract/ }));
+    expect(toggle).toHaveBeenCalledWith("legal/skills/review-contract");
   });
 
   it("共享 Skill 删除动作携带全部受影响助手", async () => {

@@ -51,7 +51,7 @@ function formatHomePath(path = "") {
 function sourceStampClass(kind) {
   if (["legacy_npm", "npm"].includes(kind)) return "npm";
   if (["legacy_pip", "pip", "pypi"].includes(kind)) return "pip";
-  if (["local", "symlink"].includes(kind)) return "local";
+  if (["local", "symlink", "deployment"].includes(kind)) return "local";
   if (["git", "github"].includes(kind)) return "git";
   return "unmanaged";
 }
@@ -67,6 +67,7 @@ export function SkillsView({
   onEditTags,
   onOpenDirectory,
   onPreview,
+  onEnable = () => {},
   onUnlink,
   onRemove,
   selectedSkillPaths = [],
@@ -179,6 +180,7 @@ export function SkillsView({
                 </div>
                 <div className="registry-size" role="cell">{skill.size}</div>
                 <div className="registry-actions" role="cell">
+                  {card.canEnable && <button className="btn btn-primary btn-sm" onClick={() => onEnable(skill)} aria-label={t("skills.enable", { name: skill.name })}><Icon name="plus" size={15} />{t("skills.enableAction")}</button>}
                   <button className={`btn btn-sm ${needsReview ? "btn-review" : "btn-secondary"}`} onClick={() => onPreview(skill.path)} aria-label={t(needsReview ? "skills.reviewOne" : "skills.preview", { name: skill.name })}><Icon name={needsReview ? "shield" : "preview"} size={15} />{t(needsReview ? "skills.review" : "common.details")}</button>
                   <details className="registry-more">
                     <summary className="btn btn-ghost btn-sm" role="button" aria-label={t("skills.moreActions", { name: skill.name })}><Icon name="more" size={17} /></summary>
