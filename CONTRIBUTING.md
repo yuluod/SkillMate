@@ -5,7 +5,7 @@
 ## 开发环境
 
 - Node.js 22.13.0（见 `.node-version`）
-- pnpm 11.6.0（见 `package.json#packageManager`）
+- pnpm 11.24.0（见 `package.json#packageManager`）
 - Rust 1.96.0（见 `rust-toolchain.toml`）
 - 当前平台所需的 Tauri v2 系统依赖
 
