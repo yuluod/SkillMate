@@ -153,6 +153,35 @@ pub fn remove_path(path: &Path) -> Result<(), String> {
     }
 }
 
+#[cfg(all(test, unix))]
+pub(crate) fn create_test_directory_symlink(source: &Path, target: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(source, target)
+}
+
+#[cfg(all(test, windows))]
+pub(crate) fn create_test_directory_symlink(source: &Path, target: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(source, target)
+}
+
+#[cfg(test)]
+pub(crate) fn create_test_directory_symlink_or_skip(source: &Path, target: &Path) -> bool {
+    match create_test_directory_symlink(source, target) {
+        Ok(()) => true,
+        Err(error)
+            if cfg!(windows)
+                && (error.kind() == std::io::ErrorKind::PermissionDenied
+                    || error.raw_os_error() == Some(1314)) =>
+        {
+            if std::env::var_os("GITHUB_ACTIONS").is_some() {
+                panic!("Windows GitHub Actions 缺少目录软链接权限: {error}");
+            }
+            eprintln!("跳过目录软链接测试：当前 Windows 环境未开启开发者模式");
+            false
+        }
+        Err(error) => panic!("创建测试目录链接失败: {error}"),
+    }
+}
+
 pub fn assistant_definitions() -> &'static [AssistantDefinition] {
     &[
         AssistantDefinition {
@@ -286,9 +315,25 @@ pub fn git_base_dir(path: &Path) -> &Path {
     }
 }
 
+pub fn background_command(program: &str) -> Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut command = Command::new(program);
+        command.creation_flags(CREATE_NO_WINDOW);
+        command
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new(program)
+    }
+}
+
 pub fn git_output(path: &Path, args: &[&str]) -> Option<String> {
     let base = git_base_dir(path);
-    let out = Command::new("git")
+    let out = background_command("git")
         .args(args)
         .current_dir(base)
         .output()
@@ -390,10 +435,10 @@ pub fn detect_pip_package(path: &Path) -> Option<(String, String)> {
 }
 
 pub fn command_exists(cmd: &str) -> bool {
-    let check = if cfg!(target_os = "windows") {
-        Command::new("where").arg(cmd).output()
+    let check = if cfg!(windows) {
+        background_command("where").arg(cmd).output()
     } else {
-        Command::new("which").arg(cmd).output()
+        background_command("which").arg(cmd).output()
     };
     check.map(|o| o.status.success()).unwrap_or(false)
 }
@@ -453,7 +498,7 @@ pub fn run_command_with_options(
         }
         None => None,
     };
-    let mut command = Command::new(cmd);
+    let mut command = background_command(cmd);
     command
         .args(args)
         .stdout(Stdio::from(stdout_file))
@@ -514,16 +559,6 @@ pub fn run_command_with_options(
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
-    fn create_test_dir_symlink(source: &Path, target: &Path) -> std::io::Result<()> {
-        std::os::unix::fs::symlink(source, target)
-    }
-
-    #[cfg(windows)]
-    fn create_test_dir_symlink(source: &Path, target: &Path) -> std::io::Result<()> {
-        std::os::windows::fs::symlink_dir(source, target)
-    }
-
     #[test]
     fn remove_path_unlinks_directory_symlink_without_deleting_target() {
         let root = std::env::temp_dir().join(format!("skillmate-remove-link-{}", generate_id()));
@@ -531,15 +566,9 @@ mod tests {
         let link = root.join("link");
         fs::create_dir_all(&source).unwrap();
         fs::write(source.join("SKILL.md"), "writer").unwrap();
-        if let Err(error) = create_test_dir_symlink(&source, &link) {
-            if cfg!(windows)
-                && (error.kind() == std::io::ErrorKind::PermissionDenied
-                    || error.raw_os_error() == Some(1314))
-            {
-                let _ = fs::remove_dir_all(root);
-                return;
-            }
-            panic!("创建测试目录链接失败: {error}");
+        if !create_test_directory_symlink_or_skip(&source, &link) {
+            let _ = fs::remove_dir_all(root);
+            return;
         }
 
         remove_path(&link).unwrap();
@@ -624,7 +653,30 @@ mod tests {
                 global_discovery: &[".gemini/skills", ".agents/skills"],
                 project_install: ".gemini/skills",
             },
+            ExpectedPaths {
+                name: "Cursor",
+                icon: "cursor",
+                global_install: ".cursor/skills",
+                global_discovery: &[".cursor/skills"],
+                project_install: ".cursor/skills",
+            },
+            ExpectedPaths {
+                name: "OpenCode",
+                icon: "opencode",
+                global_install: ".config/opencode/skills",
+                global_discovery: &[".config/opencode/skills"],
+                project_install: ".opencode/skills",
+            },
+            ExpectedPaths {
+                name: "GitHub Copilot",
+                icon: "copilot",
+                global_install: ".copilot/skills",
+                global_discovery: &[".copilot/skills"],
+                project_install: ".github/skills",
+            },
         ];
+
+        assert_eq!(assistant_definitions().len(), expected.len());
 
         for expected in expected {
             let assistant = assistant_definitions()

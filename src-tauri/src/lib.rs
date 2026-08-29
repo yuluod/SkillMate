@@ -2408,7 +2408,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn managed_link_entry_path_allows_external_symlink_target() {
         let base = test_dir("managed-link-path");
         let root = base.join("skills");
@@ -2420,7 +2419,10 @@ mod tests {
         let link = root.join("skill-a");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(&source).unwrap();
-        std::os::unix::fs::symlink(&source, &link).unwrap();
+        if !app_core::create_test_directory_symlink_or_skip(&source, &link) {
+            std::fs::remove_dir_all(base).ok();
+            return;
+        }
 
         assert!(app_core::is_managed_link_entry_path(
             &link,
@@ -2489,7 +2491,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn openable_registered_folder_does_not_follow_managed_symlink_target() {
         let base = test_dir("openable-project-link");
         let project_root = base.join("project").join(".codex").join("skills");
@@ -2497,7 +2498,10 @@ mod tests {
         let link = project_root.join("skill-a");
         std::fs::create_dir_all(&project_root).unwrap();
         std::fs::create_dir_all(&source).unwrap();
-        std::os::unix::fs::symlink(&source, &link).unwrap();
+        if !app_core::create_test_directory_symlink_or_skip(&source, &link) {
+            std::fs::remove_dir_all(base).ok();
+            return;
+        }
 
         assert!(is_openable_registered_folder(
             &project_root,

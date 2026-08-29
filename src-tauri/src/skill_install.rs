@@ -1,4 +1,6 @@
-use crate::app_core::{expand_path, generate_id, remove_path, run_command_with_timeout};
+use crate::app_core::{
+    command_exists, expand_path, generate_id, remove_path, run_command_with_timeout,
+};
 use crate::install_policy::InstallPolicyDecision;
 use crate::managed_state::mark_managed_skill;
 use crate::operation_plan::{operation_plan_token, StableHash};
@@ -18,7 +20,9 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Output};
+#[cfg(test)]
+use std::process::Command;
+use std::process::Output;
 use std::time::Duration;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1590,12 +1594,7 @@ fn spec_for_detected_skill(spec: &GitInstallSpec, skill: &DetectedSkill) -> GitI
 }
 
 fn ensure_git_available() -> Result<(), String> {
-    let check = if cfg!(target_os = "windows") {
-        Command::new("where").arg("git").output()
-    } else {
-        Command::new("which").arg("git").output()
-    };
-    if check.map(|o| o.status.success()).unwrap_or(false) {
+    if command_exists("git") {
         Ok(())
     } else {
         Err("未安装: git".to_string())

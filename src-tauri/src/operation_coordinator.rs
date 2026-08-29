@@ -319,7 +319,6 @@ mod tests {
         assert!(!is_known_skill_path(&db, &path).unwrap());
     }
 
-    #[cfg(unix)]
     #[test]
     fn update_probe_resolves_deployment_to_library_copy() {
         let db = startup_database();
@@ -346,7 +345,11 @@ mod tests {
         fs::create_dir_all(&library_path).unwrap();
         fs::create_dir_all(deployment_path.parent().unwrap()).unwrap();
         fs::write(library_path.join("SKILL.md"), "writer").unwrap();
-        std::os::unix::fs::symlink(&library_path, &deployment_path).unwrap();
+        if !crate::app_core::create_test_directory_symlink_or_skip(&library_path, &deployment_path)
+        {
+            let _ = fs::remove_dir_all(root);
+            return;
+        }
         for (path, assistant, scope) in [
             (
                 &library_path,
