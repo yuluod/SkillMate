@@ -2,6 +2,7 @@ use crate::app_core::{
     command_exists, detect_npm_package, detect_pip_package, find_git_repo_root, get_git_remote_url,
     git_count, git_output, has_git_upstream, now_ms, run_command_with_timeout,
 };
+use crate::database::{database_path_key, PathColumn};
 use crate::install_policy::{evaluate_install_policy, load_install_policy, InstallPolicyInput};
 use crate::managed_installation::{is_explicitly_managed, refresh_managed_installation};
 use crate::managed_state::{is_managed_by_state, refresh_managed_skill_fingerprint};
@@ -112,9 +113,10 @@ pub fn load_origin_meta(
 }
 
 fn load_origin_record(db: &Connection, skill_path: &str) -> Result<Option<OriginRecord>, String> {
+    let skill_path = database_path_key(db, PathColumn::SkillOrigin, Path::new(skill_path))?;
     db.query_row(
         "SELECT rowid, skill_path, origin_kind, origin_locator, resolved_locator, tracking_ref, installed_ref, latest_ref, sync_state, sync_message, lag_count, last_probe_at, last_sync_at, managed_by_app FROM skill_origin_meta WHERE skill_path = ?",
-        [skill_path],
+        [&skill_path],
         |row| {
             Ok(OriginRecord {
                 row_id: row.get(0)?,
@@ -141,6 +143,7 @@ fn load_origin_record(db: &Connection, skill_path: &str) -> Result<Option<Origin
 }
 
 pub fn save_origin_meta(db: &Connection, meta: &SkillOriginMeta) -> Result<(), String> {
+    let skill_path = database_path_key(db, PathColumn::SkillOrigin, Path::new(&meta.skill_path))?;
     db.execute(
         "INSERT INTO skill_origin_meta (
             skill_path, origin_kind, origin_locator, resolved_locator, tracking_ref, installed_ref,
@@ -160,7 +163,7 @@ pub fn save_origin_meta(db: &Connection, meta: &SkillOriginMeta) -> Result<(), S
             last_sync_at = excluded.last_sync_at,
             managed_by_app = excluded.managed_by_app",
         params![
-            &meta.skill_path,
+            skill_path,
             &meta.origin_kind,
             &meta.origin_locator,
             &meta.resolved_locator,

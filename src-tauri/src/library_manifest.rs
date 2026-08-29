@@ -1,10 +1,12 @@
 use crate::app_core::{atomic_write, expand_path};
+use crate::database::{database_path_key, PathColumn};
 use crate::operation_plan::operation_plan_token;
 use crate::{AIAssistant, Scenario, Skill, Tag};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
+use std::path::Path;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LibraryExport {
@@ -139,9 +141,11 @@ pub fn merge_imported_library(
         if !skill.tags.is_empty() {
             let tags_json =
                 serde_json::to_string(&skill.tags).map_err(|error| error.to_string())?;
+            let skill_path =
+                database_path_key(&transaction, PathColumn::SkillTags, Path::new(&skill.path))?;
             transaction.execute(
                 "INSERT OR REPLACE INTO skill_tags (skill_path, tags, tags_json) VALUES (?, '', ?)",
-                params![skill.path, tags_json],
+                params![skill_path, tags_json],
             )
             .map_err(|e| e.to_string())?;
         }

@@ -1,4 +1,5 @@
 use crate::app_core::{assistant_definitions, generate_id};
+use crate::database::{database_path_key, PathColumn};
 use crate::managed_installation::{
     prune_missing_managed_installations, refresh_managed_installation,
 };
@@ -242,9 +243,10 @@ pub fn is_library_skill_path(path: &Path) -> bool {
 }
 
 pub fn library_skill_id(db: &Connection, path: &Path) -> Result<String, String> {
+    let path_key = database_path_key(db, PathColumn::LibrarySkill, path)?;
     db.query_row(
         "SELECT id FROM library_skills WHERE library_path = ?",
-        [path.to_string_lossy().to_string()],
+        [path_key],
         |row| row.get::<_, String>(0),
     )
     .map_err(|error| format!("SkillMate 库记录不存在: {error}"))
@@ -301,7 +303,7 @@ pub fn register_library_skill(
         .file_name()
         .and_then(|value| value.to_str())
         .ok_or_else(|| "SkillMate 库目录名无效".to_string())?;
-    let path_value = path.to_string_lossy().to_string();
+    let path_value = database_path_key(db, PathColumn::LibrarySkill, path)?;
     let existing_id = db
         .query_row(
             "SELECT id FROM library_skills WHERE library_path = ?",
@@ -351,6 +353,8 @@ pub fn register_deployment(
     project_path: Option<&str>,
     deploy_mode: &str,
 ) -> Result<(), String> {
+    let target_key = database_path_key(db, PathColumn::DeploymentTarget, target_path)?;
+    let library_key = database_path_key(db, PathColumn::LibrarySkill, library_path)?;
     db.execute(
         "INSERT INTO skill_deployments (
             target_path, skill_id, library_path, assistant, scope, project_path,
@@ -365,9 +369,9 @@ pub fn register_deployment(
             deploy_mode = excluded.deploy_mode,
             deployed_at = excluded.deployed_at",
         params![
-            target_path.to_string_lossy().to_string(),
+            target_key,
             skill_id,
-            library_path.to_string_lossy().to_string(),
+            library_key,
             assistant,
             scope,
             project_path,
@@ -386,10 +390,11 @@ pub fn find_deployment(
     if !table_exists(db, "skill_deployments")? {
         return Ok(None);
     }
+    let target_key = database_path_key(db, PathColumn::DeploymentTarget, target_path)?;
     db.query_row(
         "SELECT library_path, target_path, deploy_mode
          FROM skill_deployments WHERE target_path = ?",
-        [target_path.to_string_lossy().to_string()],
+        [target_key],
         |row| {
             Ok(SkillDeployment {
                 library_path: PathBuf::from(row.get::<_, String>(0)?),
@@ -404,9 +409,10 @@ pub fn remove_deployment(db: &Connection, target_path: &Path) -> Result<(), Stri
     if !table_exists(db, "skill_deployments")? {
         return Ok(());
     }
+    let target_key = database_path_key(db, PathColumn::DeploymentTarget, target_path)?;
     db.execute(
         "DELETE FROM skill_deployments WHERE target_path = ?",
-        [target_path.to_string_lossy().to_string()],
+        [target_key],
     )
     .map_err(|error| error.to_string())?;
     Ok(())
@@ -417,6 +423,8 @@ pub fn copy_origin_to_deployment(
     library_path: &Path,
     target_path: &Path,
 ) -> Result<(), String> {
+    let target_key = database_path_key(db, PathColumn::SkillOrigin, target_path)?;
+    let library_key = database_path_key(db, PathColumn::SkillOrigin, library_path)?;
     db.execute(
         "INSERT INTO skill_origin_meta (
             skill_path, origin_kind, origin_locator, resolved_locator, tracking_ref,
@@ -440,17 +448,15 @@ pub fn copy_origin_to_deployment(
             last_probe_at = excluded.last_probe_at,
             last_sync_at = excluded.last_sync_at,
             managed_by_app = 1",
-        params![
-            target_path.to_string_lossy().to_string(),
-            library_path.to_string_lossy().to_string(),
-        ],
+        params![target_key, library_key,],
     )
     .map_err(|error| error.to_string())?;
     Ok(())
 }
 
 pub fn refresh_deployment_origins(db: &Connection, library_path: &Path) -> Result<(), String> {
-    let library_key = library_path.to_string_lossy().to_string();
+    let library_key = database_path_key(db, PathColumn::LibrarySkill, library_path)?;
+    let origin_key = database_path_key(db, PathColumn::SkillOrigin, library_path)?;
     let registered = db
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM library_skills WHERE library_path = ?)",
@@ -473,7 +479,7 @@ pub fn refresh_deployment_origins(db: &Connection, library_path: &Path) -> Resul
              WHERE library_path = ?",
             params![
                 content_fingerprint(library_path)?,
-                &library_key,
+                origin_key,
                 chrono::Utc::now().to_rfc3339(),
                 &library_key,
             ],
@@ -483,17 +489,7 @@ pub fn refresh_deployment_origins(db: &Connection, library_path: &Path) -> Resul
     if !table_exists(db, "skill_deployments")? {
         return Ok(());
     }
-    let mut statement = db
-        .prepare("SELECT target_path FROM skill_deployments WHERE library_path = ?")
-        .map_err(|error| error.to_string())?;
-    let targets = statement
-        .query_map([library_path.to_string_lossy().to_string()], |row| {
-            row.get::<_, String>(0)
-        })
-        .map_err(|error| error.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
-    drop(statement);
+    let targets = deployment_targets_for_library(db, library_path)?;
     for target in targets {
         let target_path = Path::new(&target);
         copy_origin_to_deployment(db, library_path, target_path)?;
@@ -510,6 +506,27 @@ pub fn refresh_deployment_origins(db: &Connection, library_path: &Path) -> Resul
     Ok(())
 }
 
+fn deployment_targets_for_library(
+    db: &Connection,
+    library_path: &Path,
+) -> Result<Vec<String>, String> {
+    let query = if cfg!(windows) {
+        "SELECT target_path FROM skill_deployments
+         WHERE replace(library_path, '/', '\\') = replace(?, '/', '\\') COLLATE NOCASE"
+    } else {
+        "SELECT target_path FROM skill_deployments WHERE library_path = ?"
+    };
+    let mut statement = db.prepare(query).map_err(|error| error.to_string())?;
+    let targets = statement
+        .query_map([library_path.to_string_lossy().as_ref()], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    Ok(targets)
+}
+
 fn table_exists(db: &Connection, table: &str) -> Result<bool, String> {
     db.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)",
@@ -517,4 +534,94 @@ fn table_exists(db: &Connection, table: &str) -> Result<bool, String> {
         |row| row.get::<_, bool>(0),
     )
     .map_err(|error| error.to_string())
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn deployment_lookup_returns_every_windows_path_spelling() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE skill_deployments (
+                target_path TEXT PRIMARY KEY, skill_id TEXT NOT NULL, library_path TEXT NOT NULL,
+                assistant TEXT NOT NULL, scope TEXT NOT NULL, project_path TEXT,
+                deploy_mode TEXT NOT NULL, deployed_at TEXT NOT NULL
+             );
+             INSERT INTO skill_deployments VALUES
+                ('first', 'skill-1', 'C:\\SkillMate\\writer', 'Codex', 'global', NULL,
+                 'symlink', 'now'),
+                ('second', 'skill-1', 'c:/skillmate/writer', 'Claude Code', 'global', NULL,
+                 'symlink', 'now');",
+        )
+        .unwrap();
+
+        let mut targets =
+            deployment_targets_for_library(&db, Path::new("C:/SKILLMATE/writer")).unwrap();
+        targets.sort();
+
+        assert_eq!(targets, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn refresh_uses_each_tables_stored_path_key() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE library_skills (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, library_path TEXT NOT NULL UNIQUE,
+                source TEXT NOT NULL, source_kind TEXT NOT NULL, resolved_ref TEXT,
+                content_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+             );
+             CREATE TABLE skill_origin_meta (
+                skill_path TEXT PRIMARY KEY, origin_kind TEXT NOT NULL, origin_locator TEXT NOT NULL,
+                resolved_locator TEXT NOT NULL, tracking_ref TEXT NOT NULL, installed_ref TEXT NOT NULL,
+                latest_ref TEXT NOT NULL, sync_state TEXT NOT NULL, sync_message TEXT NOT NULL,
+                lag_count INTEGER NOT NULL, last_probe_at INTEGER, last_sync_at INTEGER,
+                managed_by_app INTEGER NOT NULL
+             );
+             CREATE TABLE skill_deployments (
+                target_path TEXT PRIMARY KEY, skill_id TEXT NOT NULL, library_path TEXT NOT NULL,
+                assistant TEXT NOT NULL, scope TEXT NOT NULL, project_path TEXT,
+                deploy_mode TEXT NOT NULL, deployed_at TEXT NOT NULL
+             );",
+        )
+        .unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "skillmate-windows-origin-key-{}",
+            crate::app_core::generate_id()
+        ));
+        let library_path = root.join("writer");
+        fs::create_dir_all(&library_path).unwrap();
+        fs::write(library_path.join("SKILL.md"), "writer").unwrap();
+        let library_key = library_path.to_string_lossy().into_owned();
+        let origin_key = library_key.replace('\\', "/").to_ascii_uppercase();
+        db.execute(
+            "INSERT INTO library_skills VALUES (
+                'skill-1', 'writer', ?, 'source', 'git', NULL, 'old', 'now', 'now'
+             )",
+            [&library_key],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO skill_origin_meta VALUES (
+                ?, 'git', 'source', 'source', 'main', 'new-ref', '', 'current', '',
+                0, NULL, NULL, 1
+             )",
+            [&origin_key],
+        )
+        .unwrap();
+
+        refresh_deployment_origins(&db, &library_path).unwrap();
+
+        let resolved_ref: String = db
+            .query_row(
+                "SELECT resolved_ref FROM library_skills WHERE id = 'skill-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(resolved_ref, "new-ref");
+        let _ = fs::remove_dir_all(root);
+    }
 }

@@ -1,4 +1,5 @@
 use crate::app_core::{assistant_definitions, format_size, AssistantDefinition};
+use crate::database::{database_path_key, PathColumn};
 use crate::managed_installation::{list_managed_installations, ManagedInstallation};
 use crate::managed_state::{content_fingerprint, managed_state_entry, STATE_FILE_NAME};
 use crate::skill_library::{find_deployment, resolve_library_path};
@@ -257,13 +258,16 @@ pub(crate) fn build_skill(
         })
         .unwrap_or_default();
     let metadata_path = resolve_library_path(db, ep).unwrap_or_else(|_| ep.to_path_buf());
-    let tag_record = db
-        .query_row(
-            "SELECT tags_json, COALESCE(tags, '') FROM skill_tags WHERE skill_path = ?",
-            [metadata_path.to_string_lossy().to_string()],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        )
-        .optional();
+    let tag_record =
+        database_path_key(db, PathColumn::SkillTags, &metadata_path).and_then(|metadata_key| {
+            db.query_row(
+                "SELECT tags_json, COALESCE(tags, '') FROM skill_tags WHERE skill_path = ?",
+                [metadata_key],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(|error| error.to_string())
+        });
     let (tags, tag_warning) = match tag_record {
         Ok(Some((tags_json, legacy_tags))) => match serde_json::from_str::<Vec<String>>(&tags_json)
         {
@@ -535,7 +539,6 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    #[cfg(unix)]
     #[test]
     fn distinct_symlink_installations_keep_distinct_inventory_identities() {
         let root = test_dir("symlink-identities");
@@ -546,8 +549,12 @@ mod tests {
         fs::create_dir_all(first.parent().unwrap()).unwrap();
         fs::create_dir_all(second.parent().unwrap()).unwrap();
         fs::write(source.join("SKILL.md"), "writer").unwrap();
-        std::os::unix::fs::symlink(&source, &first).unwrap();
-        std::os::unix::fs::symlink(&source, &second).unwrap();
+        if !crate::app_core::create_test_directory_symlink_or_skip(&source, &first)
+            || !crate::app_core::create_test_directory_symlink_or_skip(&source, &second)
+        {
+            let _ = fs::remove_dir_all(root);
+            return;
+        }
 
         assert_eq!(
             first.canonicalize().unwrap(),

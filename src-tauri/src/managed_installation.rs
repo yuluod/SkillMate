@@ -1,3 +1,5 @@
+use crate::app_core::remove_path;
+use crate::database::{database_path_key, PathColumn};
 use crate::managed_state::{
     content_fingerprint, fingerprint_matches, is_managed_by_state, managed_state_entry,
     read_managed_state, unmark_managed_skill, ManagedSkillState, ManagedStateCheckpoint,
@@ -191,7 +193,7 @@ impl ManagedMetadataCheckpoint {
 }
 
 fn capture_managed_root(db: &Connection, path: PathBuf) -> Result<ManagedRootCheckpoint, String> {
-    let key = path.to_string_lossy().to_string();
+    let key = database_path_key(db, PathColumn::ManagedRoot, &path)?;
     let row = db
         .query_row(
             "SELECT scope, project_path, updated_at FROM managed_roots WHERE root_path = ?",
@@ -210,7 +212,7 @@ fn capture_managed_root(db: &Connection, path: PathBuf) -> Result<ManagedRootChe
 }
 
 fn restore_managed_root(db: &Connection, checkpoint: &ManagedRootCheckpoint) -> Result<(), String> {
-    let key = checkpoint.path.to_string_lossy().to_string();
+    let key = database_path_key(db, PathColumn::ManagedRoot, &checkpoint.path)?;
     db.execute("DELETE FROM managed_roots WHERE root_path = ?", [&key])
         .map_err(|error| error.to_string())?;
     if let Some(row) = &checkpoint.row {
@@ -225,14 +227,14 @@ fn restore_managed_root(db: &Connection, checkpoint: &ManagedRootCheckpoint) -> 
 }
 
 fn capture_path_metadata(db: &Connection, path: PathBuf) -> Result<PathMetadataCheckpoint, String> {
-    let key = path.to_string_lossy().to_string();
+    let origin_key = database_path_key(db, PathColumn::SkillOrigin, &path)?;
     let origin = db
         .query_row(
             "SELECT origin_kind, origin_locator, resolved_locator, tracking_ref, installed_ref,
                     latest_ref, sync_state, sync_message, lag_count, last_probe_at, last_sync_at,
                     managed_by_app
              FROM skill_origin_meta WHERE skill_path = ?",
-            [&key],
+            [&origin_key],
             |row| {
                 Ok(OriginMetadataRow {
                     origin_kind: row.get(0)?,
@@ -252,12 +254,13 @@ fn capture_path_metadata(db: &Connection, path: PathBuf) -> Result<PathMetadataC
         )
         .optional()
         .map_err(|error| error.to_string())?;
+    let installation_key = database_path_key(db, PathColumn::ManagedInstallation, &path)?;
     let installation = db
         .query_row(
             "SELECT assistant, source, source_kind, target_name, scope, install_mode,
                     project_path, tracking_ref, subdir, resolved_ref, content_hash, installed_at
              FROM managed_installations WHERE skill_path = ?",
-            [&key],
+            [&installation_key],
             |row| {
                 Ok(ManagedInstallationRow {
                     assistant: row.get(0)?,
@@ -277,10 +280,11 @@ fn capture_path_metadata(db: &Connection, path: PathBuf) -> Result<PathMetadataC
         )
         .optional()
         .map_err(|error| error.to_string())?;
+    let tags_key = database_path_key(db, PathColumn::SkillTags, &path)?;
     let tags = db
         .query_row(
             "SELECT tags, tags_json FROM skill_tags WHERE skill_path = ?",
-            [&key],
+            [&tags_key],
             |row| {
                 Ok(SkillTagsRow {
                     tags: row.get(0)?,
@@ -291,11 +295,12 @@ fn capture_path_metadata(db: &Connection, path: PathBuf) -> Result<PathMetadataC
         .optional()
         .map_err(|error| error.to_string())?;
     let library_skill = if table_exists(db, "library_skills")? {
+        let library_key = database_path_key(db, PathColumn::LibrarySkill, &path)?;
         db.query_row(
             "SELECT id, name, source, source_kind, resolved_ref, content_hash,
                     created_at, updated_at
              FROM library_skills WHERE library_path = ?",
-            [&key],
+            [&library_key],
             |row| {
                 Ok(LibrarySkillRow {
                     id: row.get(0)?,
@@ -315,11 +320,12 @@ fn capture_path_metadata(db: &Connection, path: PathBuf) -> Result<PathMetadataC
         None
     };
     let deployment = if table_exists(db, "skill_deployments")? {
+        let deployment_key = database_path_key(db, PathColumn::DeploymentTarget, &path)?;
         db.query_row(
             "SELECT skill_id, library_path, assistant, scope, project_path,
                     deploy_mode, deployed_at
              FROM skill_deployments WHERE target_path = ?",
-            [&key],
+            [&deployment_key],
             |row| {
                 Ok(SkillDeploymentRow {
                     skill_id: row.get(0)?,
@@ -351,15 +357,21 @@ fn restore_path_metadata(
     db: &Connection,
     checkpoint: &PathMetadataCheckpoint,
 ) -> Result<(), String> {
-    let key = checkpoint.path.to_string_lossy().to_string();
-    db.execute("DELETE FROM skill_origin_meta WHERE skill_path = ?", [&key])
-        .map_err(|error| error.to_string())?;
+    let origin_key = database_path_key(db, PathColumn::SkillOrigin, &checkpoint.path)?;
     db.execute(
-        "DELETE FROM managed_installations WHERE skill_path = ?",
-        [&key],
+        "DELETE FROM skill_origin_meta WHERE skill_path = ?",
+        [&origin_key],
     )
     .map_err(|error| error.to_string())?;
-    db.execute("DELETE FROM skill_tags WHERE skill_path = ?", [&key])
+    let installation_key =
+        database_path_key(db, PathColumn::ManagedInstallation, &checkpoint.path)?;
+    db.execute(
+        "DELETE FROM managed_installations WHERE skill_path = ?",
+        [&installation_key],
+    )
+    .map_err(|error| error.to_string())?;
+    let tags_key = database_path_key(db, PathColumn::SkillTags, &checkpoint.path)?;
+    db.execute("DELETE FROM skill_tags WHERE skill_path = ?", [&tags_key])
         .map_err(|error| error.to_string())?;
     if let Some(row) = &checkpoint.origin {
         db.execute(
@@ -369,7 +381,7 @@ fn restore_path_metadata(
                 last_sync_at, managed_by_app
              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
-                &key,
+                &origin_key,
                 &row.origin_kind,
                 &row.origin_locator,
                 &row.resolved_locator,
@@ -393,7 +405,7 @@ fn restore_path_metadata(
                 project_path, tracking_ref, subdir, resolved_ref, content_hash, installed_at
              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
-                &key,
+                &installation_key,
                 &row.assistant,
                 &row.source,
                 &row.source_kind,
@@ -413,7 +425,7 @@ fn restore_path_metadata(
     if let Some(row) = &checkpoint.tags {
         db.execute(
             "INSERT INTO skill_tags (skill_path, tags, tags_json) VALUES (?, ?, ?)",
-            params![&key, &row.tags, &row.tags_json],
+            params![&tags_key, &row.tags, &row.tags_json],
         )
         .map_err(|error| error.to_string())?;
     }
@@ -424,8 +436,8 @@ fn clear_deployment_metadata(
     db: &Connection,
     checkpoint: &PathMetadataCheckpoint,
 ) -> Result<(), String> {
-    let key = checkpoint.path.to_string_lossy().to_string();
     if table_exists(db, "skill_deployments")? {
+        let key = database_path_key(db, PathColumn::DeploymentTarget, &checkpoint.path)?;
         db.execute(
             "DELETE FROM skill_deployments WHERE target_path = ?",
             [&key],
@@ -442,8 +454,8 @@ fn clear_library_skill_metadata(
     if checkpoint.library_skill.is_some() {
         return Ok(());
     }
-    let key = checkpoint.path.to_string_lossy().to_string();
     if table_exists(db, "library_skills")? {
+        let key = database_path_key(db, PathColumn::LibrarySkill, &checkpoint.path)?;
         db.execute("DELETE FROM library_skills WHERE library_path = ?", [&key])
             .map_err(|error| error.to_string())?;
     }
@@ -460,6 +472,7 @@ fn restore_library_skill_metadata(
     if !table_exists(db, "library_skills")? {
         return Ok(());
     }
+    let library_key = database_path_key(db, PathColumn::LibrarySkill, &checkpoint.path)?;
     db.execute(
         "INSERT INTO library_skills (
             id, name, library_path, source, source_kind, resolved_ref, content_hash,
@@ -476,7 +489,7 @@ fn restore_library_skill_metadata(
         params![
             &row.id,
             &row.name,
-            checkpoint.path.to_string_lossy().to_string(),
+            library_key,
             &row.source,
             &row.source_kind,
             &row.resolved_ref,
@@ -499,13 +512,14 @@ fn restore_deployment_metadata(
     if !table_exists(db, "skill_deployments")? {
         return Ok(());
     }
+    let target_key = database_path_key(db, PathColumn::DeploymentTarget, &checkpoint.path)?;
     db.execute(
         "INSERT INTO skill_deployments (
             target_path, skill_id, library_path, assistant, scope, project_path,
             deploy_mode, deployed_at
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         params![
-            checkpoint.path.to_string_lossy().to_string(),
+            target_key,
             &row.skill_id,
             &row.library_path,
             &row.assistant,
@@ -558,6 +572,7 @@ pub fn register_managed_root(
     scope: &str,
     project_path: Option<&str>,
 ) -> Result<(), String> {
+    let root_key = database_path_key(db, PathColumn::ManagedRoot, root)?;
     db.execute(
         "INSERT INTO managed_roots (root_path, scope, project_path, updated_at)
          VALUES (?, ?, ?, ?)
@@ -566,7 +581,7 @@ pub fn register_managed_root(
             project_path = COALESCE(excluded.project_path, managed_roots.project_path),
             updated_at = excluded.updated_at",
         params![
-            root.to_string_lossy().to_string(),
+            root_key,
             scope,
             project_path,
             chrono::Utc::now().to_rfc3339(),
@@ -622,7 +637,7 @@ pub fn find_managed_installation(
     db: &Connection,
     path: &Path,
 ) -> Result<Option<ManagedInstallation>, String> {
-    let path = path.to_string_lossy().to_string();
+    let path = database_path_key(db, PathColumn::ManagedInstallation, path)?;
     let mut statement = db
         .prepare(
             "SELECT skill_path, assistant, source, source_kind, target_name, scope,
@@ -780,6 +795,7 @@ pub fn record_managed_installation(
         .or_else(|| path.file_name().and_then(|value| value.to_str()))
         .ok_or_else(|| "受管安装缺少 target_name".to_string())?;
     let content_hash = content_fingerprint(path)?;
+    let path_key = database_path_key(db, PathColumn::ManagedInstallation, path)?;
     db.execute(
         "INSERT INTO managed_installations (
             skill_path, assistant, source, source_kind, target_name, scope, install_mode,
@@ -798,7 +814,7 @@ pub fn record_managed_installation(
             resolved_ref = COALESCE(excluded.resolved_ref, managed_installations.resolved_ref),
             content_hash = excluded.content_hash",
         params![
-            path.to_string_lossy().to_string(),
+            path_key,
             skill.assistant,
             skill.source,
             skill.source_kind,
@@ -823,6 +839,7 @@ pub fn refresh_managed_installation(
     resolved_ref: Option<&str>,
 ) -> Result<bool, String> {
     let content_hash = content_fingerprint(path)?;
+    let path_key = database_path_key(db, PathColumn::ManagedInstallation, path)?;
     let updated = db
         .execute(
             "UPDATE managed_installations
@@ -831,7 +848,7 @@ pub fn refresh_managed_installation(
             params![
                 content_hash,
                 resolved_ref.filter(|value| !value.trim().is_empty()),
-                path.to_string_lossy().to_string()
+                path_key
             ],
         )
         .map_err(|error| error.to_string())?;
@@ -839,7 +856,6 @@ pub fn refresh_managed_installation(
 }
 
 pub fn cleanup_skill_metadata(db: &Connection, target_path: &Path) -> Result<(), String> {
-    let path = target_path.to_string_lossy().to_string();
     let state_checkpoint = target_path
         .parent()
         .map(ManagedStateCheckpoint::capture)
@@ -851,7 +867,7 @@ pub fn cleanup_skill_metadata(db: &Connection, target_path: &Path) -> Result<(),
         let transaction = db
             .unchecked_transaction()
             .map_err(|error| error.to_string())?;
-        delete_path_metadata(&transaction, &path)?;
+        delete_path_metadata(&transaction, target_path)?;
         transaction.commit().map_err(|error| error.to_string())
     })();
     if let Err(error) = database_result {
@@ -869,6 +885,13 @@ pub fn cleanup_skill_metadata(db: &Connection, target_path: &Path) -> Result<(),
 }
 
 pub fn prune_missing_managed_installations(db: &Connection) -> Result<usize, String> {
+    prune_missing_managed_installations_with(db, remove_path)
+}
+
+fn prune_missing_managed_installations_with(
+    db: &Connection,
+    mut unlink: impl FnMut(&Path) -> Result<(), String>,
+) -> Result<usize, String> {
     let mut missing_deployments = Vec::new();
     let mut missing_installations = Vec::new();
     for installation in list_managed_installations(db)? {
@@ -887,30 +910,69 @@ pub fn prune_missing_managed_installations(db: &Connection) -> Result<usize, Str
         return Ok(0);
     }
     let checkpoint = ManagedMetadataCheckpoint::capture(db, &missing)?;
-    for path in &missing {
-        if let Some(root) = path.parent() {
-            unmark_managed_skill(root, path)?;
+    let mut removed_links = Vec::new();
+    let cleanup_result = (|| {
+        for path in &missing {
+            if std::fs::symlink_metadata(path)
+                .map(|metadata| metadata.file_type().is_symlink())
+                .unwrap_or(false)
+            {
+                let target = std::fs::read_link(path).map_err(|error| error.to_string())?;
+                removed_links.push((path.clone(), target));
+                unlink(path)?;
+            }
         }
-    }
-    let database_result = (|| {
+        for path in &missing {
+            if let Some(root) = path.parent() {
+                unmark_managed_skill(root, path)?;
+            }
+        }
         let transaction = db
             .unchecked_transaction()
             .map_err(|error| error.to_string())?;
         for path in &missing {
-            delete_path_metadata(&transaction, &path.to_string_lossy())?;
+            delete_path_metadata(&transaction, path)?;
         }
         transaction.commit().map_err(|error| error.to_string())
     })();
-    if let Err(error) = database_result {
-        return match checkpoint.restore(db) {
-            Ok(()) => Err(error),
-            Err(restore_error) => Err(format!(
-                "{}；恢复失效受管记录失败: {}",
-                error, restore_error
-            )),
+    if let Err(error) = cleanup_result {
+        let mut restore_errors = Vec::new();
+        if let Err(restore_error) = checkpoint.restore(db) {
+            restore_errors.push(format!("恢复受管记录失败: {restore_error}"));
+        }
+        for (path, target) in removed_links.iter().rev() {
+            if let Err(restore_error) = restore_directory_symlink(path, target) {
+                restore_errors.push(restore_error);
+            }
+        }
+        return if restore_errors.is_empty() {
+            Err(error)
+        } else {
+            Err(format!("{}；{}", error, restore_errors.join("；")))
         };
     }
     Ok(missing.len())
+}
+
+fn restore_directory_symlink(path: &Path, target: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) if std::fs::read_link(path).ok().as_deref() == Some(target) => return Ok(()),
+        Ok(_) => {
+            return Err(format!(
+                "恢复目录链接失败，位置已被占用: {}",
+                path.to_string_lossy()
+            ))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("无法检查待恢复目录链接: {error}")),
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, path)
+        .map_err(|error| format!("恢复目录链接失败 {}: {error}", path.to_string_lossy()))?;
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(target, path)
+        .map_err(|error| format!("恢复目录链接失败 {}: {error}", path.to_string_lossy()))?;
+    Ok(())
 }
 
 fn managed_path_is_missing(path: &Path) -> bool {
@@ -927,39 +989,48 @@ fn is_registered_deployment(db: &Connection, path: &Path) -> Result<bool, String
     if !table_exists(db, "skill_deployments")? {
         return Ok(false);
     }
+    let path_key = database_path_key(db, PathColumn::DeploymentTarget, path)?;
     db.query_row(
         "SELECT EXISTS(SELECT 1 FROM skill_deployments WHERE target_path = ?)",
-        [path.to_string_lossy().to_string()],
+        [path_key],
         |row| row.get::<_, bool>(0),
     )
     .map_err(|error| error.to_string())
 }
 
-fn delete_path_metadata(db: &Connection, path: &str) -> Result<(), String> {
+fn delete_path_metadata(db: &Connection, path: &Path) -> Result<(), String> {
     if table_exists(db, "skill_deployments")? {
+        let target_key = database_path_key(db, PathColumn::DeploymentTarget, path)?;
         db.execute(
             "DELETE FROM skill_deployments WHERE target_path = ?",
-            params![path],
+            params![target_key],
         )
         .map_err(|error| error.to_string())?;
     }
     if table_exists(db, "library_skills")? {
+        let library_key = database_path_key(db, PathColumn::LibrarySkill, path)?;
         db.execute(
             "DELETE FROM library_skills WHERE library_path = ?",
-            params![path],
+            params![library_key],
         )
         .map_err(|error| format!("该 Skill 仍在平台或项目中启用，请先停用后再删除: {error}"))?;
     }
+    let origin_key = database_path_key(db, PathColumn::SkillOrigin, path)?;
     db.execute(
         "DELETE FROM skill_origin_meta WHERE skill_path = ?",
-        params![path],
+        params![origin_key],
     )
     .map_err(|error| error.to_string())?;
-    db.execute("DELETE FROM skill_tags WHERE skill_path = ?", params![path])
-        .map_err(|error| error.to_string())?;
+    let tags_key = database_path_key(db, PathColumn::SkillTags, path)?;
+    db.execute(
+        "DELETE FROM skill_tags WHERE skill_path = ?",
+        params![tags_key],
+    )
+    .map_err(|error| error.to_string())?;
+    let installation_key = database_path_key(db, PathColumn::ManagedInstallation, path)?;
     db.execute(
         "DELETE FROM managed_installations WHERE skill_path = ?",
-        params![path],
+        params![installation_key],
     )
     .map_err(|error| error.to_string())?;
     Ok(())
@@ -1236,7 +1307,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[cfg(unix)]
     #[test]
     fn prunes_broken_deployment_before_missing_library_record() {
         let db = database();
@@ -1267,7 +1337,11 @@ mod tests {
         std::fs::create_dir_all(&library_path).unwrap();
         std::fs::create_dir_all(&deployment_root).unwrap();
         std::fs::write(library_path.join("SKILL.md"), "writer").unwrap();
-        std::os::unix::fs::symlink(&library_path, &deployment_path).unwrap();
+        if !crate::app_core::create_test_directory_symlink_or_skip(&library_path, &deployment_path)
+        {
+            let _ = std::fs::remove_dir_all(root);
+            return;
+        }
         mark_managed_skill(
             &library_root,
             crate::managed_state::LIBRARY_OWNER_NAME,
@@ -1301,7 +1375,24 @@ mod tests {
         .unwrap();
         std::fs::remove_dir_all(&library_path).unwrap();
 
+        let error = prune_missing_managed_installations_with(&db, |path| {
+            remove_path(path)?;
+            Err("测试注入的断链删除失败".to_string())
+        })
+        .unwrap_err();
+        assert!(error.contains("测试注入的断链删除失败"));
+        assert_eq!(std::fs::read_link(&deployment_path).unwrap(), library_path);
+        assert_eq!(list_managed_installations(&db).unwrap().len(), 2);
+        assert_eq!(
+            crate::managed_state::read_managed_state(&deployment_root)
+                .unwrap()
+                .managed_skills
+                .len(),
+            1
+        );
+
         assert_eq!(prune_missing_managed_installations(&db).unwrap(), 2);
+        assert!(std::fs::symlink_metadata(&deployment_path).is_err());
         for table in [
             "managed_installations",
             "library_skills",

@@ -1,11 +1,73 @@
+#[cfg(any(windows, test))]
+use rusqlite::OptionalExtension;
 use rusqlite::{params, Connection};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
 const DB_SCHEMA_VERSION: i64 = 7;
 static DATABASE_INITIALIZATION_ERROR: OnceLock<String> = OnceLock::new();
+
+#[derive(Clone, Copy)]
+pub enum PathColumn {
+    SkillTags,
+    SkillOrigin,
+    ManagedInstallation,
+    ManagedRoot,
+    LibrarySkill,
+    DeploymentTarget,
+}
+
+impl PathColumn {
+    #[cfg(any(windows, test))]
+    fn identifiers(self) -> (&'static str, &'static str) {
+        match self {
+            Self::SkillTags => ("skill_tags", "skill_path"),
+            Self::SkillOrigin => ("skill_origin_meta", "skill_path"),
+            Self::ManagedInstallation => ("managed_installations", "skill_path"),
+            Self::ManagedRoot => ("managed_roots", "root_path"),
+            Self::LibrarySkill => ("library_skills", "library_path"),
+            Self::DeploymentTarget => ("skill_deployments", "target_path"),
+        }
+    }
+}
+
+pub fn database_path_key(
+    connection: &Connection,
+    column: PathColumn,
+    path: &Path,
+) -> Result<String, String> {
+    let candidate = path.to_string_lossy().into_owned();
+    #[cfg(not(windows))]
+    {
+        let _ = (connection, column);
+        Ok(candidate)
+    }
+    #[cfg(windows)]
+    {
+        find_windows_path_key(connection, column, &candidate)
+            .map(|stored| stored.unwrap_or_else(|| candidate.replace('/', "\\")))
+    }
+}
+
+#[cfg(any(windows, test))]
+fn find_windows_path_key(
+    connection: &Connection,
+    column: PathColumn,
+    candidate: &str,
+) -> Result<Option<String>, String> {
+    let (table, column) = column.identifiers();
+    let sql = format!(
+        "SELECT {column} FROM {table}
+         WHERE replace({column}, '/', '\\') = replace(?, '/', '\\') COLLATE NOCASE
+         LIMIT 1"
+    );
+    connection
+        .query_row(&sql, [candidate], |row| row.get(0))
+        .optional()
+        .map_err(|error| error.to_string())
+}
 
 fn database_path() -> Result<PathBuf, String> {
     let directory = dirs::data_dir()
@@ -290,6 +352,34 @@ pub fn parse_legacy_list(value: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_path_lookup_reuses_stored_case_and_separators() {
+        let connection = Connection::open_in_memory().unwrap();
+        migrate_database(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO library_skills (
+                    id, name, library_path, source, source_kind, content_hash,
+                    created_at, updated_at
+                 ) VALUES ('1', 'writer', 'C:\\Users\\Alice\\SkillMate\\writer', '', 'local',
+                    'hash', 'now', 'now')",
+                [],
+            )
+            .unwrap();
+
+        let stored = find_windows_path_key(
+            &connection,
+            PathColumn::LibrarySkill,
+            "c:/users/alice/skillmate/writer",
+        )
+        .unwrap();
+
+        assert_eq!(
+            stored.as_deref(),
+            Some("C:\\Users\\Alice\\SkillMate\\writer")
+        );
+    }
 
     #[test]
     fn migration_preserves_legacy_lists_and_adds_schema_version() {

@@ -1,5 +1,5 @@
 use crate::app_core::generate_id;
-use crate::database::parse_legacy_list;
+use crate::database::{database_path_key, parse_legacy_list, PathColumn};
 use crate::operation_coordinator::run_exclusive_operation;
 use crate::skill_library::resolve_library_path;
 use crate::{lock_app_db, AppState};
@@ -71,11 +71,12 @@ fn update_skill_tags_in_db(
     tags: &[String],
 ) -> Result<String, String> {
     let metadata_path = resolve_library_path(db, skill_path)?;
+    let metadata_key = database_path_key(db, PathColumn::SkillTags, &metadata_path)?;
     let tags_json = serde_json::to_string(tags).map_err(|error| error.to_string())?;
     db.execute(
         "INSERT INTO skill_tags (skill_path, tags, tags_json) VALUES (?, '', ?)
          ON CONFLICT(skill_path) DO UPDATE SET tags = '', tags_json = excluded.tags_json",
-        params![metadata_path.to_string_lossy().to_string(), tags_json],
+        params![metadata_key, tags_json],
     )
     .map_err(|error| error.to_string())?;
     Ok("已更新".to_string())
