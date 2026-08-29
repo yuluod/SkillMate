@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.0.12] - 2026-08-29
+
 ### 新增
 
 - 新增 SkillMate 统一库，将添加 Skill 与在平台中启用 Skill 拆分为两个独立动作。
@@ -98,7 +100,8 @@
 - 修复 CI 格式检查和 Windows 平台故障注入测试。
 - 发布版本一致性测试不再硬编码版本号。
 
-[Unreleased]: https://github.com/yuluod/SkillMate/compare/v0.0.11...HEAD
+[Unreleased]: https://github.com/yuluod/SkillMate/compare/v0.0.12...HEAD
+[0.0.12]: https://github.com/yuluod/SkillMate/compare/v0.0.11...v0.0.12
 [0.0.11]: https://github.com/yuluod/SkillMate/compare/v0.0.10...v0.0.11
 [0.0.10]: https://github.com/yuluod/SkillMate/compare/v0.0.9...v0.0.10
 [0.0.9]: https://github.com/yuluod/SkillMate/compare/v0.0.8...v0.0.9
