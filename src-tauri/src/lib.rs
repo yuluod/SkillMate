@@ -1867,7 +1867,8 @@ mod tests {
     fn manifest_reconcile_can_disable_deployment_after_library_content_changes() {
         let db = test_db();
         let root = test_dir("manifest-drift");
-        let _library_guard = skill_library::use_test_library_root(root.join("library"));
+        let library_root = root.join("library");
+        let _library_guard = skill_library::use_test_library_root(library_root.clone());
         let source = root.join("writer");
         let project = root.join("project");
         fs::create_dir_all(&source).unwrap();
@@ -1903,7 +1904,7 @@ mod tests {
 
         let preview = preview_manifest(&db, &empty).unwrap();
         let result = apply_manifest(&db, &empty).unwrap();
-        let library_path = root.join("library/writer");
+        let library_path = library_root.join("writer");
 
         assert!(preview.can_apply);
         assert_eq!(result.removed, 1);
