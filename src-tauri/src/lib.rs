@@ -1960,8 +1960,13 @@ mod tests {
         let assistants = scan_all_assistants(&db).unwrap();
         let skill = assistants
             .iter()
-            .flat_map(|assistant| &assistant.skills)
-            .find(|skill| skill.inventory.path == deployment_path.to_string_lossy())
+            .find(|assistant| assistant.name == "Codex")
+            .and_then(|assistant| {
+                assistant
+                    .skills
+                    .iter()
+                    .find(|skill| skill.inventory.name == "writer")
+            })
             .unwrap();
 
         assert!(skill
@@ -2713,6 +2718,9 @@ mod tests {
     #[test]
     fn merge_imported_library_restores_skill_tag_mapping() {
         let db = test_db();
+        let expected_path =
+            database::database_path_key(&db, database::PathColumn::SkillTags, Path::new("/tmp/a"))
+                .unwrap();
         merge_imported_library(
             &db,
             LibraryExport {
@@ -2734,8 +2742,8 @@ mod tests {
 
         let stored_tags_json: String = db
             .query_row(
-                "SELECT tags_json FROM skill_tags WHERE skill_path = '/tmp/a'",
-                [],
+                "SELECT tags_json FROM skill_tags WHERE skill_path = ?",
+                [expected_path],
                 |row| row.get(0),
             )
             .unwrap();
@@ -2748,6 +2756,12 @@ mod tests {
     #[test]
     fn replace_import_clears_existing_records_before_restore() {
         let db = test_db();
+        let expected_path = database::database_path_key(
+            &db,
+            database::PathColumn::SkillTags,
+            Path::new("/tmp/new"),
+        )
+        .unwrap();
         db.execute(
             "INSERT INTO tags (id, name, color) VALUES ('old-tag', '旧标签', '#000')",
             [],
@@ -2804,8 +2818,8 @@ mod tests {
             .unwrap();
         let restored_tags_json: String = db
             .query_row(
-                "SELECT tags_json FROM skill_tags WHERE skill_path = '/tmp/new'",
-                [],
+                "SELECT tags_json FROM skill_tags WHERE skill_path = ?",
+                [expected_path],
                 |row| row.get(0),
             )
             .unwrap();

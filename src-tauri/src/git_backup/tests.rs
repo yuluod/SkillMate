@@ -1,7 +1,7 @@
 use super::*;
 use crate::app_core::{atomic_write, now_ms};
 use crate::operation_plan::StableHash;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -1239,6 +1239,7 @@ fn backup_sources_include_only_explicitly_managed_skills() {
 #[cfg(unix)]
 #[test]
 fn backup_source_dedup_prefers_real_path_in_any_order() {
+    use std::collections::BTreeMap;
     use std::os::unix::fs::symlink;
 
     let base = test_dir("source-dedup");

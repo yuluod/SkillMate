@@ -178,6 +178,7 @@ mod tests {
         .unwrap();
         let library_path = Path::new("/tmp/skillmate/skills/writer");
         let deployment_path = Path::new("/tmp/.agents/skills/writer");
+        let expected_path = database_path_key(&db, PathColumn::SkillTags, library_path).unwrap();
         db.execute(
             "INSERT INTO skill_deployments VALUES (?, 'writer-id', ?, 'Codex', 'global', NULL,
              'symlink', 'now')",
@@ -195,6 +196,6 @@ mod tests {
                 row.get::<_, String>(0)
             })
             .unwrap();
-        assert_eq!(stored_path, library_path.to_string_lossy());
+        assert_eq!(stored_path, expected_path);
     }
 }
