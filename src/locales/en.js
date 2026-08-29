@@ -605,6 +605,7 @@ const en = {
   "structure.warning.scan_limit_reached": "The repository has many directories; discovery may be incomplete",
   "structure.warning.plan_token_failed": "Could not create a stable operation plan",
   "structure.warning.duplicate_target": "The installation plan contains duplicate targets",
+  "structure.warning.invalid_target_name": "The Skill name is not supported on this platform",
   "structure.warning.target_exists": "The target directory already exists",
   "structure.warning.archive_unsupported": "Archive installation is not supported yet",
   "structure.warning.empty_input": "Input is empty",

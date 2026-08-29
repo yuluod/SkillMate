@@ -4,6 +4,7 @@ use crate::app_core::{
 use crate::skill_install::{preview_install_source, InstallPreview, PreviewConflict};
 use crate::skill_install_source::{
     install_target_name, is_git_install_source, parse_git_install_spec,
+    validate_install_target_name,
 };
 use crate::skill_model::SkillDescriptor;
 use serde::{Deserialize, Serialize};
@@ -444,11 +445,11 @@ pub fn validate_skillmate_manifest(manifest: &SkillMateManifest) -> Vec<SkillMat
             )),
         }
         if let Some(target_name) = skill.target_name.as_deref() {
-            if target_name.contains(['/', '\\']) || target_name == "." || target_name == ".." {
+            if validate_install_target_name(target_name).is_err() {
                 issues.push(issue(
                     index,
                     "invalid_target_name",
-                    "target_name 不能包含路径分隔符",
+                    "target_name 包含跨平台不支持的名称或字符",
                 ));
             }
         }

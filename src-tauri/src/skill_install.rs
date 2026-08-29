@@ -1,10 +1,11 @@
-use crate::app_core::{expand_path, generate_id, run_command_with_timeout};
+use crate::app_core::{expand_path, generate_id, remove_path, run_command_with_timeout};
 use crate::install_policy::InstallPolicyDecision;
 use crate::managed_state::mark_managed_skill;
 use crate::operation_plan::{operation_plan_token, StableHash};
 use crate::skill_install_source::{
     install_target_name, is_git_install_source, parse_git_install_spec, sanitize_git_locator,
-    validate_git_reference, validate_git_repo_locator, GitInstallSpec,
+    validate_git_reference, validate_git_repo_locator, validate_install_target_name,
+    GitInstallSpec,
 };
 use crate::skill_package::{
     detect_skill_package, DetectedSkill, PackageDetection, SkillPackageSource,
@@ -610,14 +611,7 @@ fn fingerprint_installable_tree(
 }
 
 pub fn remove_existing_path(path: &Path) -> Result<(), String> {
-    let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
-    if metadata.file_type().is_symlink() || metadata.is_file() {
-        fs::remove_file(path).map_err(|e| e.to_string())
-    } else if metadata.is_dir() {
-        fs::remove_dir_all(path).map_err(|e| e.to_string())
-    } else {
-        fs::remove_file(path).map_err(|e| e.to_string())
-    }
+    remove_path(path)
 }
 
 pub fn preview_install_source(package: &str, source: &str, target_root: &Path) -> InstallPreview {
@@ -1248,9 +1242,21 @@ fn build_install_preview_with_source(
         });
     }
     for skill in &package_detection.detected_skills {
-        let target = target_root.join(target_name_for_detected_skill(skill, fallback_name));
+        let target_name = target_name_for_detected_skill(skill, fallback_name);
+        let target = target_root.join(&target_name);
         let target_string = target.to_string_lossy().to_string();
-        if !planned_targets.insert(target.clone()) {
+        if let Err(error) = validate_install_target_name(&target_name) {
+            conflicts.push(PreviewConflict {
+                target: target_string.clone(),
+                reason: "invalid_target_name".to_string(),
+            });
+            actions.push(PreviewAction {
+                action: "skip".to_string(),
+                source: skill.relative_path.clone(),
+                target: target_string,
+                reason: error,
+            });
+        } else if !planned_targets.insert(target.clone()) {
             conflicts.push(PreviewConflict {
                 target: target_string.clone(),
                 reason: "duplicate_target".to_string(),
@@ -2187,6 +2193,32 @@ mod tests {
             .conflicts
             .iter()
             .any(|conflict| conflict.reason == "duplicate_target"));
+        let _ = fs::remove_dir_all(target);
+    }
+
+    #[test]
+    fn install_preview_rejects_windows_reserved_target_name() {
+        let target = test_dir("reserved-target");
+        let mut skill = complete_detected_skill("skills/con");
+        skill.title = Some("con".to_string());
+        let preview = build_install_preview(
+            PackageDetection {
+                package_kind: "single_skill".to_string(),
+                detected_skills: vec![skill],
+                warnings: vec![],
+                needs_model: false,
+            },
+            &target,
+            "fallback",
+            "local",
+            false,
+        );
+
+        assert!(!preview.can_apply);
+        assert!(preview
+            .conflicts
+            .iter()
+            .any(|conflict| conflict.reason == "invalid_target_name"));
         let _ = fs::remove_dir_all(target);
     }
 

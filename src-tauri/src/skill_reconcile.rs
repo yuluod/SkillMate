@@ -1,4 +1,4 @@
-use crate::app_core::atomic_write;
+use crate::app_core::{atomic_write, remove_path};
 use crate::managed_installation::ManagedMetadataCheckpoint;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -679,15 +679,6 @@ fn replace_journal_suffix(path: &Path, suffix: &str) -> Result<PathBuf, String> 
 
 fn path_exists(path: &Path) -> bool {
     path.exists() || fs::symlink_metadata(path).is_ok()
-}
-
-fn remove_path(path: &Path) -> Result<(), String> {
-    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
-    if metadata.file_type().is_symlink() || metadata.is_file() {
-        fs::remove_file(path).map_err(|error| error.to_string())
-    } else {
-        fs::remove_dir_all(path).map_err(|error| error.to_string())
-    }
 }
 
 #[cfg(unix)]

@@ -30,19 +30,43 @@ pub fn is_git_install_source(source: &str) -> bool {
 }
 
 pub fn install_target_name(package: &str, source: &str) -> Result<String, String> {
-    if source == "local" {
+    let target_name = if source == "local" {
         let source_path = expand_user_path(package.trim());
-        return source_path
+        source_path
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
             .filter(|name| !name.trim().is_empty())
-            .ok_or_else(|| "无法从本地目录推断 Skill 名称".to_string());
-    }
-    if is_git_install_source(source) {
-        return parse_git_install_spec(package).map(|spec| spec.target_name);
-    }
+            .ok_or_else(|| "无法从本地目录推断 Skill 名称".to_string())?
+    } else if is_git_install_source(source) {
+        parse_git_install_spec(package)?.target_name
+    } else {
+        return Err("当前版本仅支持 Git 仓库和本地目录安装".to_string());
+    };
 
-    Err("当前版本仅支持 Git 仓库和本地目录安装".to_string())
+    validate_install_target_name(&target_name)?;
+    Ok(target_name)
+}
+
+pub fn validate_install_target_name(name: &str) -> Result<(), String> {
+    if name.is_empty()
+        || name.trim() != name
+        || matches!(name, "." | "..")
+        || name
+            .chars()
+            .any(|character| character.is_control() || r#"<>:"/\|?*"#.contains(character))
+        || name.ends_with(['.', ' '])
+    {
+        return Err("Skill 名称包含跨平台不支持的字符".to_string());
+    }
+    let stem = name.split('.').next().unwrap_or(name).to_ascii_lowercase();
+    let stem_bytes = stem.as_bytes();
+    let numbered_device = stem_bytes.len() == 4
+        && matches!(&stem_bytes[..3], b"com" | b"lpt")
+        && matches!(stem_bytes[3], b'1'..=b'9');
+    if matches!(stem.as_str(), "con" | "prn" | "aux" | "nul") || numbered_device {
+        return Err(format!("Skill 名称 {} 是 Windows 保留名称", name));
+    }
+    Ok(())
 }
 
 pub fn detect_install_source_rules(input: &str) -> InstallDetection {
@@ -135,9 +159,11 @@ pub fn parse_git_install_spec(input: &str) -> Result<GitInstallSpec, String> {
     }
 
     if let Some(spec) = parse_github_tree_url(trimmed)? {
+        validate_install_target_name(&spec.target_name)?;
         return Ok(spec);
     }
     if let Some(spec) = parse_github_shorthand(trimmed) {
+        validate_install_target_name(&spec.target_name)?;
         return Ok(spec);
     }
 
@@ -157,6 +183,7 @@ pub fn parse_git_install_spec(input: &str) -> Result<GitInstallSpec, String> {
         .as_deref()
         .and_then(subdir_target_name)
         .unwrap_or(git_repo_name(&repo_url)?);
+    validate_install_target_name(&target_name)?;
 
     Ok(GitInstallSpec {
         original: trimmed.to_string(),
@@ -495,5 +522,13 @@ mod tests {
 
         assert_eq!(spec.target_name, "skillmate-local-git-name");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_windows_reserved_target_names_on_every_platform() {
+        for name in ["con", "NUL", "com1", "lpt9", "aux.txt"] {
+            assert!(validate_install_target_name(name).is_err(), "{name}");
+        }
+        assert!(validate_install_target_name("console-writer").is_ok());
     }
 }

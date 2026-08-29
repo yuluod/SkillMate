@@ -2224,7 +2224,7 @@ mod tests {
             "symlink",
         )
         .unwrap();
-        fs::remove_file(&deployment_path).unwrap();
+        app_core::remove_path(&deployment_path).unwrap();
 
         let skills = scan_unassigned_library_skills(&db).unwrap();
 

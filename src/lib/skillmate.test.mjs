@@ -282,7 +282,7 @@ test("安装预览视图应当映射动作、冲突和包 warning", () => {
       packageWarnings: "识别到助手包结构",
       skills: [{ relative_path: "writer", structure_status: "complete" }],
       actions: [{ action: "skip", source: "writer", target: "/tmp/writer", reason: "目标目录已存在", label: "跳过" }],
-      conflicts: [{ target: "/tmp/writer", reason: "target_exists" }],
+      conflicts: [{ target: "/tmp/writer", reason: "目标目录已存在" }],
       availableSkills: [{ relative_path: "writer", structure_status: "complete" }],
       selectionRequired: false,
       needsModel: false,

@@ -134,6 +134,25 @@ pub fn atomic_write(path: &Path, content: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+pub fn remove_path(path: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if metadata.file_type().is_symlink() {
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::FileTypeExt;
+
+            if metadata.file_type().is_symlink_dir() {
+                return fs::remove_dir(path).map_err(|error| error.to_string());
+            }
+        }
+        fs::remove_file(path).map_err(|error| error.to_string())
+    } else if metadata.is_dir() {
+        fs::remove_dir_all(path).map_err(|error| error.to_string())
+    } else {
+        fs::remove_file(path).map_err(|error| error.to_string())
+    }
+}
+
 pub fn assistant_definitions() -> &'static [AssistantDefinition] {
     &[
         AssistantDefinition {
@@ -494,6 +513,41 @@ pub fn run_command_with_options(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn create_test_dir_symlink(source: &Path, target: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(source, target)
+    }
+
+    #[cfg(windows)]
+    fn create_test_dir_symlink(source: &Path, target: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_dir(source, target)
+    }
+
+    #[test]
+    fn remove_path_unlinks_directory_symlink_without_deleting_target() {
+        let root = std::env::temp_dir().join(format!("skillmate-remove-link-{}", generate_id()));
+        let source = root.join("source");
+        let link = root.join("link");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("SKILL.md"), "writer").unwrap();
+        if let Err(error) = create_test_dir_symlink(&source, &link) {
+            if cfg!(windows)
+                && (error.kind() == std::io::ErrorKind::PermissionDenied
+                    || error.raw_os_error() == Some(1314))
+            {
+                let _ = fs::remove_dir_all(root);
+                return;
+            }
+            panic!("创建测试目录链接失败: {error}");
+        }
+
+        remove_path(&link).unwrap();
+
+        assert!(fs::symlink_metadata(&link).is_err());
+        assert!(source.join("SKILL.md").is_file());
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn gemini_uses_agent_skills_directories() {

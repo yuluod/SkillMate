@@ -39,6 +39,7 @@ const STRUCTURE_WARNING_LABELS = {
   scan_limit_reached: "仓库目录较多，发现结果可能不完整",
   plan_token_failed: "无法生成稳定操作计划",
   duplicate_target: "安装计划包含重复目标",
+  invalid_target_name: "Skill 名称不受当前平台支持",
   target_exists: "目标目录已存在",
   archive_unsupported: "压缩包安装暂未支持",
   empty_input: "输入为空",
@@ -397,7 +398,14 @@ export function buildInstallPreviewView(preview, t) {
       ...action,
       label: localized(t, `install.previewAction.${action.action}`, PREVIEW_ACTION_LABELS[action.action] || action.action),
     })),
-    conflicts,
+    conflicts: conflicts.map((conflict) => ({
+      ...conflict,
+      reason: localized(
+        t,
+        `structure.warning.${conflict.reason}`,
+        STRUCTURE_WARNING_LABELS[conflict.reason] || conflict.reason
+      ),
+    })),
     availableSkills: Array.isArray(preview.available_skills) ? preview.available_skills : (packageDetection.detected_skills || []),
     selectionRequired: Boolean(preview.selection_required),
     needsModel: Boolean(packageDetection.needs_model),
