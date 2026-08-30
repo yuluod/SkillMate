@@ -6,6 +6,22 @@
 
 ## [Unreleased]
 
+## [0.0.13] - 2026-08-30
+
+### 新增
+
+- 新增“启动时自动检查更新”设置，默认启用并持久化用户选择。
+
+### 改进
+
+- 平台页支持展开查看全部扫描目录和 Skills，并将详情交由页面统一滚动。
+- 为 Claude Code、Codex、OpenClaw、Gemini CLI、Cursor、OpenCode 和 GitHub Copilot 统一使用本地品牌图标，并记录图标资源来源。
+
+### 修复
+
+- 修复平台 Skills 较多时无法查看完整列表的问题。
+- 修复配置多个目录但暂无 Skill 的平台无法查看目录详情的问题。
+
 ## [0.0.12] - 2026-08-29
 
 ### 新增
@@ -100,7 +116,8 @@
 - 修复 CI 格式检查和 Windows 平台故障注入测试。
 - 发布版本一致性测试不再硬编码版本号。
 
-[Unreleased]: https://github.com/yuluod/SkillMate/compare/v0.0.12...HEAD
+[Unreleased]: https://github.com/yuluod/SkillMate/compare/v0.0.13...HEAD
+[0.0.13]: https://github.com/yuluod/SkillMate/compare/v0.0.12...v0.0.13
 [0.0.12]: https://github.com/yuluod/SkillMate/compare/v0.0.11...v0.0.12
 [0.0.11]: https://github.com/yuluod/SkillMate/compare/v0.0.10...v0.0.11
 [0.0.10]: https://github.com/yuluod/SkillMate/compare/v0.0.9...v0.0.10
