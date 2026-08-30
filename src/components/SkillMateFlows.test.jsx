@@ -1037,6 +1037,7 @@ describe("搜索流程", () => {
 describe("应用更新流程", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.removeItem("skillmate-auto-check-updates");
     updaterMocks.app.getVersion.mockResolvedValue("0.0.7");
   });
 
@@ -1069,6 +1070,28 @@ describe("应用更新流程", () => {
         await vi.advanceTimersByTimeAsync(10_000);
       });
       expect(updaterMocks.updater.check).toHaveBeenCalledTimes(1);
+    } finally {
+      unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it("关闭启动检查后不请求更新并持久化设置", async () => {
+    vi.useFakeTimers();
+    window.localStorage.setItem("skillmate-auto-check-updates", "false");
+
+    const { result, unmount } = renderAppUpdateFlow();
+    try {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      expect(updaterMocks.updater.check).not.toHaveBeenCalled();
+      expect(result.current.autoCheckEnabled).toBe(false);
+
+      act(() => {
+        result.current.setAutoCheckEnabled(true);
+      });
+      expect(window.localStorage.getItem("skillmate-auto-check-updates")).toBe("true");
     } finally {
       unmount();
       vi.useRealTimers();

@@ -77,6 +77,15 @@ function AppUpdateSettings({ value }) {
     <div className="settings-card settings-card-update">
       <SurfaceHeader className="settings-surface-header" title={t("settings.tabs.appUpdate")} description={t("settings.appUpdate.checkHint")} />
       <div className="settings-body">
+        <label className="install-switch">
+          <input
+            type="checkbox"
+            checked={value.autoCheckEnabled}
+            onChange={(event) => value.setAutoCheckEnabled(event.target.checked)}
+          />
+          <span>{t("settings.appUpdate.autoCheck")}</span>
+        </label>
+        <div className="git-meta">{t("settings.appUpdate.autoCheckHint")}</div>
         <div className={`app-update-status ${view.statusTone}`} role="status">
           <Icon name={view.status === "current" ? "check" : "updates"} size={18} />
           <strong>{t(`settings.appUpdate.status.${view.status}`)}</strong>

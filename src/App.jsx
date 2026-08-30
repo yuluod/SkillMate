@@ -455,6 +455,8 @@ function App() {
 
   const {
     appUpdateState,
+    autoCheckEnabled,
+    setAutoCheckEnabled,
     checkAppUpdate,
     installAppUpdate,
     restartApp,
@@ -869,6 +871,8 @@ function App() {
               backup={{ ...gitBackupFlow, lastSync: data.git.last_sync }}
               appUpdate={{
                 view: appUpdateView,
+                autoCheckEnabled,
+                setAutoCheckEnabled,
                 runPrimaryAction: runAppUpdatePrimaryAction,
                 check: checkAppUpdate,
               }}

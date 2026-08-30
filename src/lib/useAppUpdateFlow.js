@@ -2,6 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n } from "./i18n.jsx";
 import { toUserErrorMessage } from "./errorMessage.mjs";
 
+const AUTO_CHECK_STORAGE_KEY = "skillmate-auto-check-updates";
+
+function initialAutoCheckEnabled() {
+  if (typeof window === "undefined") return true;
+  return window.localStorage.getItem(AUTO_CHECK_STORAGE_KEY) !== "false";
+}
+
 async function loadAppUpdateApis() {
   const [{ getVersion }, { check }, { relaunch }] = await Promise.all([
     import("@tauri-apps/api/app"),
@@ -17,6 +24,7 @@ export function useAppUpdateFlow({ showToast }) {
   const autoCheckRef = useRef(false);
   const operationRef = useRef(null);
   const checkOperationRef = useRef(null);
+  const [autoCheckEnabled, setAutoCheckEnabledState] = useState(initialAutoCheckEnabled);
   const [appUpdateState, setAppUpdateState] = useState({
     status: "idle",
     currentVersion: "",
@@ -141,6 +149,12 @@ export function useAppUpdateFlow({ showToast }) {
     return runAppUpdateCheck(true);
   }, [runAppUpdateCheck]);
 
+  const setAutoCheckEnabled = useCallback((enabled) => {
+    const next = Boolean(enabled);
+    setAutoCheckEnabledState(next);
+    window.localStorage.setItem(AUTO_CHECK_STORAGE_KEY, String(next));
+  }, []);
+
   // 启动自动检查:静默模式,失败不打扰,发现新版本时提示一次。
   // 不复用 checkAppUpdate,避免把"已是最新"的成功 toast 和错误 toast 打到启动流程里。
   const runStartupUpdateCheck = useCallback(async () => {
@@ -152,11 +166,14 @@ export function useAppUpdateFlow({ showToast }) {
   }, [runAppUpdateCheck]);
 
   useEffect(() => {
+    if (!autoCheckEnabled) {
+      return undefined;
+    }
     const timer = setTimeout(() => {
       runStartupUpdateCheck();
     }, 3000);
     return () => clearTimeout(timer);
-  }, [runStartupUpdateCheck]);
+  }, [autoCheckEnabled, runStartupUpdateCheck]);
 
   const installAppUpdate = useCallback(async () => {
     if (operationRef.current && !checkOperationRef.current) {
@@ -282,6 +299,8 @@ export function useAppUpdateFlow({ showToast }) {
 
   return {
     appUpdateState,
+    autoCheckEnabled,
+    setAutoCheckEnabled,
     checkAppUpdate,
     installAppUpdate,
     restartApp,

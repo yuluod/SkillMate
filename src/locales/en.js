@@ -346,6 +346,8 @@ const en = {
   "settings.syncNow": "Sync now",
   "settings.appUpdate.available": "A new version is ready to install",
   "settings.appUpdate.checkHint": "Check the latest stable version on GitHub Releases",
+  "settings.appUpdate.autoCheck": "Check for updates on startup",
+  "settings.appUpdate.autoCheckHint": "Checks silently three seconds after startup and only notifies you when an update is available.",
   "settings.appUpdate.current": "Current version",
   "settings.appUpdate.next": "New version",
   "settings.appUpdate.date": "Release date",

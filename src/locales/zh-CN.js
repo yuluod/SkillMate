@@ -347,6 +347,8 @@ const zhCN = {
   "settings.syncNow": "立即同步",
   "settings.appUpdate.available": "检测到可安装的新版本",
   "settings.appUpdate.checkHint": "检查 GitHub Releases 上的最新正式版本",
+  "settings.appUpdate.autoCheck": "启动时自动检查更新",
+  "settings.appUpdate.autoCheckHint": "启动 3 秒后静默检查；仅在发现新版本时提醒。",
   "settings.appUpdate.current": "当前版本",
   "settings.appUpdate.next": "新版本",
   "settings.appUpdate.date": "发布时间",
