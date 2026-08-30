@@ -36,7 +36,7 @@ function MarketResult({ item, onInstall, onOpenSource }) {
   );
 }
 
-export default function DashboardView({ stats, tagCount, driftGroups, onNavigate, onMarketInstall, onOpenDrift }) {
+export function MarketDiscovery({ onInstall }) {
   const { t } = useI18n();
   const [source, setSource] = useState("skills-sh");
   const [query, setQuery] = useState("");
@@ -69,6 +69,25 @@ export default function DashboardView({ stats, tagCount, driftGroups, onNavigate
     }
   }
 
+  return (
+    <section className="dashboard-section market-search library-discovery">
+      <SurfaceSectionHeader title={t("market.title")} description={t("market.subtitle")} />
+      <form className="market-search-form" onSubmit={search}>
+        <label><span>{t("market.source")}</span><select value={source} onChange={(event) => setSource(event.target.value)}><option value="skills-sh">skills.sh</option><option value="github">GitHub</option></select></label>
+        <label className="market-query"><span className="visually-hidden">{t("common.search")}</span><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("market.placeholder")} /></label>
+        <button className="btn btn-primary" disabled={market.loading || query.trim().length < 2}><Icon name="search" size={15} />{market.loading ? t("market.searching") : t("market.search")}</button>
+      </form>
+      <p className="market-source-note">{t(source === "skills-sh" ? "market.sourceHint.skillsSh" : "market.sourceHint.github")}</p>
+      {market.error && <div className="install-compact error" role="alert"><strong>{market.error}</strong></div>}
+      {!market.error && market.items.length === 0 && <div className="market-empty">{market.searched ? t("market.noResults") : t("market.empty")}</div>}
+      {market.items.length > 0 && <div className="market-grid">{market.items.map((item) => <MarketResult key={item.id} item={item} onInstall={onInstall} onOpenSource={openSource} />)}</div>}
+    </section>
+  );
+}
+
+export default function DashboardView({ stats, tagCount, driftGroups, onNavigate, onInstall, onOpenDrift }) {
+  const { t } = useI18n();
+
   const attentionCount = stats.updates + stats.structureIssues + stats.securityRisks
     + stats.localChanges + stats.driftGroups + stats.diagnostics;
 
@@ -78,28 +97,18 @@ export default function DashboardView({ stats, tagCount, driftGroups, onNavigate
         title={t("dashboard.title")}
         description={t("dashboard.subtitle")}
         actions={(
-          <div className="dashboard-status" aria-label={t("dashboard.title")}>
-            <span className="stamp"><span className="stamp-num">{stats.skills}</span>{t("dashboard.skills")}</span>
-            <span className="stamp"><span className="stamp-num">{stats.assistants}</span>{t("dashboard.assistants")}</span>
-            <span className="stamp"><span className="stamp-num">{tagCount}</span>{t("dashboard.tags")}</span>
-            <span className={`stamp ${stats.updates ? "warn" : "success"}`}><span className="stamp-num">{stats.updates}</span>{t("dashboard.updates")}</span>
-            <span className={`stamp ${attentionCount ? "error" : "success"}`}><span className="stamp-num">{attentionCount}</span>{t("dashboard.risks")}</span>
-          </div>
+          <>
+            <div className="dashboard-status" aria-label={t("dashboard.title")}>
+              <span className="stamp"><span className="stamp-num">{stats.skills}</span>{t("dashboard.skills")}</span>
+              <span className="stamp"><span className="stamp-num">{stats.assistants}</span>{t("dashboard.assistants")}</span>
+              <span className="stamp"><span className="stamp-num">{tagCount}</span>{t("dashboard.tags")}</span>
+              <span className={`stamp ${stats.updates ? "warn" : "success"}`}><span className="stamp-num">{stats.updates}</span>{t("dashboard.updates")}</span>
+              <span className={`stamp ${attentionCount ? "error" : "success"}`}><span className="stamp-num">{attentionCount}</span>{t("dashboard.risks")}</span>
+            </div>
+            <button className="btn btn-primary btn-sm" type="button" onClick={onInstall}><Icon name="plus" size={14} />{t("common.install")}</button>
+          </>
         )}
       />
-
-      <section className="dashboard-section market-search">
-        <SurfaceSectionHeader title={t("market.title")} description={t("market.subtitle")} />
-        <form className="market-search-form" onSubmit={search}>
-          <label><span>{t("market.source")}</span><select value={source} onChange={(event) => setSource(event.target.value)}><option value="skills-sh">skills.sh</option><option value="github">GitHub</option></select></label>
-          <label className="market-query"><span className="visually-hidden">{t("common.search")}</span><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("market.placeholder")} /></label>
-          <button className="btn btn-primary" disabled={market.loading || query.trim().length < 2}><Icon name="search" size={15} />{market.loading ? t("market.searching") : t("market.search")}</button>
-        </form>
-        <p className="market-source-note">{t(source === "skills-sh" ? "market.sourceHint.skillsSh" : "market.sourceHint.github")}</p>
-        {market.error && <div className="install-compact error" role="alert"><strong>{market.error}</strong></div>}
-        {!market.error && market.items.length === 0 && <div className="market-empty">{market.searched ? t("market.noResults") : t("market.empty")}</div>}
-        {market.items.length > 0 && <div className="market-grid">{market.items.map((item) => <MarketResult key={item.id} item={item} onInstall={onMarketInstall} onOpenSource={openSource} />)}</div>}
-      </section>
 
       <section className="dashboard-section">
         <SurfaceSectionHeader title={t("dashboard.attention")} description={t("dashboard.attentionHint")} />
@@ -113,7 +122,6 @@ export default function DashboardView({ stats, tagCount, driftGroups, onNavigate
           {attentionCount === 0 && <div className="attention-empty"><Icon name="check" size={22} /><div><strong>{t("dashboard.allClear")}</strong><p>{t("dashboard.allClearHint")}</p></div></div>}
         </div>
       </section>
-
     </div>
   );
 }

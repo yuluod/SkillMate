@@ -2313,6 +2313,7 @@ body {
   background: var(--bg2);
   box-shadow: 0 5px 12px rgba(0, 0, 0, 0.07);
 }
+.library-discovery { margin-bottom: 18px; }
 .market-search-form { display: grid; grid-template-columns: 150px minmax(180px, 1fr) auto; gap: 10px; align-items: end; }
 .market-search-form label { display: grid; gap: 6px; color: var(--text2); font-size: 0.76rem; font-weight: 650; }
 .market-search-form > .btn { min-height: var(--control-height); }

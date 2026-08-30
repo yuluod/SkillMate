@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AiAvatar, AssistantsView, SkillsView, UpdatesView } from "./InventoryViews.jsx";
-import DashboardView from "./DashboardView.jsx";
+import DashboardView, { MarketDiscovery } from "./DashboardView.jsx";
 import { InstallModal, PreviewModal } from "./SkillMateModals.jsx";
 import SettingsView from "./SettingsView.jsx";
 import ScenarioView from "./ScenarioView.jsx";
@@ -134,24 +134,23 @@ describe("Dashboard 数据加载", () => {
     expect(invoke).toHaveBeenCalledTimes(2);
   });
 
-  it("概览优先展示 Skill 查找并说明实际检索来源", () => {
+  it("概览聚焦本机状态并保留直接添加入口", () => {
+    const onInstall = vi.fn();
     const { container } = render(
       <DashboardView
         stats={{ skills: 21, assistants: 4, updates: 0, structureIssues: 0, securityRisks: 0, localChanges: 0, driftGroups: 0, diagnostics: 0 }}
         tagCount={4}
         driftGroups={[]}
         onNavigate={vi.fn()}
-        onMarketInstall={vi.fn()}
+        onInstall={onInstall}
         onOpenDrift={vi.fn()}
       />
     );
 
     const sections = [...container.querySelectorAll(".dashboard-section")];
-    expect(sections[0].classList.contains("market-search")).toBe(true);
-    expect(screen.getByText(/skills\.sh 公共 Skill 索引/)).toBeTruthy();
-
-    fireEvent.change(screen.getByLabelText("查找来源"), { target: { value: "github" } });
-    expect(screen.getByText(/GitHub 仓库/)).toBeTruthy();
+    expect(sections[0].classList.contains("market-search")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "添加 Skill" }));
+    expect(onInstall).toHaveBeenCalledTimes(1);
   });
 
   it("市场结果使用系统浏览器打开来源，安装动作只进入检查流程", async () => {
@@ -175,16 +174,12 @@ describe("Dashboard 数据加载", () => {
     });
 
     render(
-      <DashboardView
-        stats={{ skills: 0, assistants: 0, updates: 0, structureIssues: 0, securityRisks: 0, localChanges: 0, driftGroups: 0, diagnostics: 0 }}
-        tagCount={0}
-        driftGroups={[]}
-        onNavigate={vi.fn()}
-        onMarketInstall={onMarketInstall}
-        onOpenDrift={vi.fn()}
-      />
+      <MarketDiscovery onInstall={onMarketInstall} />
     );
 
+    expect(screen.getByText(/skills\.sh 公共 Skill 索引/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("查找来源"), { target: { value: "github" } });
+    expect(screen.getByText(/GitHub 仓库/)).toBeTruthy();
     fireEvent.change(screen.getByPlaceholderText("搜索写作、测试、PDF..."), { target: { value: "repo" } });
     fireEvent.click(screen.getByRole("button", { name: "查找" }));
     await screen.findByText("owner/repo");
@@ -966,7 +961,7 @@ describe("场景与 Git 备份流程", () => {
 
     expect(invoke).toHaveBeenCalledWith("create_scenario", {
       name: "写作",
-      description: "自动生成组合",
+      description: "自动生成场景",
       skillIds: ["/tmp/writer"],
     });
     expect(loadData).toHaveBeenCalledOnce();

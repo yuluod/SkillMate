@@ -271,7 +271,7 @@ function SkillSetSettings({ value }) {
   const { t } = useI18n();
   return (
     <div className="settings-card">
-      <SurfaceHeader className="settings-surface-header" title="Skill Set" />
+      <SurfaceHeader className="settings-surface-header" title={t("settings.tabs.skillset")} />
       <div className="settings-body">
         <div className="form"><label htmlFor="project-manifest-root">{t("settings.skillset.projectLock")}</label><input id="project-manifest-root" value={value.projectManifestRoot} onChange={event => value.setProjectManifestRoot(event.target.value)} placeholder="/path/to/project" /></div>
         <div className="git-meta">{t("settings.skillset.projectHelp")}</div>
@@ -291,7 +291,7 @@ function SkillSetSettings({ value }) {
           <button className="btn btn-secondary btn-sm" onClick={value.previewManifest} disabled={value.previewingManifest || value.applyingManifest}><Icon name="preview" size={14} />{t(value.previewingManifest ? "settings.data.previewing" : "settings.skillset.preview")}</button>
           <button className="btn btn-primary btn-sm" onClick={value.applyManifest} disabled={!value.manifestPreview || !value.manifestPreviewCurrent || !value.manifestPreview.can_apply || value.applyingManifest}><Icon name="check" size={14} />{t(value.applyingManifest ? "settings.skillset.applying" : "settings.skillset.apply")}</button>
         </ActionRow>
-        <div className="form settings-section"><label htmlFor="profile-name">Skill Set Profile</label><input id="profile-name" value={value.profileName} onChange={event => value.setProfileName(event.target.value)} placeholder={t("settings.skillset.profilePlaceholder")} /></div>
+        <div className="form settings-section"><label htmlFor="profile-name">{t("settings.skillset.profileName")}</label><input id="profile-name" value={value.profileName} onChange={event => value.setProfileName(event.target.value)} placeholder={t("settings.skillset.profilePlaceholder")} /></div>
         <div className="form"><label htmlFor="profile-description">{t("settings.skillset.description")}</label><input id="profile-description" value={value.profileDescription} onChange={event => value.setProfileDescription(event.target.value)} placeholder={t("settings.skillset.descriptionPlaceholder")} /></div>
         <div className="git-meta">{t("settings.skillset.profileHelp")}</div>
         <ActionRow>

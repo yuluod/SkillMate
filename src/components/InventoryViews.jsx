@@ -67,6 +67,9 @@ export function SkillsView({
   selectedTagCount,
   tags,
   onInstall,
+  onToggleDiscovery = () => {},
+  discoveryOpen = false,
+  discovery = null,
   onClearFilters,
   onEditTags,
   onOpenDirectory,
@@ -91,10 +94,12 @@ export function SkillsView({
         actions={(
           <>
           {selectedTagCount > 0 && <div className="filter-tag"><Icon name="tag" size={14} />{t("skills.selectedTags", { count: selectedTagCount })}</div>}
+          <button className="btn btn-secondary btn-sm" aria-expanded={discoveryOpen} onClick={onToggleDiscovery}><Icon name="search" size={14} />{t(discoveryOpen ? "skills.hideDiscovery" : "skills.discover")}</button>
           <button className="btn btn-primary btn-sm" onClick={onInstall}><Icon name="plus" size={14} />{t("common.install")}</button>
           </>
         )}
       />
+      {discovery}
       {selectedSkills.length > 0 && (
         <div className="bulk-toolbar" role="region" aria-label={t("skills.bulkActions")}>
           <strong>{t("skills.selected", { count: selectedSkills.length })}</strong>
@@ -208,7 +213,7 @@ export function SkillsView({
   );
 }
 
-export function AssistantsView({ assistants, installedCount }) {
+export function AssistantsView({ assistants, installedCount, onManageSkills }) {
   const { t } = useI18n();
   const [expandedAssistant, setExpandedAssistant] = React.useState(null);
   return (
@@ -217,6 +222,7 @@ export function AssistantsView({ assistants, installedCount }) {
         title={t("nav.assistants")}
         description={t("assistants.subtitle")}
         meta={t("assistants.configuredCount", { installed: installedCount, total: assistants.length })}
+        actions={onManageSkills && <button className="btn btn-primary btn-sm" onClick={onManageSkills}><Icon name="skills" size={14} />{t("assistants.manage")}</button>}
       />
       <div className="registry assistant-registry" role="table" aria-label={t("nav.assistants")}>
         <div className="registry-colhead" role="row">
@@ -447,7 +453,11 @@ export function UpdatesView({ skills, orderedSkills, stats, updateState, getSync
                 <div className="registry-actions" role="cell">
                   <button className="btn btn-secondary btn-sm" onClick={() => checkOne(skill.path)} disabled={info.checking || info.updating}><Icon name="refresh" size={14} />{t(info.checking ? "common.checking" : "common.check")}</button>
                   {info.canSync && <button className="btn btn-primary btn-sm" onClick={() => updateOne(skill.path)} disabled={info.checking || info.updating}><Icon name="upload" size={14} />{updateButtonText(info, t)}</button>}
-                  {!info.canSync && <span className="update-hint" title={info.message || t("updates.notSupported")}>{info.message || t("updates.notSupported")}</span>}
+                  {!info.canSync && (
+                    <span className="update-hint" title={skill.managed_by_app ? (info.message || t("updates.notSupported")) : t("updates.externalManaged")}>
+                      {skill.managed_by_app ? (info.message || t("updates.notSupported")) : t("updates.externalManaged")}
+                    </span>
+                  )}
                 </div>
               </article>
             );

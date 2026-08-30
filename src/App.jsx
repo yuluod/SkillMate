@@ -11,7 +11,7 @@ import {
 import SettingsView from "./components/SettingsView.jsx";
 import ScenarioView from "./components/ScenarioView.jsx";
 import { AssistantsView, SkillsView, UpdatesView } from "./components/InventoryViews.jsx";
-import DashboardView from "./components/DashboardView.jsx";
+import DashboardView, { MarketDiscovery } from "./components/DashboardView.jsx";
 import {
   buildAppUpdateView,
   buildDashboardStats,
@@ -47,6 +47,7 @@ const VIEWS = {
   updates: { titleKey: "nav.updates", icon: "updates" },
   settings: { titleKey: "nav.settings", icon: "settings" },
 };
+const NAV_VIEW_KEYS = ["dashboard", "skills", "ai", "scenarios", "updates", "settings"];
 
 const SETTINGS_TAB_LABELS = {
   language: "settings.language",
@@ -201,6 +202,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [init, setInit] = useState(true);
   const [installOpen, setInstallOpen] = useState(false);
+  const [discoveryOpen, setDiscoveryOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [preview, setPreview] = useState({ title: "", content: "", validation: null, diagnostics: [] });
   const [tagEditor, setTagEditor] = useState({ open: false, skills: [], selected: [], mode: "replace" });
@@ -257,13 +259,12 @@ function App() {
     if (window.location.hash !== next) window.location.hash = next;
   }, [view, settingsTab]);
 
-  // 快捷键：Alt+1~6 切换视图
+  // 快捷键：Alt+1~6 切换主导航。
   useEffect(() => {
-    const viewKeys = ["dashboard", "skills", "ai", "scenarios", "updates", "settings"];
     const handler = (e) => {
       if (e.altKey && e.key >= "1" && e.key <= "6") {
         e.preventDefault();
-        setView(viewKeys[parseInt(e.key) - 1]);
+        setView(NAV_VIEW_KEYS[parseInt(e.key) - 1]);
       }
     };
     window.addEventListener("keydown", handler);
@@ -716,6 +717,11 @@ function App() {
     setInstallOpen(true);
   }
 
+  function startAddSkill() {
+    installFlow.startAdd();
+    setInstallOpen(true);
+  }
+
   function enableLibrarySkill(skill) {
     installFlow.source.prepare(skill.symlink_source || skill.path, "", "local", "enable");
     setInstallOpen(true);
@@ -767,15 +773,18 @@ function App() {
       <div className="layout">
         <nav className="sidebar">
           <div className="nav-items">
-            {Object.entries(VIEWS).map(([k, v]) => (
-              <button key={k} className={`nav-item ${view === k ? "active" : ""}`} onClick={() => setView(k)}>
-                <Icon name={v.icon} size={18} />
-                <span>{t(v.titleKey)}</span>
-                {k === "skills" && statSkills > 0 && <span className="badge">{statSkills}</span>}
-                {k === "ai" && <span className="badge">{statAI}</span>}
-                {k === "updates" && updateBadge > 0 && <span className="badge warn">{updateBadge}</span>}
-              </button>
-            ))}
+            {NAV_VIEW_KEYS.map((k) => {
+              const v = VIEWS[k];
+              return (
+                <button key={k} className={`nav-item ${view === k ? "active" : ""}`} onClick={() => setView(k)}>
+                  <Icon name={v.icon} size={18} />
+                  <span>{t(v.titleKey)}</span>
+                  {k === "skills" && statSkills > 0 && <span className="badge">{statSkills}</span>}
+                  {k === "ai" && <span className="badge">{statAI}</span>}
+                  {k === "updates" && updateBadge > 0 && <span className="badge warn">{updateBadge}</span>}
+                </button>
+              );
+            })}
           </div>
         </nav>
 
@@ -793,7 +802,7 @@ function App() {
               <button className="btn btn-secondary btn-sm" onClick={() => loadData({ resetUpdates: false })}>{t("common.retry")}</button>
             </div>
           )}
-          {activeScenario && (
+          {activeScenario && (view === "skills" || view === "updates") && (
             <div className="settings-card" style={{ marginBottom: 16 }}>
               <div className="settings-body" style={{ padding: 14 }}>
                 <div className="card-actions" style={{ justifyContent: "space-between" }}>
@@ -817,7 +826,7 @@ function App() {
             />
           )}
           {init ? <Skeleton /> : view === "dashboard" && (
-            <DashboardView stats={dashboardStats} tagCount={tags.length} driftGroups={driftGroups} onNavigate={setView} onMarketInstall={installMarketSkill} onOpenDrift={setDriftGroup} />
+            <DashboardView stats={dashboardStats} tagCount={tags.length} driftGroups={driftGroups} onNavigate={setView} onInstall={startAddSkill} onOpenDrift={setDriftGroup} />
           )}
 
           {!init && view === "skills" && (
@@ -827,10 +836,10 @@ function App() {
               allSkillCount={allSkills.length}
               selectedTagCount={selectedTags.length}
               tags={tags}
-              onInstall={() => {
-                installFlow.startAdd();
-                setInstallOpen(true);
-              }}
+              onInstall={startAddSkill}
+              onToggleDiscovery={() => setDiscoveryOpen((open) => !open)}
+              discoveryOpen={discoveryOpen}
+              discovery={discoveryOpen ? <MarketDiscovery onInstall={installMarketSkill} /> : null}
               onClearFilters={() => {
                 clearSearch();
                 setTags(current => current.map(tag => ({ ...tag, selected: false })));
@@ -850,7 +859,7 @@ function App() {
           )}
 
           {view === "ai" && (
-            <AssistantsView assistants={data.assistants} installedCount={statAI} />
+            <AssistantsView assistants={data.assistants} installedCount={statAI} onManageSkills={() => setView("skills")} />
           )}
 
           {view === "scenarios" && (
