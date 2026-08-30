@@ -1102,7 +1102,70 @@ body {
    ============================ */
 .assistant-registry { --cols: minmax(180px, 0.9fr) minmax(220px, 1.2fr) 110px minmax(170px, 0.9fr); }
 .assistant-entry { min-width: 0; display: grid; grid-template-columns: 36px minmax(0, 1fr); align-items: start; gap: 10px; }
+.assistant-locations { flex-direction: column; align-items: flex-start; gap: 3px; line-height: 1.35; }
+.assistant-locations .assistant-location-primary {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: var(--text2);
+}
+.assistant-locations .assistant-location-count { flex: 0 0 auto; color: var(--text3); font-size: 0.66rem; }
 .assistant-skills { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 4px; flex-wrap: wrap; }
+.assistant-skills-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 5px;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--text3) 48%, transparent);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text2);
+  font: 600 0.68rem/1.4 var(--font);
+  cursor: pointer;
+}
+.assistant-skills-toggle:hover { color: var(--accent); border-bottom-color: var(--accent); }
+.assistant-skills-toggle:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.assistant-skills-toggle .icon { transition: transform 0.16s ease; }
+.assistant-skills-toggle .icon.expanded { transform: rotate(90deg); }
+.assistant-row-expanded { border-bottom: 0; background: var(--surface-hover); }
+.assistant-detail-panel {
+  padding: 0 18px 16px;
+  background: var(--surface-hover);
+  border-bottom: var(--border-w) solid var(--border);
+}
+.assistant-detail-content { min-width: 0; }
+.assistant-detail-section + .assistant-detail-section { margin-top: 13px; }
+.assistant-detail-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0 8px;
+  border-top: var(--border-w) solid var(--rule);
+}
+.assistant-detail-head strong { font-size: 0.78rem; }
+.assistant-detail-head span { color: var(--text3); font: 0.68rem var(--mono); }
+.assistant-location-list,
+.assistant-skill-list {
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  column-gap: 22px;
+  list-style: none;
+}
+.assistant-location-list li,
+.assistant-skill-list li {
+  min-width: 0;
+  padding: 7px 0;
+  overflow-wrap: anywhere;
+  border-bottom: var(--border-w) solid color-mix(in srgb, var(--rule) 55%, transparent);
+  color: var(--text2);
+  font-size: 0.72rem;
+}
+.assistant-location-list li { font-family: var(--mono); }
 .scan-diagnostics { margin-top: 5px; text-align: left; }
 .scan-diagnostics summary { cursor: pointer; color: var(--warn); font-size: 0.72rem; }
 .scan-diagnostics ul { display: grid; gap: 8px; margin-top: 8px; padding: 0; list-style: none; }
@@ -2815,6 +2878,9 @@ body {
   .registry-empty .registry-desc { overflow: visible; white-space: normal; }
   .registry-actions { justify-content: flex-start; }
   .assistant-skills { justify-content: flex-start; }
+  .assistant-detail-panel { padding-inline: 15px; }
+  .assistant-location-list,
+  .assistant-skill-list { grid-template-columns: minmax(0, 1fr); }
   .registry-actions .btn,
   .registry-more > summary { min-width: 44px; min-height: 44px; }
   .registry-more[open] > summary { margin-left: 0; }

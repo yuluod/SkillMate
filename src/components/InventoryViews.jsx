@@ -5,16 +5,20 @@ import claudeLogo from "../assets/brands/claude.svg";
 import codexLogo from "../assets/brands/codex-openai.svg";
 import openclawLogo from "../assets/brands/openclaw.svg";
 import geminiLogo from "../assets/brands/gemini.svg";
-import cursorLogo from "../assets/brands/cursor.png";
+import cursorLogo from "../assets/brands/cursor.svg";
+import opencodeLogo from "../assets/brands/opencode.svg";
+import copilotLogo from "../assets/brands/copilot.svg";
 import { useI18n } from "../lib/i18n.jsx";
 import { SurfaceHeader } from "./SurfaceHeader.jsx";
 
 const AI_META = {
-  claude: { bg: "#f7f3ee", src: claudeLogo, mode: "contain" },
-  codex: { bg: "#ffffff", src: codexLogo, mode: "contain" },
+  claude: { bg: "#d97757", src: claudeLogo, mode: "contain" },
+  codex: { bg: "#111827", src: codexLogo, mode: "contain" },
   openclaw: { bg: "#08111f", src: openclawLogo, mode: "contain" },
-  gemini: { bg: "#ffffff", src: geminiLogo, mode: "contain" },
-  cursor: { bg: "#ffffff", src: cursorLogo, mode: "cover" },
+  gemini: { bg: "#1a73e8", src: geminiLogo, mode: "contain" },
+  cursor: { bg: "#111111", src: cursorLogo, mode: "contain" },
+  opencode: { bg: "#ffffff", src: opencodeLogo, mode: "contain" },
+  copilot: { bg: "#ffffff", src: copilotLogo, mode: "contain" },
 };
 
 export const AiAvatar = React.memo(function AiAvatar({ name, brand, size = 36 }) {
@@ -206,6 +210,7 @@ export function SkillsView({
 
 export function AssistantsView({ assistants, installedCount }) {
   const { t } = useI18n();
+  const [expandedAssistant, setExpandedAssistant] = React.useState(null);
   return (
     <div className="view-shell">
       <SurfaceHeader
@@ -230,42 +235,89 @@ export function AssistantsView({ assistants, installedCount }) {
             <div className="registry-state" role="cell" />
             <div className="registry-actions" role="cell" />
           </div>
-        ) : assistants.map((assistant) => (
-          <article className="registry-row" key={assistant.name} role="row">
-            <div className="assistant-entry" role="cell">
-              <AiAvatar name={assistant.name} brand={assistant.icon} size={36} />
-              <div className="registry-entry">
-                <div className="registry-identity"><h3>{assistant.name}</h3></div>
-                {Array.isArray(assistant.diagnostics) && assistant.diagnostics.length > 0 && (
-                  <details className="scan-diagnostics">
-                    <summary>{t("assistants.diagnostics", { count: assistant.diagnostics.length })}</summary>
-                    <ul>
-                      {assistant.diagnostics.slice(0, 5).map((diagnostic, index) => (
-                        <li key={`${diagnostic.path}-${diagnostic.code}-${index}`}>
-                          <span title={diagnostic.path}>{formatHomePath(diagnostic.path)}</span>
-                          <small>{diagnostic.message}</small>
-                        </li>
-                      ))}
-                    </ul>
-                  </details>
-                )}
-              </div>
-            </div>
-            <div className="registry-path" title={(assistant.paths || [assistant.path]).join("\n")} role="cell">
-              <span>{formatHomePath(assistant.path)}</span>
-              {assistant.paths?.length > 1 && <span>{t("assistants.directories", { count: assistant.paths.length })}</span>}
-            </div>
-            <div className="registry-state" role="cell"><span className={`stamp ${assistant.exists ? "success" : "muted"}`}>{t(assistant.exists ? "assistants.configured" : "assistants.notConfigured")}</span></div>
-            <div className="assistant-skills" role="cell">
-              {assistant.exists && assistant.skills.length > 0 ? (
-                <>
-                  {assistant.skills.slice(0, 2).map(skill => <span key={skill.path || skill.name} className="tag">{skill.name}</span>)}
-                  {assistant.skills.length > 2 && <span className="tag more">+{assistant.skills.length - 2}</span>}
-                </>
-              ) : <span className="registry-desc">{t("assistants.noSkills")}</span>}
-            </div>
-          </article>
-        ))}
+        ) : assistants.map((assistant, index) => {
+          const expanded = expandedAssistant === assistant.name;
+          const paths = assistant.paths?.length ? assistant.paths : [assistant.path].filter(Boolean);
+          const hasDetails = paths.length > 1 || assistant.skills.length > 2;
+          const detailId = `assistant-details-${index}`;
+          return (
+            <React.Fragment key={assistant.name}>
+              <article className={`registry-row ${expanded ? "assistant-row-expanded" : ""}`} role="row">
+                <div className="assistant-entry" role="cell">
+                  <AiAvatar name={assistant.name} brand={assistant.icon} size={36} />
+                  <div className="registry-entry">
+                    <div className="registry-identity"><h3>{assistant.name}</h3></div>
+                    {Array.isArray(assistant.diagnostics) && assistant.diagnostics.length > 0 && (
+                      <details className="scan-diagnostics">
+                        <summary>{t("assistants.diagnostics", { count: assistant.diagnostics.length })}</summary>
+                        <ul>
+                          {assistant.diagnostics.slice(0, 5).map((diagnostic, diagnosticIndex) => (
+                            <li key={`${diagnostic.path}-${diagnostic.code}-${diagnosticIndex}`}>
+                              <span title={diagnostic.path}>{formatHomePath(diagnostic.path)}</span>
+                              <small>{diagnostic.message}</small>
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    )}
+                  </div>
+                </div>
+                <div className="registry-path assistant-locations" title={paths.join("\n")} role="cell">
+                  <span className="assistant-location-primary">{formatHomePath(assistant.path)}</span>
+                  {paths.length > 1 && <span className="assistant-location-count">{t("assistants.directories", { count: paths.length })}</span>}
+                </div>
+                <div className="registry-state" role="cell"><span className={`stamp ${assistant.exists ? "success" : "muted"}`}>{t(assistant.exists ? "assistants.configured" : "assistants.notConfigured")}</span></div>
+                <div className="assistant-skills" role="cell">
+                  {assistant.exists && assistant.skills.length > 0 ? (
+                    assistant.skills.slice(0, 2).map(skill => <span key={skill.path || skill.name} className="tag">{skill.name}</span>)
+                  ) : <span className="registry-desc">{t("assistants.noSkills")}</span>}
+                  {hasDetails && (
+                    <button
+                      className="assistant-skills-toggle"
+                      type="button"
+                      aria-expanded={expanded}
+                      aria-controls={detailId}
+                      onClick={() => setExpandedAssistant(current => current === assistant.name ? null : assistant.name)}
+                    >
+                      {t(expanded
+                        ? "assistants.hideDetails"
+                        : assistant.skills.length > 2
+                          ? "assistants.showAllSkills"
+                          : "assistants.showDetails", { count: assistant.skills.length })}
+                      <Icon name="arrow" size={13} className={expanded ? "expanded" : ""} />
+                    </button>
+                  )}
+                </div>
+              </article>
+              {expanded && (
+                <div className="assistant-detail-panel" role="row">
+                  <div id={detailId} className="assistant-detail-content" role="cell" aria-colspan="4">
+                    {paths.length > 1 && (
+                      <section className="assistant-detail-section">
+                        <div className="assistant-detail-head">
+                          <strong>{t("assistants.locationList")}</strong>
+                          <span>{t("assistants.directoryCount", { count: paths.length })}</span>
+                        </div>
+                        <ul className="assistant-location-list">
+                          {paths.map(path => <li key={path}>{formatHomePath(path)}</li>)}
+                        </ul>
+                      </section>
+                    )}
+                    <section className="assistant-detail-section">
+                      <div className="assistant-detail-head">
+                        <strong>{t("assistants.skillList", { name: assistant.name })}</strong>
+                        <span>{t("assistants.skillCount", { count: assistant.skills.length })}</span>
+                      </div>
+                      <ul className="assistant-skill-list">
+                        {assistant.skills.map(skill => <li key={skill.path || skill.name}>{skill.name}</li>)}
+                      </ul>
+                    </section>
+                  </div>
+                </div>
+              )}
+            </React.Fragment>
+          );
+        })}
       </div>
     </div>
   );

@@ -3,7 +3,7 @@ import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-li
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AssistantsView, SkillsView, UpdatesView } from "./InventoryViews.jsx";
+import { AiAvatar, AssistantsView, SkillsView, UpdatesView } from "./InventoryViews.jsx";
 import DashboardView from "./DashboardView.jsx";
 import { InstallModal, PreviewModal } from "./SkillMateModals.jsx";
 import SettingsView from "./SettingsView.jsx";
@@ -281,6 +281,75 @@ describe("外观偏好与登记册布局", () => {
     expect(container.querySelectorAll('.assistant-registry [role="columnheader"]')).toHaveLength(4);
     expect(container.querySelectorAll('.assistant-registry .registry-empty > [role="cell"]')).toHaveLength(4);
     expect(screen.getByText("尚未发现平台")).toBeTruthy();
+  });
+
+  it("内置平台全部使用本地品牌图标", () => {
+    const platforms = [
+      ["Claude Code", "claude"],
+      ["Codex", "codex"],
+      ["OpenClaw", "openclaw"],
+      ["Gemini CLI", "gemini"],
+      ["Cursor", "cursor"],
+      ["OpenCode", "opencode"],
+      ["GitHub Copilot", "copilot"],
+    ];
+    const { container } = render(
+      <>{platforms.map(([name, brand]) => <AiAvatar key={brand} name={name} brand={brand} />)}</>,
+    );
+
+    const images = [...container.querySelectorAll(".ai-avatar-img")];
+    expect(images).toHaveLength(platforms.length);
+    expect(images.every((image) => !/^https?:/i.test(image.getAttribute("src") || ""))).toBe(true);
+  });
+
+  it("平台 Skill 较多时可以展开查看完整列表", async () => {
+    const user = userEvent.setup();
+    render(<AssistantsView assistants={[{
+      name: "Codex",
+      icon: "codex",
+      exists: true,
+      path: "/Users/demo/.agents/skills",
+      paths: ["/Users/demo/.agents/skills", "/Users/demo/.codex/skills"],
+      diagnostics: [],
+      skills: [
+        { name: "first", path: "/skills/first" },
+        { name: "second", path: "/skills/second" },
+        { name: "third", path: "/skills/third" },
+        { name: "fourth", path: "/skills/fourth" },
+      ],
+    }]} installedCount={1} />);
+
+    const toggle = screen.getByRole("button", { name: "查看全部 4" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByText("~/.agents/skills")).toBeTruthy();
+    expect(screen.getByText("2 个目录")).toBeTruthy();
+
+    await user.click(toggle);
+
+    expect(screen.getByRole("button", { name: "收起详情" }).getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("扫描目录")).toBeTruthy();
+    expect(screen.getByText("~/.codex/skills")).toBeTruthy();
+    expect(screen.getByText("Codex 中的 Skills")).toBeTruthy();
+    expect(screen.getAllByRole("list")[1].textContent).toContain("third");
+    expect(screen.getAllByRole("list")[1].textContent).toContain("fourth");
+  });
+
+  it("平台没有 Skill 时仍可展开查看多个扫描目录", async () => {
+    const user = userEvent.setup();
+    render(<AssistantsView assistants={[{
+      name: "Codex",
+      icon: "codex",
+      exists: true,
+      path: "/Users/demo/.agents/skills",
+      paths: ["/Users/demo/.agents/skills", "/Users/demo/.codex/skills"],
+      diagnostics: [],
+      skills: [],
+    }]} installedCount={1} />);
+
+    await user.click(screen.getByRole("button", { name: "查看详情" }));
+
+    expect(screen.getByText("~/.codex/skills")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "收起详情" })).toBeTruthy();
   });
 
   it("来源签章由稳定来源类型决定样式", () => {
