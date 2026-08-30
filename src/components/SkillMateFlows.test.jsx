@@ -1064,7 +1064,16 @@ describe("应用更新流程", () => {
 
       expect(updaterMocks.updater.check).toHaveBeenCalledTimes(1);
       expect(showToast).toHaveBeenCalledTimes(1);
-      expect(showToast).toHaveBeenCalledWith("发现新版本 0.1.0,可在设置中更新", "success");
+      expect(showToast).toHaveBeenCalledWith(
+        "发现新版本 0.1.0，安装完成后将自动重启",
+        "success",
+        {
+          action: "install-update",
+          actionLabel: "立即安装",
+          skipLabel: "暂不安装",
+          duration: 12_000,
+        },
+      );
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(10_000);

@@ -1974,12 +1974,26 @@ body {
   transition: all 0.3s ease;
   box-shadow: var(--shadow);
   backdrop-filter: blur(12px);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: max-content;
+  max-width: calc(100vw - 32px);
 }
 
+.toast-message { min-width: 0; overflow-wrap: anywhere; }
+.toast-actions { display: flex; align-items: center; gap: 6px; }
+.toast-action { flex: 0 0 auto; white-space: nowrap; }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .toast.success { border-color: rgba(34, 197, 94, 0.5); color: var(--success); background: rgba(34, 197, 94, 0.1); }
 .toast.error { border-color: rgba(239, 68, 68, 0.5); color: var(--error); background: rgba(239, 68, 68, 0.1); }
 .toast.warn { border-color: rgba(245, 158, 11, 0.5); color: var(--warn); background: rgba(245, 158, 11, 0.1); }
+
+@media (max-width: 620px) {
+  .toast { align-items: stretch; flex-direction: column; }
+  .toast-actions { align-items: stretch; flex-direction: column; }
+  .toast-action { justify-content: center; }
+}
 
 /* ============================
    Loader

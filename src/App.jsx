@@ -205,7 +205,7 @@ function App() {
   const [preview, setPreview] = useState({ title: "", content: "", validation: null, diagnostics: [] });
   const [tagEditor, setTagEditor] = useState({ open: false, skills: [], selected: [], mode: "replace" });
   const [selectedSkillPaths, setSelectedSkillPaths] = useState([]);
-  const [toastState, setToastState] = useState({ show: false, msg: "", type: "" });
+  const [toastState, setToastState] = useState({ show: false, msg: "", type: "", action: "", actionLabel: "", skipLabel: "" });
   const [theme, setTheme] = useState(getSavedThemeMode);
   const [skin, setSkin] = useState(getSavedSkin);
   const [newTagName, setNewTagName] = useState("");
@@ -324,14 +324,21 @@ function App() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
-  const showToast = useCallback((msg, type = "") => {
+  const showToast = useCallback((msg, type = "", options = {}) => {
     const safeMessage = type === "error"
       ? toUserErrorMessage(msg, t("error.safeRetry"), t("common.messageSeparator"))
       : msg;
-    setToastState({ show: true, msg: safeMessage, type });
-    toastTimerRef.current.start(3000, () => {
+    setToastState({
+      show: true,
+      msg: safeMessage,
+      type,
+      action: options.action || "",
+      actionLabel: options.actionLabel || "",
+      skipLabel: options.skipLabel || "",
+    });
+    toastTimerRef.current.start(options.duration || 3000, () => {
       if (mountedRef.current) {
-        setToastState({ show: false, msg: "", type: "" });
+        setToastState({ show: false, msg: "", type: "", action: "", actionLabel: "", skipLabel: "" });
       }
     });
   }, [t]);
@@ -965,7 +972,36 @@ function App() {
         />
       )}
 
-      <div className={`toast ${toastState.show ? "show" : ""} ${toastState.type}`} role="status" aria-live="polite" aria-atomic="true">{toastState.show ? toastState.msg : ""}</div>
+      <div className={`toast ${toastState.show ? "show" : ""} ${toastState.type}`} role="status" aria-live="polite" aria-atomic="true">
+        {toastState.show && (
+          <>
+            <span className="toast-message">{toastState.msg}</span>
+            {toastState.action === "install-update" && (
+              <div className="toast-actions">
+                <button
+                  className="btn btn-primary btn-sm toast-action"
+                  onClick={() => {
+                    toastTimerRef.current.clear();
+                    setToastState({ show: false, msg: "", type: "", action: "", actionLabel: "", skipLabel: "" });
+                    void installAppUpdate();
+                  }}
+                >
+                  <Icon name="upload" size={14} />{toastState.actionLabel}
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm toast-action"
+                  onClick={() => {
+                    toastTimerRef.current.clear();
+                    setToastState({ show: false, msg: "", type: "", action: "", actionLabel: "", skipLabel: "" });
+                  }}
+                >
+                  {toastState.skipLabel}
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
       {trashReceipt && <div className="undo-bar" role="status"><span>{t("trash.done", { name: trashReceipt.name })}</span><button className="btn btn-secondary btn-sm" onClick={undoTrash}><Icon name="undo" size={14} />{t("trash.undo")}</button></div>}
 
       {driftGroup && <DriftSyncModal group={driftGroup} onClose={() => setDriftGroup(null)} onComplete={completeDrift} />}

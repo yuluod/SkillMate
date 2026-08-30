@@ -112,10 +112,20 @@ export function useAppUpdateFlow({ showToast }) {
           error: "",
           lastCheckedAt: Date.now(),
         });
-        showToast(
-          t(operation.interactive ? "appUpdate.toast.available" : "appUpdate.toast.startupAvailable", { version: update.version }),
-          "success",
-        );
+        if (operation.interactive) {
+          showToast(t("appUpdate.toast.available", { version: update.version }), "success");
+        } else {
+          showToast(
+            t("appUpdate.toast.startupAvailable", { version: update.version }),
+            "success",
+            {
+              action: "install-update",
+              actionLabel: t("appUpdate.toast.installAction"),
+              skipLabel: t("appUpdate.toast.skipAction"),
+              duration: 12_000,
+            },
+          );
+        }
         return update;
       } catch (e) {
         if (operation.interactive) {
