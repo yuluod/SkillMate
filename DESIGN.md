@@ -42,7 +42,9 @@ SkillMate 是一间海关——任何 Skill 落盘前先申报、查验、盖章
 
 ## 页面骨架
 
-概览、Skills、平台、集合、更新与设置内容区共用 `.surface-header`：标题、说明、数量和右侧操作保持同一层级、间距与分隔线。页面内容统一放在最大宽度 `1180px` 的 `.view-shell` 中；设置页因包含二级导航，内容列保持独立的阅读宽度。
+概览、技能库、启用位置、应用场景、维护与设置是六个主导航页面，共用 `.surface-header`：标题、说明、数量和右侧操作保持同一层级、间距与分隔线。应用场景面向写作、开发或审查等任务保存一组需要共同使用的 Skills；环境复现、导入导出和 Git 备份留在设置中渐进披露。页面内容统一放在最大宽度 `1180px` 的 `.view-shell` 中；设置页因包含二级导航，内容列保持独立的阅读宽度。
+
+概览只汇总本机状态和待处理事项，并保留直接添加入口。公开来源发现位于技能库内，按需展开；技能库提供直接添加和发现入口，但直接添加保持唯一主操作。
 
 页面内的主要区块共用 `.surface-section-head`，数量统一使用等宽数字 `.surface-meta`。状态统一优先使用签章，标签仅表示用户定义的组织分类。
 
@@ -157,7 +159,7 @@ URL 参数优先级高于 localStorage，但不写回 localStorage。
 
 视图和设置页签同步到 `location.hash`：
 
-- `#/dashboard`、`#/skills`、`#/ai`、`#/scenarios`、`#/updates`、`#/settings`
+- 主导航：`#/dashboard`、`#/skills`、`#/ai`、`#/scenarios`、`#/updates`、`#/settings`
 - `#/settings/appearance`、`#/settings/language` 等
 
 前进后退可精确回溯查验轨迹。初始视图从 hash 读取，避免与 hash 同步 effect 竞态。
@@ -166,7 +168,7 @@ URL 参数优先级高于 localStorage，但不写回 localStorage。
 
 - `max-width: 820px`：搜索进入顶栏第二行；登记册列头隐藏，行堆叠为单列，操作目标不小于 44×44px
 - `max-width: 768px`：侧栏收窄但保留文字标签，不使用只有图标的导航
-- `max-width: 620px`：导航移到底部，六个入口继续同时显示图标和文字
+- `max-width: 620px`：导航移到底部，六个主入口继续同时显示图标和文字
 - 移动端（390×844）：登记册纵向堆叠，无横向溢出
 
 ## 错误恢复
