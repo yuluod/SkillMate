@@ -137,34 +137,40 @@ fn search_github(query: &str) -> Result<MarketSearchResponse, String> {
 }
 
 fn request_json<T: for<'de> Deserialize<'de>>(url: &str, github: bool) -> Result<T, String> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(8))
-        .timeout_read(Duration::from_secs(12))
-        .timeout_write(Duration::from_secs(8))
-        .build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(8)))
+        .timeout_send_request(Some(Duration::from_secs(8)))
+        .timeout_recv_response(Some(Duration::from_secs(12)))
+        .timeout_recv_body(Some(Duration::from_secs(12)))
+        .build()
+        .into();
+    let accept = if github {
+        "application/vnd.github+json"
+    } else {
+        "application/json"
+    };
     let mut request = agent
         .get(url)
-        .set("Accept", "application/json")
-        .set("User-Agent", "SkillMate");
+        .header("Accept", accept)
+        .header("User-Agent", "SkillMate");
     if github {
-        request = request
-            .set("Accept", "application/vnd.github+json")
-            .set("X-GitHub-Api-Version", "2022-11-28");
+        request = request.header("X-GitHub-Api-Version", "2022-11-28");
         if let Ok(token) = std::env::var("GITHUB_TOKEN") {
             if !token.trim().is_empty() {
-                request = request.set("Authorization", &format!("Bearer {}", token.trim()));
+                request = request.header("Authorization", format!("Bearer {}", token.trim()));
             }
         }
     }
-    let response = request.call().map_err(|error| match &error {
-        ureq::Error::Status(403, _) if github => {
+    let mut response = request.call().map_err(|error| match error {
+        ureq::Error::StatusCode(403) if github => {
             "GitHub 搜索已达到匿名请求限额，可设置 GITHUB_TOKEN 后重试".to_string()
         }
-        ureq::Error::Status(code, _) => format!("市场请求失败（HTTP {code}）"),
+        ureq::Error::StatusCode(code) => format!("市场请求失败（HTTP {code}）"),
         _ => format!("市场连接失败: {error}"),
     })?;
     response
-        .into_json::<T>()
+        .body_mut()
+        .read_json::<T>()
         .map_err(|error| format!("市场响应格式无效: {error}"))
 }
 
