@@ -124,7 +124,7 @@ pub(super) fn ensure_git_identity(repo: &Path) -> Result<(), String> {
         run_git_checked(
             repo,
             &["config", "user.name", "SkillMate"],
-            Duration::from_secs(5),
+            Duration::from_secs(10),
         )?;
     }
     if git_output(repo, &["config", "--get", "user.email"])
@@ -134,7 +134,7 @@ pub(super) fn ensure_git_identity(repo: &Path) -> Result<(), String> {
         run_git_checked(
             repo,
             &["config", "user.email", "skillmate@local"],
-            Duration::from_secs(5),
+            Duration::from_secs(10),
         )?;
     }
     Ok(())
