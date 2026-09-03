@@ -134,7 +134,7 @@ fn collect_assistant_skill_entries(
     (entries, diagnostics)
 }
 
-fn collect_skill_entries(
+pub(crate) fn collect_skill_entries(
     root: &Path,
     remaining_depth: usize,
     output: &mut Vec<PathBuf>,
@@ -369,6 +369,40 @@ pub(crate) fn build_skill(
         "local" => "Local".to_string(),
         _ => "未托管".to_string(),
     };
+    let content_source = match sync_info.meta.origin_kind.as_str() {
+        "git" if upstream_url.contains("github.com") => "github",
+        "git" => "git",
+        "legacy_npm" | "npm" => "external_cli",
+        "legacy_pip" | "pip" => "external_cli",
+        "local" => "local",
+        _ => "unknown",
+    }
+    .to_string();
+    let managed_by_app = sync_info.meta.managed_by_app || state_managed;
+    let manager = if managed_by_app {
+        "skillmate"
+    } else if matches!(
+        sync_info.meta.origin_kind.as_str(),
+        "legacy_npm" | "npm" | "legacy_pip" | "pip"
+    ) {
+        "external_cli"
+    } else {
+        "external"
+    }
+    .to_string();
+    let update_strategy = if managed_by_app && sync_info.meta.origin_kind == "git" {
+        "skillmate"
+    } else if matches!(
+        sync_info.meta.origin_kind.as_str(),
+        "legacy_npm" | "npm" | "legacy_pip" | "pip"
+    ) {
+        "external_cli"
+    } else if sync_info.meta.origin_kind == "git" {
+        "external"
+    } else {
+        "manual"
+    }
+    .to_string();
     Skill {
         inventory: SkillInventoryFields {
             id: ep.to_string_lossy().to_string(),
@@ -381,6 +415,9 @@ pub(crate) fn build_skill(
             },
             source,
             source_type,
+            content_source,
+            manager,
+            update_strategy,
             size: format_size(inspection.content_size),
             modified,
             tags,
@@ -403,7 +440,7 @@ pub(crate) fn build_skill(
             lag_count: sync_info.meta.lag_count,
             last_probe_at: sync_info.meta.last_probe_at,
             last_sync_at: sync_info.meta.last_sync_at,
-            managed_by_app: sync_info.meta.managed_by_app || state_managed,
+            managed_by_app,
             can_sync: sync_info.can_sync,
             symlink_source,
         },

@@ -1,10 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app_core;
+mod claude_marketplace;
 pub mod cli;
 mod database;
 mod git_backup;
 mod install_policy;
+mod library_config;
 mod library_manifest;
 mod managed_installation;
 mod managed_state;
@@ -12,7 +14,9 @@ mod market;
 mod operation_coordinator;
 mod operation_plan;
 mod organization_commands;
+mod project_inspection;
 mod scenario_manifest;
+mod skill_adoption;
 mod skill_drift;
 mod skill_install;
 mod skill_install_source;
@@ -42,6 +46,7 @@ use install_policy::{
     evaluate_install_policy, load_install_policy, policy_failure_decision, save_install_policy,
     InstallPolicyConfig, InstallPolicyInput,
 };
+use library_config::LibrarySettings;
 use library_manifest::{
     build_library_export, merge_imported_library, preview_imported_library, read_library_export,
     write_library_export, ImportPreview,
@@ -60,6 +65,7 @@ use organization_commands::{
     add_tag, create_scenario, delete_scenario, get_all_tags, get_all_tags_from_db, get_scenarios,
     get_scenarios_from_db, update_skill_tags, Scenario, Tag,
 };
+use project_inspection::{inspect_project_skills, ProjectInspection};
 use rusqlite::Connection;
 use scenario_manifest::{
     build_scenario_manifest, merge_scenario_manifest, preview_scenario_manifest,
@@ -141,6 +147,9 @@ pub struct SkillInventoryFields {
     pub skill_type: String,
     pub source: String,
     pub source_type: String,
+    pub content_source: String,
+    pub manager: String,
+    pub update_strategy: String,
     pub size: String,
     pub modified: String,
     pub tags: Vec<String>,
@@ -431,6 +440,85 @@ async fn get_library_skills() -> Result<Vec<Skill>, String> {
 }
 
 #[tauri::command]
+fn get_library_settings() -> Result<LibrarySettings, String> {
+    library_config::get_library_settings()
+}
+
+#[tauri::command]
+async fn set_library_root(path: String) -> Result<LibrarySettings, String> {
+    run_blocking_task(move || {
+        run_exclusive_operation(|db| library_config::set_library_root(db, &path))
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn inspect_project(project_path: String) -> Result<ProjectInspection, String> {
+    run_blocking_task(move || {
+        let project = expand_path(project_path.trim());
+        run_exclusive_operation(|db| inspect_project_skills(db, &project))
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn preview_adopt_skill(
+    path: String,
+    assistant_name: String,
+    project_path: Option<String>,
+) -> InstallPreview {
+    let fallback_path = path.clone();
+    let fallback_assistant = assistant_name.clone();
+    let fallback_project = project_path.clone();
+    match run_blocking_task(move || {
+        run_exclusive_operation(|db| {
+            Ok(skill_adoption::preview_adopt_skill(
+                db,
+                &path,
+                &assistant_name,
+                project_path.as_deref(),
+            ))
+        })
+    })
+    .await
+    {
+        Ok(Ok(preview)) => preview,
+        Ok(Err(error)) | Err(error) => seal_install_preview(
+            skill_adoption::preview_adopt_skill_fallback(&fallback_path, error),
+            &fallback_path,
+            &fallback_assistant,
+            "adopt",
+            fallback_project.as_deref(),
+        ),
+    }
+}
+
+#[tauri::command]
+async fn adopt_skill(
+    path: String,
+    assistant_name: String,
+    project_path: Option<String>,
+    plan_token: Option<String>,
+) -> InstallResult {
+    match run_blocking_task(move || {
+        run_exclusive_operation(|db| {
+            Ok(skill_adoption::adopt_skill(
+                db,
+                path,
+                assistant_name,
+                project_path,
+                plan_token,
+            ))
+        })
+    })
+    .await
+    {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) | Err(error) => install_result(false, "接管任务异常终止", error, None),
+    }
+}
+
+#[tauri::command]
 fn get_git_backup(state: tauri::State<'_, AppState>) -> Result<GitBackup, String> {
     let db = lock_app_db(&state)?;
     git_backup::load(&db)
@@ -464,7 +552,7 @@ async fn sync_to_git(message: String) -> Result<String, String> {
     run_blocking_task(move || run_exclusive_operation(|db| git_backup::sync(db, &message))).await?
 }
 
-fn install_result(
+pub(crate) fn install_result(
     success: bool,
     message: impl Into<String>,
     output: impl Into<String>,
@@ -561,6 +649,30 @@ fn build_install_request_preview(
         selected_skill_paths,
         preferred_skill_id,
     } = request;
+    let resolved_marketplace;
+    let resolved_source;
+    let (package, source) = if source == "claude_marketplace" {
+        match claude_marketplace::resolve_plugin_source(package) {
+            Ok((package_value, source_value)) => {
+                resolved_marketplace = package_value;
+                resolved_source = source_value;
+                (resolved_marketplace.as_str(), resolved_source.as_str())
+            }
+            Err(error) => {
+                return finalize_install_request_preview(
+                    install_preview_error(error, source.to_string(), String::new()),
+                    package,
+                    source,
+                    assistant_name,
+                    mode,
+                    project_path,
+                    policy,
+                );
+            }
+        }
+    } else {
+        (package, source)
+    };
     let deployment_root = if mode == "library" {
         None
     } else {
@@ -664,7 +776,7 @@ fn finalize_install_request_preview(
     seal_install_preview(preview, package, assistant_name, mode, project_path)
 }
 
-fn apply_policy_to_preview(
+pub(crate) fn apply_policy_to_preview(
     preview: &mut InstallPreview,
     package: &str,
     source: &str,
@@ -755,8 +867,8 @@ fn install_skill_blocking(request: InstallSkillRequest) -> InstallResult {
 
 fn install_skill_exclusive(db: &Connection, request: InstallSkillRequest) -> InstallResult {
     let InstallSkillRequest {
-        package,
-        source,
+        mut package,
+        mut source,
         assistant_name,
         install_mode,
         project_path,
@@ -764,6 +876,15 @@ fn install_skill_exclusive(db: &Connection, request: InstallSkillRequest) -> Ins
         preferred_skill_id,
         plan_token,
     } = request;
+    if source == "claude_marketplace" {
+        match claude_marketplace::resolve_plugin_source(&package) {
+            Ok((resolved_package, resolved_source)) => {
+                package = resolved_package;
+                source = resolved_source;
+            }
+            Err(error) => return install_result(false, error, "", None),
+        }
+    }
     let mode = install_mode.unwrap_or_else(|| "copy".to_string());
     let library_only = mode == "library";
     let reuse_existing_library =
@@ -1005,7 +1126,7 @@ fn install_skill_exclusive(db: &Connection, request: InstallSkillRequest) -> Ins
 }
 
 #[allow(clippy::too_many_arguments)]
-fn finalize_library_install_registration(
+pub(crate) fn finalize_library_install_registration(
     db: &Connection,
     package: &str,
     source: &str,
@@ -1071,7 +1192,7 @@ fn finalize_library_install_registration(
     Ok(())
 }
 
-fn rollback_install_result(
+pub(crate) fn rollback_install_result(
     transaction: &mut ReconcileTransaction<'_>,
     message: &str,
     error: String,
@@ -1618,6 +1739,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_all_assistants,
             get_library_skills,
+            get_library_settings,
+            set_library_root,
+            inspect_project,
+            preview_adopt_skill,
+            adopt_skill,
             get_all_tags,
             add_tag,
             update_skill_tags,
@@ -2562,6 +2688,9 @@ mod tests {
                         skill_type: "skill-folder".into(),
                         source: "GitHub".into(),
                         source_type: "deployment".into(),
+                        content_source: "github".into(),
+                        manager: "skillmate".into(),
+                        update_strategy: "skillmate".into(),
                         size: "1 KB".into(),
                         modified: "".into(),
                         tags: vec!["1".into()],

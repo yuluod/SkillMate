@@ -1,5 +1,6 @@
 use crate::app_core::{assistant_definitions, generate_id};
 use crate::database::{database_path_key, PathColumn};
+use crate::library_config::configured_library_root;
 use crate::managed_installation::{
     prune_missing_managed_installations, refresh_managed_installation,
 };
@@ -222,10 +223,7 @@ pub fn library_root() -> Result<PathBuf, String> {
         fs::create_dir_all(&root).map_err(|error| error.to_string())?;
         return Ok(root);
     }
-    let root = dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("skillmate")
-        .join("skills");
+    let root = configured_library_root()?;
     fs::create_dir_all(&root).map_err(|error| error.to_string())?;
     Ok(root)
 }
@@ -252,20 +250,34 @@ pub fn library_skill_id(db: &Connection, path: &Path) -> Result<String, String> 
     .map_err(|error| format!("SkillMate 库记录不存在: {error}"))
 }
 
+pub fn scan_library_skills(db: &Connection) -> Result<Vec<Skill>, String> {
+    scan_library_skills_filtered(db, false)
+}
+
 pub fn scan_unassigned_library_skills(db: &Connection) -> Result<Vec<Skill>, String> {
+    scan_library_skills_filtered(db, true)
+}
+
+fn scan_library_skills_filtered(
+    db: &Connection,
+    only_unassigned: bool,
+) -> Result<Vec<Skill>, String> {
     prune_missing_managed_installations(db)?;
     library_root()?;
-    let mut statement = db
-        .prepare(
-            "SELECT library_path, name
-             FROM library_skills
-             WHERE NOT EXISTS (
-                SELECT 1 FROM skill_deployments
-                WHERE skill_deployments.library_path = library_skills.library_path
-             )
-             ORDER BY name, library_path",
-        )
-        .map_err(|error| error.to_string())?;
+    let query = if only_unassigned {
+        "SELECT library_path, name
+         FROM library_skills
+         WHERE NOT EXISTS (
+            SELECT 1 FROM skill_deployments
+            WHERE skill_deployments.library_path = library_skills.library_path
+         )
+         ORDER BY name, library_path"
+    } else {
+        "SELECT library_path, name
+         FROM library_skills
+         ORDER BY name, library_path"
+    };
+    let mut statement = db.prepare(query).map_err(|error| error.to_string())?;
     let entries = statement
         .query_map([], |row| {
             Ok((

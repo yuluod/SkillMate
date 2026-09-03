@@ -218,6 +218,14 @@ impl<'db> ReconcileTransaction<'db> {
         Ok(())
     }
 
+    pub fn staged_removal_path(&self, original: &Path) -> Option<&Path> {
+        self.journal
+            .moved_targets
+            .iter()
+            .find(|(target, _)| target == original)
+            .map(|(_, backup)| backup.as_path())
+    }
+
     fn sync_commit_state(&self) -> Result<(), String> {
         sync_journal_commit_state(&self.journal)
     }
