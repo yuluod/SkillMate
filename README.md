@@ -4,147 +4,276 @@
 
 # SkillMate
 
-SkillMate 是一个支持直接添加的跨平台桌面应用，用来统一盘点、启用、组织和维护不同 AI 编程工具中的目录型 **Skills**。
+SkillMate 是一个跨平台的 **AI Skills 管理器**，用于统一盘点、添加、接管、启用和维护散落在不同 AI 编程工具中的目录型 Skills。
 
-它关注的是可以落到本地目录的 Skill，而不是整包 IDE 扩展、插件市场或通用包管理器。SkillMate 可以直接添加 Git 仓库或本地目录，也会识别外部工具安装的内容；目标是让用户看清有哪些 Skill、由谁管理、在哪里启用，并更容易迁移、备份和复用。
+它不试图替代每个 Agent 自己的插件系统，而是解决更基础的问题：同一个 Skill 从哪里来、由谁管理、在哪些平台和项目中生效，以及如何避免多份复制带来的内容漂移。
 
-## 当前支持的平台
+## 为什么需要 SkillMate
 
-- Claude Code
-- Codex
-- OpenClaw
-- Gemini CLI
-- Cursor
-- OpenCode
-- GitHub Copilot
+Claude Code、Codex、Gemini CLI、Cursor 等工具使用不同的全局目录和项目目录。手工复制同一个 Skill 很容易产生以下问题：
+
+- 不知道当前项目实际加载了哪一份 Skill
+- 同名 Skill 在项目级和全局范围相互覆盖
+- 同一份能力散落在多个目录，内容逐渐不一致
+- Git、外部 CLI 和手工目录的更新责任混在一起
+- 更换电脑或项目时难以复现原有组合
+
+SkillMate 用一份受管主副本和显式启用关系整理这些内容，同时保留对外部安装内容的可见性。
 
 ## 核心模型
 
-SkillMate 将“添加”和“启用”拆成两个动作：Skill 内容先进入统一库，使用时再按平台和范围创建启用位置。
+SkillMate 将 Skill 的生命周期拆成几个含义明确的动作：
+
+- **添加**：从 Git、本地目录或 Claude Marketplace 解析内容，复制到 SkillMate 统一库，不选择平台或项目
+- **接管**：把现有 Agent 目录中的实体 Skill 加入统一库，再将原位置替换为受管目录连接
+- **启用**：从统一库向某个平台的全局目录或项目目录创建目录连接
+- **停用**：移除启用位置，统一库中的主副本保持不变
+- **删除**：删除 SkillMate 管理的主副本；普通删除先进入自有垃圾箱并提供 60 秒撤销
 
 ```text
-Git 仓库 / 本地目录
-        │ 添加
-        ▼
-SkillMate 统一库（唯一主副本）
-        │ 启用
-        ├── 平台全局目录（目录连接）
-        └── 项目 Skill 目录（目录连接）
+Git / 本地目录 / Claude Marketplace
+                 │
+                 │ 添加
+                 ▼
+       SkillMate 统一库
+          （唯一主副本）
+                 │
+          ┌──────┴──────┐
+          │             │
+       全局启用       项目启用
+          │             │
+          ▼             ▼
+   Agent 全局目录   项目 Skill 目录
+          └────── 目录连接 ──────┘
+
+现有实体 Skill ── 接管 ──► 统一库 + 原位置受管连接
 ```
 
-统一库负责内容、来源和更新状态，平台目录只表示“在哪里启用”。停用不会删除主副本。外部工具自行安装或旧版本遗留的实体目录仍会被发现，但默认只读，更新仍由原安装方式负责，SkillMate 不会自动移动、覆盖或接管。
+统一库负责内容、来源和更新状态，Agent 目录只表示“在哪里启用”。SkillMate 不会自动接管或覆盖外部内容，接管必须由用户发起并确认写入计划。
 
-## 核心能力
+## 支持的平台与目录
 
-### Skill 盘点
+| 平台 | 默认全局启用目录 | 其他发现目录 | 项目目录 |
+| --- | --- | --- | --- |
+| Claude Code | `~/.claude/skills` | — | `.claude/skills` |
+| Codex | `~/.agents/skills` | `~/.codex/skills` | `.agents/skills` |
+| OpenClaw | `~/.openclaw/skills` | `~/.agents/skills` | `skills` |
+| Gemini CLI | `~/.gemini/skills` | `~/.agents/skills` | `.gemini/skills` |
+| Cursor | `~/.cursor/skills` | — | `.cursor/skills` |
+| OpenCode | `~/.config/opencode/skills` | — | `.opencode/skills` |
+| GitHub Copilot | `~/.copilot/skills` | — | `.github/skills` |
 
-- 扫描受支持助手的本地 Skill 目录
-- 在概览页汇总更新、结构问题、静态风险、本地内容变更、跨平台差异和扫描诊断
-- 展示名称、路径、来源、递归目录大小、入口文档预览和更新状态
+SkillMate 会同时扫描平台声明的发现目录。项目核验功能会把项目级与全局内容合并，并按项目优先原则展示实际生效的 Skills 和被同名内容覆盖的数量。
+
+Windows 创建受管目录连接需要开启开发者模式。
+
+## 来源、管理者与更新责任
+
+“内容来源”“当前管理者”和“更新方式”是三个不同概念，SkillMate 会分别展示：
+
+| 场景 | 内容来源 | 管理者 | 更新方式 |
+| --- | --- | --- | --- |
+| SkillMate 添加的 Git Skill | GitHub / Git | SkillMate | SkillMate 检查并更新 |
+| SkillMate 添加的本地 Skill | 本地目录 | SkillMate | 手工维护 |
+| npm / pip 等外部工具安装的 Skill | 外部 CLI | 原安装器 | 使用原安装器更新 |
+| Agent、插件或用户手工放置的 Skill | Git / 本地 / 未知 | 外部或手工管理 | 外部工具或手工维护 |
+| 用户显式接管后的 Skill | 保留原来源 | SkillMate | 按可重建来源决定 |
+
+SkillMate 不会因为“发现了一个目录”就宣称拥有它。只有加入统一库并完成登记的内容，才会被视为 SkillMate 受管内容。
+
+## 主要功能
+
+### 盘点与项目核验
+
+- 扫描所有受支持平台的全局 Skill 目录
+- 输入项目路径，计算每个平台在该项目中实际可见的 Skills
+- 区分项目级、全局、同名覆盖和共享发现目录
+- 展示内容来源、管理者、更新方式和启用平台
+- 汇总结构问题、静态风险、本地修改、内容差异和扫描诊断
+
+### 结构与安全检查
+
 - 按 Agent Skills 规范识别大小写精确的 `SKILL.md`
-- 校验 YAML frontmatter、必填 `name` / `description`、名称格式及目录名一致性
+- 校验 YAML frontmatter、必填 `name` / `description`、名称格式和目录名一致性
 - 读取 `compatibility`、`license`、`metadata`、`allowed-tools` 等可选字段
-- 识别可选的 `references/`、`scripts/`、`assets/` 资源目录
-- 用 `符合规范` / `需要修复` / `非 Skill` 标记结构状态；小写 `skill.md` 和仅 README 的目录会提示修复
-- 检查脚本、依赖清单、软连接、隐藏文件、网络访问和环境变量引用等静态风险
+- 识别 `references/`、`scripts/`、`assets/` 等资源目录
+- 检查脚本、依赖清单、软连接、隐藏文件、网络访问和环境变量引用
+- 使用 `符合规范`、`需要修复`、`非 Skill` 区分结构状态
 
-### 直接添加与市场发现
+静态检查只用于预览和安装决策。SkillMate 不执行 Skill 中的脚本，也不会为了识别来源而运行第三方安装命令。
 
-- 直接从 Git 仓库或本地目录添加 Skill 到统一库
-- 在技能库中搜索 [skills.sh](https://skills.sh/) 收录的目录型 Skills
-- 通过 GitHub Repository Search 查找公开 Skill 仓库
-- 市场结果只负责发现来源；安装仍复用结构预览、静态风险检查、安全策略和写入计划
+### 添加来源
 
-### 安装 Skill
+#### Git 仓库
 
-安装入口接受 Git 仓库和本地目录：
+支持普通仓库地址、GitHub shorthand、GitHub tree URL，以及 `#ref:path` 子目录语法：
 
-- Git 仓库
-- 本地目录
+```text
+https://github.com/example/skills.git
+example/skills
+https://github.com/example/skills.git#main:skills/writer
+https://github.com/example/skills/tree/main/skills/writer
+```
 
-Git 来源支持普通仓库地址、GitHub shorthand、GitHub tree URL，以及通过 `#ref:path` 指定分支 / 标签 / 提交和仓库子目录：
+Git 预览会临时克隆仓库。添加后不会保留 `.git`、`.hg`、`.svn`，但会单独记录仓库、引用、子目录和已安装提交，用于后续检查与更新。
 
-- `https://github.com/example/skills.git`
-- `example/skills`
-- `https://github.com/example/skills.git#main:skills/writer`
-- `https://github.com/example/skills/tree/main/skills/writer`
+如果仓库中包含多个 Skills，必须显式选择需要添加的目录。
 
-安装前会先生成结构预览、风险提示和写入计划。Git 来源的预览会临时克隆仓库；添加时不会保留 `.git`、`.hg`、`.svn` 目录，但会单独保存来源、引用、子目录和已安装提交，普通仓库与仓库子目录都可以继续检查和更新。
+#### 本地目录
 
-添加与启用是两个独立动作。添加只把 Skill 复制到系统应用数据目录下的 SkillMate 统一库（`skillmate/skills`），不要求选择平台或项目；需要使用时，再从 Skill 列表选择平台，并启用到所有项目或指定项目。统一库是 SkillMate 管理的唯一主副本，平台目录只保存指向主副本的目录连接，不再维护第二份内容；停用只移除启用位置，主副本仍保留在库中，可以稍后重新启用。
+本地单 Skill 目录可以直接添加。包含多个 Skills 的目录同样需要显式选择，SkillMate 只复制选中的内容。
 
-项目范围使用各平台约定的目录：Codex 使用 `.agents/skills`，Claude Code 使用 `.claude/skills`，Gemini CLI 使用 `.gemini/skills`，OpenClaw 使用 `skills`，Cursor 使用 `.cursor/skills`，OpenCode 使用 `.opencode/skills`，GitHub Copilot 使用 `.github/skills`。当前支持的平台都支持全局与项目范围；Windows 创建目录连接需要开启开发者模式。
+#### Claude Marketplace
 
-SkillMate 仍会发现 Agent、插件、项目或其他工具自行安装的 Skill，包括 Codex 的 `~/.codex/skills` 以及 OpenClaw、Gemini CLI 可复用的 `~/.agents/skills`。这些外部内容默认只读展示，不会被自动移动、覆盖或接管；目标位置存在同名内容时，新启用计划会明确阻止写入。
+高级来源中可以使用：
 
-安装输入会先经过本地规则识别，不需要模型 API。规则无法判断的自然语言或复杂说明会标记为“可用模型辅助识别”，但当前版本不会自动调用模型。
+```text
+plugin
+plugin@marketplace
+```
 
-设置页可以选择安装安全策略：仅提示、阻止关键风险，或只允许可信 Git 主机和本地根目录。策略会参与安装预览、Manifest / Profile 应用和 Git 更新；修改策略后，旧的写入计划会自动失效。静态风险检查和信任列表都只是安装决策辅助，不会执行 Skill 中的脚本。
+SkillMate 会读取本机 Claude Marketplace 清单，将插件解析为本地目录或 Git 来源，再进入同一套结构预览、风险检查和写入计划。来自 npm 的 Marketplace 插件会明确提示使用原安装器，SkillMate 不会执行 npm 安装。
 
-### 维护与更新
+技能库中的 [skills.sh](https://skills.sh/) 和 GitHub Repository Search 只负责发现来源，真正添加时仍会经过完整检查。
 
-维护页会展示每个 Skill 的来源、管理状态和同步状态，包括：
+### 接管外部 Skill
 
-- `git`
-- `legacy_npm`
-- `legacy_pip`
-- `local`
+扫描到的外部实体目录默认只读。用户可以选择“接管”，流程为：
 
-维护页会展示来源类型、远端来源、当前版本引用、最新可用引用、落后提交数、同步状态和最近检查时间。当前只有由 SkillMate 管理的 Git 来源支持一键更新，通常需要状态为可更新且系统判定 `can_sync = true`；外部内容会保留可见性，但更新由原安装方式负责。
+1. 检查目录所属平台和全局 / 项目范围
+2. 生成来源、结构、安全策略和文件动作预览
+3. 将内容复制到统一库
+4. 将原实体目录替换为指向主副本的受管连接
+5. 迁移来源与更新状态
 
-`local` 来源仅做可用性检测与展示，不参与自动更新。`legacy_npm` 和 `legacy_pip` 只作为历史来源 / 外部环境来源探测，不作为安装入口，也不会在 SkillMate 内执行全局 npm/PyPI 升级。
+Git 仓库中的嵌套 Skill 会保留相对仓库根目录的子路径，避免后续更新错误地指向整个仓库。任一步失败都会尝试恢复原目录和相关登记信息。
+
+### 统一库位置
+
+默认统一库位于系统应用数据目录下的 `skillmate/skills`。设置页可以修改统一库位置，也可以使用环境变量：
+
+```text
+SKILLMATE_LIBRARY_DIR=/absolute/path/to/skills
+```
+
+约束如下：
+
+- 必须使用绝对路径
+- 只有当前统一库和目标目录都为空时才能更换
+- 不能位于任何 Agent 的全局 Skill 发现目录内
+- 环境变量生效时，设置页只读
+
+这些限制用于避免已有启用连接失效，也避免“添加到库”意外等同于“全局启用”。
+
+### 更新
+
+- SkillMate 管理且来源可重建的 Git Skill 支持检查和一键更新
+- Git 仓库子目录与固定引用会保留在来源记录中
+- 本地来源只检查原始位置是否仍可用，不执行自动更新
+- `legacy_npm` / `legacy_pip` 只用于识别历史来源和提示原更新方式
+- 外部内容保持可见，但由原安装器或用户维护
+
+更新前会重新执行安全策略。内容或策略在预览后变化时，旧计划令牌会失效。
 
 ### 应用更新
 
-设置页提供应用更新入口，可以检查 GitHub Releases 上的最新版本，并通过 Tauri updater 校验签名后安装更新。
+SkillMate 可以通过 GitHub Releases 和 Tauri updater 检查、验证并安装应用更新。设置页支持启动时自动检查；发现新版本后，可以直接从提示中安装，也可以暂时忽略本次安装提示。
 
-### 组织与迁移
+### 组织、场景与迁移
 
-- 标签：为 Skill 添加标签并筛选
-- 应用场景：按写作、开发或审查等任务保存一组 Skill，查看缺失状态并一键进入对应技能库视图
-- 导入 / 导出：导出标签、应用场景和受管 Skill 清单，导入前可预览变更
-- Git 备份：只把 SkillMate 明确登记的受管 Skill 内容快照到本地 Git 仓库，并可推送到远端
-- SkillMate manifest：导出 / 预览 / 应用 `skillmate.toml`，以 `install` / `keep` / `remove` 计划把受管 Skill 对齐到目标状态
-- 环境快照：保存一组当前 Skill 来源组合，支持预览、应用和一次性回滚
+- **标签**：为 Skill 添加标签并筛选
+- **应用场景**：按写作、开发、审查等任务保存一组 Skills，查看缺失状态并复用组合
+- **导入 / 导出**：导出标签、应用场景和受管 Skill 清单，导入前预览变化
+- **Git 备份**：把明确登记的受管内容快照到本地 Git 仓库，并可推送远端
+- **SkillMate manifest**：使用 `skillmate.toml` 以 `install` / `keep` / `remove` 计划对齐目标状态
+- **环境快照**：保存一组 Skill 来源组合，支持预览、应用和一次性回滚
 
-项目级受管 Skill 可以导出到项目根目录的 `skillmate.toml`。清单会稳定排序，并记录来源、目标平台、固定引用和内容哈希；项目内路径尽量使用相对路径。重新应用项目清单时，只会对齐同一项目的受管 Skill，不会波及全局或其他项目。
-
-SkillMate 只会自动移除自身记录的受管 Skill，不会删除手工放入助手目录的内容。安装、Manifest 和 Profile 应用失败时会尽量恢复文件、受管状态和数据库记录，并明确报告未能完成的回滚步骤。
-
-普通卸载会先把受管 Skill 暂存到 SkillMate 自有垃圾箱，界面提供 60 秒撤销窗口。启动维护只会清理带 SkillMate 所有权标记的遗留暂存目录；恢复时如果原路径已出现新内容，会拒绝覆盖。
-
-当同名 Skill 在多个平台目录中的内容哈希不一致时，概览页会列出内容差异。用户可以选择一个完整实体目录作为基准并预览同步计划；同步只覆盖内容未被本地修改的 SkillMate 受管副本，不会覆盖手工目录或跟随软连接，失败时会回滚事务。
-
-Git 备份用于保存受管 Skill 内容，不是完整应用恢复。快照不会包含 SkillMate 数据库、标签、应用场景、环境快照、受管 sidecar、运行时缓存或软连接，并会尽力排除常见凭据与密钥文件；每次同步都会在仓库中写入清单，记录来源路径、复制统计和排除原因。
-
-为保证提交内容与安全扫描结果一致，SkillMate 会直接提交已验证的 Git tree；Git 的 clean filter（包括换行规范化）会生效，但不会执行提交 hooks，也不会自动应用 `commit.gpgSign`。需要额外签名或提交钩子时，请在同步后自行处理。
+项目级受管 Skill 可以导出到项目根目录的 `skillmate.toml`。清单会记录来源、目标平台、固定引用和内容哈希；重新应用时只对齐同一项目，不影响全局或其他项目。
 
 ## 命令行
 
-仓库同时提供 `skillmate-cli`，用于在脚本或 CI 中执行与桌面端一致的声明式流程：
+仓库同时提供 `skillmate-cli`，用于盘点、脚本化管理和声明式对齐：
 
 ```text
 skillmate-cli scan [--json]
+skillmate-cli list [--json]
+skillmate-cli project <项目目录> [--json]
+skillmate-cli add <来源> [--source git|local|claude_marketplace] [--skill <相对路径>]... [--plan-token <令牌>] [--json]
+skillmate-cli enable <统一库Skill目录> --assistant <Agent> [--project <项目目录>] [--plan-token <令牌>] [--json]
+skillmate-cli adopt <Skill目录> --assistant <Agent> [--project <项目目录>] [--plan-token <令牌>] [--json]
+skillmate-cli maintain [--json]
+skillmate-cli library [--set <绝对路径>] [--json]
+skillmate-cli agent-skill [--install <Skills根目录>]
 skillmate-cli plan <skillmate.toml> [--json]
 skillmate-cli verify <skillmate.toml> [--json]
 skillmate-cli apply <skillmate.toml> --plan-token <令牌> [--json]
 ```
 
-`apply` 必须使用同一份清单最新 `plan` 输出的计划令牌；清单或当前状态变化后，旧令牌会失效。
+`add`、`enable` 和 `adopt` 采用两阶段写入：第一次运行生成计划，确认后重复原命令并附带输出的 `plan-token`。声明式流程先运行 `plan`，再把令牌交给 `apply`。来源、目标、策略或当前状态变化后，旧令牌会失效。
+
+示例：
+
+```bash
+# 先预览
+skillmate-cli add example/skills --skill skills/writer
+
+# 确认后重复原参数并附带令牌
+skillmate-cli add example/skills --skill skills/writer --plan-token <令牌>
+
+# 查看某个项目中各 Agent 实际生效的 Skills
+skillmate-cli project /path/to/project
+
+# 将统一库中的 Skill 启用到 Codex 项目
+skillmate-cli enable /path/to/library/writer --assistant Codex --project /path/to/project
+```
+
+`agent-skill --install` 可以把随应用提供的 SkillMate Agent Skill 安装到指定 Skills 根目录；如果目标已经存在，包括断开的软连接，命令会拒绝覆盖。
+
+## 可靠性与数据边界
+
+- 文件系统、SQLite 和 sidecar 状态通过补偿式事务协调，失败时执行回滚并报告未完成步骤
+- 写入操作使用绑定来源、目标和当前状态的计划令牌，避免执行过期计划
+- SkillMate 只自动修改自己明确登记的受管内容
+- 已存在的外部目标会阻止启用，不会被静默覆盖
+- 受管内容发生本地修改时，破坏性操作会被阻止或要求重新确认
+- 普通删除进入 SkillMate 自有垃圾箱，恢复时不会覆盖原路径中新出现的内容
+- Windows、macOS 和 Linux 使用各自的安全路径与目录连接处理
+
+Git 备份只保存受管 Skill 内容，不是完整应用恢复。快照不包含数据库、标签、应用场景、环境快照、sidecar、运行时缓存或目录连接，并会排除常见凭据与密钥文件。
+
+为保证提交内容和安全扫描结果一致，Git 备份直接提交已经验证的 Git tree。Git clean filter 会生效，但不会执行提交 hooks，也不会自动应用 `commit.gpgSign`。
 
 ## 当前边界
 
-为了保持语义清晰，当前版本暂不做：
+SkillMate 当前专注于目录型 Agent Skills，暂不提供：
 
-- VSCode / Cursor / Windsurf / Zed 整包扩展管理
-- npm / PyPI 安装入口
+- VS Code、Cursor、Windsurf、Zed 等整包扩展管理
+- npm / PyPI 第三方安装入口
 - MCP 配置与服务器管理
-- 团队私有 Registry 和账号同步
+- 团队私有 Registry 与账号同步
+- 模型驱动的自动安装决策
 
-这些能力后续是否加入，取决于目录型 Skill 管理闭环是否足够稳定。
+规则无法识别的自然语言或复杂输入可能显示“可用模型辅助识别”，但当前版本不会自动调用模型 API。
 
-## 项目信息
+## 本地开发
 
+需要 Node.js 22.13+、pnpm 11、Rust，以及当前系统对应的 [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/)。
+
+```bash
+pnpm install
+pnpm dev
+```
+
+测试和构建：
+
+```bash
+pnpm test
+pnpm build
+```
+
+## 获取与项目信息
+
+- [下载 Releases](https://github.com/yuluod/SkillMate/releases)
 - [GNU AGPL v3 或更高版本](LICENSE)
 - [安全策略](SECURITY.md)
 - [参与贡献](CONTRIBUTING.md)
