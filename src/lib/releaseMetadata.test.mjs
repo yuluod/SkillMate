@@ -324,9 +324,9 @@ test("公开仓库必须提供完整许可证、贡献与安全治理文件", ()
   assert.ok(license.length > 30_000);
   assert.match(readText("SECURITY.md"), /Report a vulnerability/);
   assert.match(readText("CONTRIBUTING.md"), /cargo clippy/);
-  assert.equal(readText(".node-version").trim(), "22.13.0");
-  assert.equal(packageJson.engines.node, ">=22.13.0");
-  assert.equal(packageJson.devEngines.runtime.version, ">=22.13.0");
+  assert.equal(readText(".node-version").trim(), "24.20.0");
+  assert.equal(packageJson.engines.node, ">=24.20.0");
+  assert.equal(packageJson.devEngines.runtime.version, ">=24.20.0");
   assert.match(toolchain, /channel = "1\.96\.0"/);
   assert.match(dependabot, /package-ecosystem: npm/);
   assert.match(dependabot, /package-ecosystem: cargo/);
