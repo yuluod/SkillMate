@@ -5,12 +5,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AiAvatar, AssistantsView, SkillsView, UpdatesView } from "./InventoryViews.jsx";
 import DashboardView, { MarketDiscovery } from "./DashboardView.jsx";
-import { InstallModal, PreviewModal } from "./SkillMateModals.jsx";
+import { AdoptionModal, InstallModal, PreviewModal } from "./SkillMateModals.jsx";
 import SettingsView from "./SettingsView.jsx";
 import ScenarioView from "./ScenarioView.jsx";
 import { persistPreference } from "../App.jsx";
 import { useInstallFlow } from "../lib/useInstallFlow.js";
 import { useInstallPolicyFlow } from "../lib/useInstallPolicyFlow.js";
+import { useLibrarySettingsFlow } from "../lib/useLibrarySettingsFlow.js";
 import { useGitBackupFlow } from "../lib/useGitBackupFlow.js";
 import { useScenarioFlow } from "../lib/useScenarioFlow.js";
 import { useSearchFlow } from "../lib/useSearchFlow.js";
@@ -347,6 +348,64 @@ describe("外观偏好与登记册布局", () => {
     expect(screen.getByRole("button", { name: "收起详情" })).toBeTruthy();
   });
 
+  it("项目核验按 Agent 展示项目级与全局有效 Skill", async () => {
+    invoke.mockImplementation(async (command) => {
+      if (command === "inspect_project") return {
+        project_path: "/work/demo",
+        assistants: [{
+          name: "Codex",
+          icon: "codex",
+          project_count: 1,
+          global_count: 1,
+          shadowed_count: 1,
+          skills: [
+            { name: "project-writer", path: "/work/demo/.agents/skills/project-writer", scope: "project", skill_type: "skill-folder", managed_by_app: false },
+            { name: "global-review", path: "/home/demo/.agents/skills/global-review", scope: "global", skill_type: "skill-folder", managed_by_app: true },
+          ],
+        }],
+      };
+      throw new Error(`未处理命令: ${command}`);
+    });
+    const onAdopt = vi.fn();
+    render(<AssistantsView assistants={[]} installedCount={0} onAdopt={onAdopt} />);
+
+    fireEvent.change(screen.getByLabelText("项目路径"), { target: { value: "/work/demo" } });
+    fireEvent.click(screen.getByRole("button", { name: "检查项目" }));
+    await screen.findByText("共 2 · 项目 1 · 全局 1");
+    fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
+
+    expect(screen.getByText("project-writer")).toBeTruthy();
+    expect(screen.getByText("global-review")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "接管" }));
+    expect(onAdopt).toHaveBeenCalledWith(expect.objectContaining({ assistant: "Codex", projectPath: "/work/demo" }));
+  });
+
+  it("接管必须先展示写入计划再执行", async () => {
+    const onComplete = vi.fn();
+    invoke.mockImplementation(async (command) => {
+      if (command === "preview_adopt_skill") return {
+        can_apply: true,
+        message: "将现有 Skill 加入统一库",
+        plan_token: "adopt-plan",
+        package_detection: { detected_skills: [], warnings: [] },
+        target_actions: [
+          { action: "copy", source: "/work/writer", target: "/library/writer", reason: "加入库" },
+          { action: "replace", source: "/library/writer", target: "/work/writer", reason: "切换链接" },
+        ],
+        conflicts: [],
+      };
+      if (command === "adopt_skill") return { success: true, message: "接管完成" };
+      throw new Error(`未处理命令: ${command}`);
+    });
+    render(<AdoptionModal candidate={{ skill: { name: "writer", path: "/work/writer" }, assistant: "Codex", projectPath: "/work" }} onClose={vi.fn()} onComplete={onComplete} />);
+
+    await screen.findByText("将现有 Skill 加入统一库");
+    expect(screen.getAllByText("/library/writer")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "确认接管" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("adopt_skill", expect.objectContaining({ planToken: "adopt-plan" })));
+    await waitFor(() => expect(onComplete).toHaveBeenCalledWith("接管完成"));
+  });
+
   it("来源签章由稳定来源类型决定样式", () => {
     const unmanagedRender = render(
       <SkillsView
@@ -474,6 +533,28 @@ describe("安装流程交互", () => {
     expect(screen.getByLabelText("使用平台")).toBeTruthy();
     expect(screen.getByLabelText("生效范围")).toBeTruthy();
     expect(screen.queryByLabelText("Skill 来源")).toBeNull();
+  });
+
+  it("高级来源可以选择 Claude Marketplace", () => {
+    const flow = installFlow({
+      source: {
+        ...installFlow().source,
+        kind: "claude_marketplace",
+        package: "writer@official",
+      },
+      disclosure: {
+        detailsOpen: false,
+        setDetailsOpen: vi.fn(),
+        advancedOpen: true,
+        setAdvancedOpen: vi.fn(),
+        showAdvancedOptions: true,
+      },
+    });
+
+    render(<InstallModal flow={flow} assistants={[]} loading={false} onClose={vi.fn()} />);
+
+    expect(screen.getByRole("option", { name: "Claude Marketplace" })).toBeTruthy();
+    expect(screen.getByLabelText("Skill 来源").getAttribute("placeholder")).toBe("plugin 或 plugin@marketplace");
   });
 
   it("添加预览只写入统一库且不携带平台或项目", async () => {
@@ -864,6 +945,53 @@ describe("安装策略设置", () => {
       target: { value: "github.com, gitlab.com" },
     });
     expect(update).toHaveBeenLastCalledWith("trusted_git_hosts", ["github.com", "gitlab.com"]);
+  });
+});
+
+describe("统一库设置", () => {
+  beforeEach(() => {
+    invoke.mockReset();
+  });
+
+  it("保存新目录后刷新工作台数据", async () => {
+    invoke
+      .mockResolvedValueOnce({ path: "/library/old", configurable: true })
+      .mockResolvedValueOnce({ path: "/library/new", configurable: true });
+    const loadData = vi.fn().mockResolvedValue(undefined);
+    const showToast = vi.fn();
+    const { result } = renderHook(() => useLibrarySettingsFlow({ showToast, loadData }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.setPath("/library/new"));
+    await act(async () => result.current.save());
+
+    expect(invoke).toHaveBeenLastCalledWith("set_library_root", { path: "/library/new" });
+    expect(loadData).toHaveBeenCalledWith({ resetUpdates: false });
+    expect(result.current.dirty).toBe(false);
+  });
+
+  it("环境变量控制目录时禁用输入与保存", () => {
+    render(
+      <SettingsView
+        activeTab="library"
+        setActiveTab={vi.fn()}
+        librarySettings={{
+          path: "/library/env",
+          setPath: vi.fn(),
+          configurable: false,
+          loading: false,
+          saving: false,
+          dirty: false,
+          error: "",
+          save: vi.fn(),
+          reload: vi.fn(),
+        }}
+      />
+    );
+
+    expect(screen.getByLabelText("统一库目录").disabled).toBe(true);
+    expect(screen.getByRole("button", { name: "保存" }).disabled).toBe(true);
+    expect(screen.getByText(/SKILLMATE_LIBRARY_DIR/)).toBeTruthy();
   });
 });
 

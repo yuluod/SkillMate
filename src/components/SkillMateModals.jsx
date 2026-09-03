@@ -3,6 +3,7 @@ import Icon from "./Icon.jsx";
 import ModalShell from "./ModalShell.jsx";
 import {
   SUPPORTED_INSTALL_SOURCES,
+  buildInstallPreviewView,
   buildInstallPreviewSummary,
   buildProjectTargetPreviewSummary,
   buildSkillCardView,
@@ -155,7 +156,7 @@ export function InstallModal({
       {workflow === "add" ? (
         <div className="form">
           <label htmlFor="install-source">{t("install.source")}</label>
-          <input id="install-source" value={pkg} onChange={e => setPkg(e.target.value)} placeholder={t("install.sourcePlaceholder")} />
+          <input id="install-source" value={pkg} onChange={e => setPkg(e.target.value)} placeholder={t(src === "claude_marketplace" ? "install.claudeMarketplacePlaceholder" : "install.sourcePlaceholder")} />
         </div>
       ) : (
         <div className="install-compact success">
@@ -241,7 +242,7 @@ export function InstallModal({
             <label htmlFor="install-source-kind">{t("install.sourceType")}</label>
             <select id="install-source-kind" value={src} onChange={e => setSrc(e.target.value)}>
               {SUPPORTED_INSTALL_SOURCES.map((source) => (
-                <option key={source} value={source}>{t(source === "git" ? "install.git" : "install.local")}</option>
+                <option key={source} value={source}>{t(source === "git" ? "install.git" : source === "local" ? "install.local" : "install.claudeMarketplace")}</option>
               ))}
             </select>
           </div>
@@ -336,6 +337,76 @@ export function InstallModal({
   );
 }
 
+export function AdoptionModal({ candidate, onClose, onComplete }) {
+  const { t } = useI18n();
+  const [preview, setPreview] = useState(null);
+  const [busy, setBusy] = useState("preview");
+  const [error, setError] = useState("");
+  const previewView = useMemo(() => buildInstallPreviewView(preview, t), [preview, t]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setBusy("preview");
+    skillmateApi.adoption.preview({
+      path: candidate.skill.path,
+      assistantName: candidate.assistant,
+      projectPath: candidate.projectPath || undefined,
+    }).then((result) => {
+      if (!cancelled) setPreview(result);
+    }).catch((reason) => {
+      if (!cancelled) setError(String(reason));
+    }).finally(() => {
+      if (!cancelled) setBusy("");
+    });
+    return () => { cancelled = true; };
+  }, [candidate]);
+
+  async function apply() {
+    if (!preview?.plan_token || !previewView?.canApply) return;
+    setBusy("apply");
+    setError("");
+    try {
+      const result = await skillmateApi.adoption.apply({
+        path: candidate.skill.path,
+        assistantName: candidate.assistant,
+        projectPath: candidate.projectPath || undefined,
+        planToken: preview.plan_token,
+      });
+      if (!result.success) throw new Error(result.message || result.output || t("adoption.failed"));
+      await onComplete(result.message);
+      onClose();
+    } catch (reason) {
+      setError(toUserErrorMessage(reason, t("error.safeRetry")));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  return (
+    <ModalShell title={t("adoption.title")} icon="branch" className="large adoption-modal" onClose={onClose}>
+      <p className="modal-intro">{t("adoption.hint")}</p>
+      <div className="install-compact warn">
+        <span>{candidate.assistant} · {candidate.projectPath ? t("projectInspection.scope.project") : t("projectInspection.scope.global")}</span>
+        <strong>{candidate.skill.manifest_title || candidate.skill.name}</strong>
+        <p className="registry-path">{candidate.skill.path}</p>
+      </div>
+      {busy === "preview" && <div className="install-compact"><strong>{t("adoption.previewing")}</strong></div>}
+      {preview && <div className={`structure-preview install-preview-card ${previewView?.canApply ? "success" : "error"}`}>
+        <div className="structure-preview-head"><span>{t("adoption.plan")}</span><strong>{preview.message}</strong></div>
+        {previewView?.actions?.length > 0 && <div className="install-plan-actions">
+          {previewView.actions.map((action) => <div key={`${action.action}-${action.target}`}><span className="stamp muted">{action.label}</span><span><strong>{action.source}</strong><small>{action.target}</small></span></div>)}
+        </div>}
+        {previewView?.conflicts?.length > 0 && <ul className="import-preview-list danger">{previewView.conflicts.map((conflict) => <li key={`${conflict.reason}-${conflict.target}`}>{conflict.target}：{conflict.reason}</li>)}</ul>}
+      </div>}
+      {error && <div className="install-compact error" role="alert"><strong>{error}</strong></div>}
+      <div className="modal-actions">
+        <button className="btn btn-secondary" onClick={onClose} disabled={busy === "apply"}>{t("common.cancel")}</button>
+        <button className="btn btn-primary" onClick={apply} disabled={!previewView?.canApply || Boolean(busy)}><Icon name="check" size={15} />{busy === "apply" ? t("adoption.applying") : t("adoption.confirm")}</button>
+      </div>
+    </ModalShell>
+  );
+}
+
 export function PreviewModal({ preview, onClose, onCheckUpdate, onOpenDrift, driftGroup }) {
   const { t } = useI18n();
   const skill = preview.skill || {};
@@ -382,7 +453,10 @@ export function PreviewModal({ preview, onClose, onCheckUpdate, onOpenDrift, dri
       <section className="skill-detail-section skill-provenance">
         <div className="skill-detail-title"><Icon name="branch" size={17} /><strong>{t("preview.provenance")}</strong><span className={`structure-badge ${skill.managed_by_app ? "success" : ""}`}>{skill.managed_by_app ? t("common.managed") : t("common.unmanaged")}</span></div>
         <dl>
-          <div><dt>{t("preview.sourceKind")}</dt><dd>{skill.source_type || skill.origin_kind || "—"}</dd></div>
+          <div><dt>{t("provenance.sourceLabel")}</dt><dd>{card.contentSourceLabel}</dd></div>
+          <div><dt>{t("provenance.managerLabel")}</dt><dd>{card.managerLabel}</dd></div>
+          <div><dt>{t("provenance.updateLabel")}</dt><dd>{card.updateStrategyLabel}</dd></div>
+          <div><dt>{t("preview.sourceKind")}</dt><dd>{skill.origin_kind || skill.source_type || "—"}</dd></div>
           <div><dt>{t("preview.origin")}</dt><dd title={sourceLocator}>{sourceLocator}</dd></div>
           <div><dt>{t("preview.resolved")}</dt><dd title={resolvedLocator}>{resolvedLocator}</dd></div>
           <div><dt>{t("preview.tracking")}</dt><dd>{skill.tracking_ref || "—"}</dd></div>

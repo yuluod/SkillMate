@@ -23,6 +23,7 @@ const SETTINGS_GROUPS = [
       ["backup", "settings.tabs.backup", "branch"],
       ["app-update", "settings.tabs.appUpdate", "updates"],
       ["install-policy", "settings.tabs.installPolicy", "shield"],
+      ["library", "settings.tabs.library", "folder"],
     ],
   },
   {
@@ -227,6 +228,27 @@ function InstallPolicySettings({ value }) {
   );
 }
 
+function LibrarySettings({ value }) {
+  const { t } = useI18n();
+  return (
+    <div className="settings-card">
+      <SurfaceHeader className="settings-surface-header" title={t("settings.tabs.library")} description={t("librarySettings.hint")} />
+      <div className="settings-body">
+        <div className="form">
+          <label htmlFor="skill-library-root">{t("librarySettings.path")}</label>
+          <input id="skill-library-root" value={value.path} onChange={(event) => value.setPath(event.target.value)} disabled={!value.configurable || value.loading || value.saving} />
+        </div>
+        <div className="git-meta">{t(value.configurable ? "librarySettings.safety" : "librarySettings.environment")}</div>
+        {value.error && <div className="install-compact error" role="alert"><strong>{value.error}</strong></div>}
+        <ActionRow>
+          <button className="btn btn-primary btn-sm" onClick={value.save} disabled={!value.configurable || !value.dirty || value.loading || value.saving}><Icon name="check" size={14} />{t(value.saving ? "settings.saving" : "common.save")}</button>
+          <button className="btn btn-secondary btn-sm" onClick={value.reload} disabled={value.loading || value.saving}><Icon name="refresh" size={14} />{t("settings.policy.reload")}</button>
+        </ActionRow>
+      </div>
+    </div>
+  );
+}
+
 function DataSettings({ value }) {
   const { t } = useI18n();
   return (
@@ -345,7 +367,7 @@ function TagSettings({ value }) {
   );
 }
 
-export default function SettingsView({ activeTab, setActiveTab, appearance, backup, appUpdate, installPolicy, data, skillSet, tags }) {
+export default function SettingsView({ activeTab, setActiveTab, appearance, backup, appUpdate, installPolicy, librarySettings, data, skillSet, tags }) {
   const { t } = useI18n();
   return (
     <div className="settings">
@@ -369,6 +391,7 @@ export default function SettingsView({ activeTab, setActiveTab, appearance, back
         {activeTab === "backup" && <BackupSettings value={backup} />}
         {activeTab === "app-update" && <AppUpdateSettings value={appUpdate} />}
         {activeTab === "install-policy" && <InstallPolicySettings value={installPolicy} />}
+        {activeTab === "library" && <LibrarySettings value={librarySettings} />}
         {activeTab === "data" && <DataSettings value={data} />}
         {activeTab === "skillset" && <SkillSetSettings value={skillSet} />}
         {activeTab === "tags" && <TagSettings value={tags} />}

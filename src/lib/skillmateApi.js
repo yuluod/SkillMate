@@ -72,6 +72,11 @@ export const skillmateApi = Object.freeze({
     purgeTrash: (token) => invoke("purge_trashed_skill", { token }),
     unlinkSkill: (path) => invoke("unlink_symlink_skill", { path }),
     openFolder: (path) => invoke("open_folder", { path }),
+    inspectProject: (projectPath) => invoke("inspect_project", { projectPath }),
+  }),
+  adoption: Object.freeze({
+    preview: ({ path, assistantName, projectPath }) => invoke("preview_adopt_skill", { path, assistantName, projectPath }),
+    apply: ({ path, assistantName, projectPath, planToken }) => invoke("adopt_skill", { path, assistantName, projectPath, planToken }),
   }),
   market: Object.freeze({
     search: (source, query) => invoke("search_market", { source, query }),
@@ -118,6 +123,8 @@ export const skillmateApi = Object.freeze({
     set: (config) => invoke("set_install_policy", { config }),
   }),
   library: Object.freeze({
+    settings: () => invoke("get_library_settings"),
+    setRoot: (path) => invoke("set_library_root", { path }),
     export: (path) => invoke("export_library", { path }),
     previewImport: (path, mode) => invoke("preview_import_library", { path, mode }),
   }),

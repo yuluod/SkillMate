@@ -217,6 +217,7 @@ test("App 可靠性回归点应当避免脆弱写法", () => {
   assert.doesNotMatch(source, /includes\("已删除"\)/);
   assert.match(source, /toastTimerRef/);
   assert.match(source, /loadRequestRef/);
+  assert.match(source, /library:\s*"settings\.tabs\.library"/);
   assert.match(source, /SkillMateModals\.jsx/);
   assert.match(modalShell, /function ModalShell/);
   assert.match(modalShell, /role=\{role\}/);
@@ -242,8 +243,8 @@ test("经典主题的页眉与登记册只保留一处分隔线", () => {
   assert.match(registryRule, /border-top:\s*0/);
 });
 
-test("安装来源只保留 Git 仓库和本地目录", () => {
-  assert.deepEqual(SUPPORTED_INSTALL_SOURCES, ["git", "local"]);
+test("安装来源保留 Git、本地目录与 Claude Marketplace", () => {
+  assert.deepEqual(SUPPORTED_INSTALL_SOURCES, ["git", "local", "claude_marketplace"]);
 });
 
 test("包级识别摘要应当区分单 Skill、多 Skill 和模型辅助", () => {
@@ -776,11 +777,15 @@ test("Skill 卡片视图应当优先使用 manifest 标题和说明", () => {
       securityWarningSummary: "",
       hasManagedDrift: false,
       sourceLabel: "Git",
+      contentSourceLabel: "Git 仓库",
+      managerLabel: "SkillMate",
+      updateStrategyLabel: "由 SkillMate 更新",
       canSync: true,
       hasUpdate: true,
       canEnable: false,
       canDelete: true,
       canUnlink: false,
+      canAdopt: false,
       availableIn: [],
       availabilityLabel: "",
       isShared: false,

@@ -3,6 +3,7 @@ import Icon from "./components/Icon.jsx";
 import appIcon from "../src-tauri/icons/128x128.png";
 import {
   ConfirmModal,
+  AdoptionModal,
   DriftSyncModal,
   InstallModal,
   PreviewModal,
@@ -27,6 +28,7 @@ import { useGitBackupFlow } from "./lib/useGitBackupFlow.js";
 import { useImportExportFlow } from "./lib/useImportExportFlow.js";
 import { useInstallFlow } from "./lib/useInstallFlow.js";
 import { useInstallPolicyFlow } from "./lib/useInstallPolicyFlow.js";
+import { useLibrarySettingsFlow } from "./lib/useLibrarySettingsFlow.js";
 import { useScenarioFlow } from "./lib/useScenarioFlow.js";
 import { useSearchFlow } from "./lib/useSearchFlow.js";
 import { useUpdateFlow } from "./lib/useUpdateFlow.js";
@@ -55,6 +57,7 @@ const SETTINGS_TAB_LABELS = {
   backup: "settings.tabs.backup",
   "app-update": "settings.tabs.appUpdate",
   "install-policy": "settings.tabs.installPolicy",
+  library: "settings.tabs.library",
   data: "settings.tabs.data",
   skillset: "settings.tabs.skillset",
   tags: "settings.tabs.tags",
@@ -216,6 +219,7 @@ function App() {
   const [loadError, setLoadError] = useState(null);
   const [trashReceipt, setTrashReceipt] = useState(null);
   const [driftGroup, setDriftGroup] = useState(null);
+  const [adoptionCandidate, setAdoptionCandidate] = useState(null);
   const {
     input: searchInput,
     query: search,
@@ -512,6 +516,7 @@ function App() {
   }, [language]);
 
   const installPolicyFlow = useInstallPolicyFlow({ showToast });
+  const librarySettingsFlow = useLibrarySettingsFlow({ showToast, loadData });
 
   const installFlow = useInstallFlow({
     installOpen,
@@ -732,6 +737,11 @@ function App() {
     await loadData();
   }
 
+  async function completeAdoption(message) {
+    showToast(String(message || t("adoption.complete")), "success");
+    await loadData();
+  }
+
   return (
     <div className="app">
       {loading && <Loader label={t("common.loading")} />}
@@ -849,6 +859,7 @@ function App() {
               onOpenDirectory={openDir}
               onPreview={openPreview}
               onEnable={enableLibrarySkill}
+              onAdopt={setAdoptionCandidate}
               onUnlink={unlinkSymlink}
               onRemove={remove}
               selectedSkillPaths={selectedSkillPaths}
@@ -859,7 +870,7 @@ function App() {
           )}
 
           {view === "ai" && (
-            <AssistantsView assistants={data.assistants} installedCount={statAI} onManageSkills={() => setView("skills")} />
+            <AssistantsView assistants={data.assistants} installedCount={statAI} onManageSkills={() => setView("skills")} onAdopt={setAdoptionCandidate} />
           )}
 
           {view === "scenarios" && (
@@ -893,6 +904,7 @@ function App() {
                 check: checkAppUpdate,
               }}
               installPolicy={installPolicyFlow}
+              librarySettings={librarySettingsFlow}
               data={{
                 ...libraryFlow,
                 exportLibrary: libraryFlow.exportLibraryFile,
@@ -1014,6 +1026,8 @@ function App() {
       {trashReceipt && <div className="undo-bar" role="status"><span>{t("trash.done", { name: trashReceipt.name })}</span><button className="btn btn-secondary btn-sm" onClick={undoTrash}><Icon name="undo" size={14} />{t("trash.undo")}</button></div>}
 
       {driftGroup && <DriftSyncModal group={driftGroup} onClose={() => setDriftGroup(null)} onComplete={completeDrift} />}
+
+      {adoptionCandidate && <AdoptionModal candidate={adoptionCandidate} onClose={() => setAdoptionCandidate(null)} onComplete={completeAdoption} />}
 
       {confirmState.open && (
         <ConfirmModal

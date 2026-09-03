@@ -10,6 +10,7 @@ import opencodeLogo from "../assets/brands/opencode.svg";
 import copilotLogo from "../assets/brands/copilot.svg";
 import { useI18n } from "../lib/i18n.jsx";
 import { SurfaceHeader } from "./SurfaceHeader.jsx";
+import { skillmateApi } from "../lib/skillmateApi.js";
 
 const AI_META = {
   claude: { bg: "#d97757", src: claudeLogo, mode: "contain" },
@@ -75,6 +76,7 @@ export function SkillsView({
   onOpenDirectory,
   onPreview,
   onEnable = () => {},
+  onAdopt = () => {},
   onUnlink,
   onRemove,
   selectedSkillPaths = [],
@@ -181,6 +183,11 @@ export function SkillsView({
                       <span>{formatHomePath(skill.path)}</span>
                       {skill.symlink_source && <span className="registry-symlink">→ {formatHomePath(skill.symlink_source)}</span>}
                     </div>
+                    <div className="registry-provenance" aria-label={t("provenance.summary")}>
+                      <span>{t("provenance.sourceLabel")}：{card.contentSourceLabel}</span>
+                      <span>{t("provenance.managerLabel")}：{card.managerLabel}</span>
+                      <span>{t("provenance.updateLabel")}：{card.updateStrategyLabel}</span>
+                    </div>
                   </div>
                 </div>
                 <div className="registry-platform" title={card.availabilityLabel} role="cell">
@@ -190,6 +197,7 @@ export function SkillsView({
                 <div className="registry-size" role="cell">{skill.size}</div>
                 <div className="registry-actions" role="cell">
                   {card.canEnable && <button className="btn btn-primary btn-sm" onClick={() => onEnable(skill)} aria-label={t("skills.enable", { name: skill.name })}><Icon name="plus" size={15} />{t("skills.enableAction")}</button>}
+                  {card.canAdopt && <button className="btn btn-primary btn-sm" onClick={() => onAdopt({ skill, assistant: skill.ai, projectPath: "" })} aria-label={t("adoption.actionFor", { name: skill.name })}><Icon name="branch" size={15} />{t("adoption.action")}</button>}
                   <button className={`btn btn-sm ${needsReview ? "btn-review" : "btn-secondary"}`} onClick={() => onPreview(skill.path)} aria-label={t(needsReview ? "skills.reviewOne" : "skills.preview", { name: skill.name })}><Icon name={needsReview ? "shield" : "preview"} size={15} />{t(needsReview ? "skills.review" : "common.details")}</button>
                   <details className="registry-more">
                     <summary className="btn btn-ghost btn-sm" role="button" aria-label={t("skills.moreActions", { name: skill.name })}><Icon name="more" size={17} /></summary>
@@ -213,7 +221,7 @@ export function SkillsView({
   );
 }
 
-export function AssistantsView({ assistants, installedCount, onManageSkills }) {
+export function AssistantsView({ assistants, installedCount, onManageSkills, onAdopt }) {
   const { t } = useI18n();
   const [expandedAssistant, setExpandedAssistant] = React.useState(null);
   return (
@@ -224,6 +232,7 @@ export function AssistantsView({ assistants, installedCount, onManageSkills }) {
         meta={t("assistants.configuredCount", { installed: installedCount, total: assistants.length })}
         actions={onManageSkills && <button className="btn btn-primary btn-sm" onClick={onManageSkills}><Icon name="skills" size={14} />{t("assistants.manage")}</button>}
       />
+      <ProjectInspectionPanel onAdopt={onAdopt} />
       <div className="registry assistant-registry" role="table" aria-label={t("nav.assistants")}>
         <div className="registry-colhead" role="row">
           <span role="columnheader">{t("assistants.platform")}</span>
@@ -326,6 +335,71 @@ export function AssistantsView({ assistants, installedCount, onManageSkills }) {
         })}
       </div>
     </div>
+  );
+}
+
+function ProjectInspectionPanel({ onAdopt }) {
+  const { t } = useI18n();
+  const [projectPath, setProjectPath] = React.useState("");
+  const [inspection, setInspection] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState("");
+  const [expanded, setExpanded] = React.useState("");
+
+  async function inspect() {
+    if (!projectPath.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      setInspection(await skillmateApi.inventory.inspectProject(projectPath.trim()));
+      setExpanded("");
+    } catch (reason) {
+      setInspection(null);
+      setError(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="project-inspector" aria-labelledby="project-inspector-title">
+      <div className="project-inspector-head">
+        <div><h3 id="project-inspector-title">{t("projectInspection.title")}</h3><p>{t("projectInspection.hint")}</p></div>
+        <div className="project-inspector-input">
+          <label className="visually-hidden" htmlFor="project-inspection-path">{t("projectInspection.path")}</label>
+          <input id="project-inspection-path" value={projectPath} onChange={(event) => setProjectPath(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void inspect(); }} placeholder={t("projectInspection.placeholder")} />
+          <button className="btn btn-primary btn-sm" onClick={inspect} disabled={busy || !projectPath.trim()}><Icon name="search" size={14} />{t(busy ? "projectInspection.inspecting" : "projectInspection.inspect")}</button>
+        </div>
+      </div>
+      {error && <div className="install-compact error" role="alert"><strong>{t("projectInspection.failed")}</strong><span>{error}</span></div>}
+      {inspection && (
+        <div className="project-agent-results">
+          {inspection.assistants.map((assistant) => {
+            const open = expanded === assistant.name;
+            return <article className={`project-agent-result ${open ? "expanded" : ""}`} key={assistant.name}>
+              <button className="project-agent-summary" type="button" aria-expanded={open} onClick={() => setExpanded(open ? "" : assistant.name)}>
+                <AiAvatar name={assistant.name} brand={assistant.icon} size={30} />
+                <span><strong>{assistant.name}</strong><small>{t("projectInspection.counts", { total: assistant.skills.length, project: assistant.project_count, global: assistant.global_count })}</small></span>
+                {assistant.shadowed_count > 0 && <span className="stamp warn">{t("projectInspection.shadowed", { count: assistant.shadowed_count })}</span>}
+                <Icon name="arrow" size={14} className={open ? "expanded" : ""} />
+              </button>
+              {open && <div className="project-effective-list">
+                {assistant.skills.length === 0 && <p className="empty-hint">{t("projectInspection.empty")}</p>}
+                {assistant.skills.map((entry) => {
+                  const card = buildSkillCardView(entry, t);
+                  return <div className="project-effective-row" key={`${entry.scope}-${entry.path}`}>
+                    <span className={`stamp ${entry.scope === "project" ? "success" : "muted"}`}>{t(`projectInspection.scope.${entry.scope}`)}</span>
+                    <span className="project-effective-copy"><strong>{entry.manifest_title || entry.name}</strong><small title={entry.path}>{formatHomePath(entry.path)}</small></span>
+                    <span className="project-effective-owner">{card.managerLabel}</span>
+                    {card.canAdopt && <button className="btn btn-secondary btn-sm" onClick={() => onAdopt?.({ skill: entry, assistant: assistant.name, projectPath: entry.scope === "project" ? inspection.project_path : "" })}><Icon name="branch" size={13} />{t("adoption.action")}</button>}
+                  </div>;
+                })}
+              </div>}
+            </article>;
+          })}
+        </div>
+      )}
+    </section>
   );
 }
 

@@ -1,4 +1,4 @@
-export const SUPPORTED_INSTALL_SOURCES = ["git", "local"];
+export const SUPPORTED_INSTALL_SOURCES = ["git", "local", "claude_marketplace"];
 
 const STRUCTURE_STATUS_LABELS = {
   complete: "符合规范",
@@ -78,8 +78,30 @@ const INSTALL_SOURCE_LABELS = {
   git_subdir: "Git 仓库子目录",
   local_dir: "本地目录",
   local_symlink: "项目软连接",
+  claude_marketplace: "Claude Marketplace",
   archive: "压缩包",
   unknown: "未知来源",
+};
+
+const CONTENT_SOURCE_LABELS = {
+  github: "GitHub 仓库",
+  git: "Git 仓库",
+  local: "本地目录",
+  external_cli: "外部 CLI 安装内容",
+  unknown: "未知来源",
+};
+
+const MANAGER_LABELS = {
+  skillmate: "SkillMate",
+  external_cli: "外部安装器",
+  external: "外部或手工管理",
+};
+
+const UPDATE_STRATEGY_LABELS = {
+  skillmate: "由 SkillMate 更新",
+  external_cli: "通过原安装器更新",
+  external: "由外部工具更新",
+  manual: "手工维护",
 };
 
 const INSTALL_CONFIDENCE_LABELS = {
@@ -466,6 +488,9 @@ export function buildSkillCardView(skill, t) {
   const isSymlink = ["symlink", "deployment"].includes(skill?.source_type);
   const isManaged = Boolean(skill?.managed_by_app);
   const securityWarnings = structure.warnings.filter((warning) => SECURITY_WARNING_CODES.has(warning));
+  const inferredSource = skill?.content_source || (["git", "github"].includes(skill?.origin_kind || skill?.source_type) ? (skill?.upstream_url?.includes("github.com") ? "github" : "git") : "unknown");
+  const inferredManager = skill?.manager || (isManaged ? "skillmate" : "external");
+  const inferredUpdate = skill?.update_strategy || (isManaged && skill?.can_sync ? "skillmate" : "manual");
   const availableIn = Array.isArray(skill?.availableIn) && skill.availableIn.length > 0
     ? skill.availableIn
     : (skill?.ai ? [{ name: skill.ai, icon: skill.aiIcon || "" }] : []);
@@ -481,11 +506,15 @@ export function buildSkillCardView(skill, t) {
       .join(localized(t, "common.listSeparator", "、")),
     hasManagedDrift: structure.warnings.includes("managed_content_changed"),
     sourceLabel: skill?.source || localized(t, "source.unmanaged", "未托管"),
+    contentSourceLabel: localized(t, `provenance.source.${inferredSource}`, CONTENT_SOURCE_LABELS[inferredSource] || skill?.source || "未知来源"),
+    managerLabel: localized(t, `provenance.manager.${inferredManager}`, MANAGER_LABELS[inferredManager] || "外部或手工管理"),
+    updateStrategyLabel: localized(t, `provenance.update.${inferredUpdate}`, UPDATE_STRATEGY_LABELS[inferredUpdate] || "手工维护"),
     canSync: Boolean(skill?.can_sync),
     hasUpdate: Boolean(skill?.has_update),
     canEnable: Boolean(skill?.in_library || skill?.source_type === "deployment"),
     canDelete: isManaged && !isSymlink,
     canUnlink: isManaged && isSymlink,
+    canAdopt: !isManaged && !isSymlink && skill?.skill_type === "skill-folder",
     availableIn,
     availabilityLabel: availableIn.map((assistant) => assistant.name).join(localized(t, "common.listSeparator", "、")),
     isShared: availableIn.length > 1,
