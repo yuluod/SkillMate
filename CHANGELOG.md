@@ -6,6 +6,32 @@
 
 ## [Unreleased]
 
+## [0.0.14] - 2026-09-04
+
+### 新增
+
+- 新增 Claude Marketplace 来源解析、外部 Skill 接管、项目有效 Skill 检查和统一库位置配置。
+- 扩展 `skillmate-cli`，支持统一库查询、项目检查、添加、启用、接管、更新检查和内置 SkillMate Agent Skill 安装。
+- 启用流程支持一次选择多个平台，并可通过系统目录选择器指定项目路径。
+- 标签管理支持创建、修改和删除，删除标签时同步清理 Skill 关联。
+- 启动更新提示支持直接安装或跳过本次安装，无需再进入设置页。
+
+### 改进
+
+- 重整添加、接管、启用和维护的界面流程，明确区分统一库主副本、平台启用位置和外部内容。
+- 更新页将“能否检查”与“能否安装更新”分离，Git、本地目录及历史 npm/PyPI 来源均可按能力展示检查入口。
+- 市场结果会识别已添加的 Skills，避免重复显示“检查并添加”。
+- Skill 详情在检查后立即展示最新状态、引用和来源信息，检查期间阻止重复操作。
+- 概览状态、登记册、组合选择器、表单控件、动作图标和中英文文案进一步统一并提升可读性。
+- Node.js 开发环境升级至 24.20.0，并更新前端测试工具、GitHub Actions 与 `ureq` 依赖。
+
+### 修复
+
+- 修复本地多 Skill 包添加后，所有 Skill 都错误记录为包根目录、导致无法独立检查来源的问题。
+- 修复 Git Skill 已是最新时检查按钮被禁用，以及详情弹窗检查后仍显示旧状态的问题。
+- 修复安装计划跳过目标时展示内部相对路径、项目路径只能手工填写和平台只能单选的问题。
+- 修复 Windows CI 中本地 Git 身份探测超时，以及 `ureq` 3 API 升级后的市场请求编译问题。
+
 ## [0.0.13] - 2026-08-30
 
 ### 新增
@@ -116,7 +142,8 @@
 - 修复 CI 格式检查和 Windows 平台故障注入测试。
 - 发布版本一致性测试不再硬编码版本号。
 
-[Unreleased]: https://github.com/yuluod/SkillMate/compare/v0.0.13...HEAD
+[Unreleased]: https://github.com/yuluod/SkillMate/compare/v0.0.14...HEAD
+[0.0.14]: https://github.com/yuluod/SkillMate/compare/v0.0.13...v0.0.14
 [0.0.13]: https://github.com/yuluod/SkillMate/compare/v0.0.12...v0.0.13
 [0.0.12]: https://github.com/yuluod/SkillMate/compare/v0.0.11...v0.0.12
 [0.0.11]: https://github.com/yuluod/SkillMate/compare/v0.0.10...v0.0.11
