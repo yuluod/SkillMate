@@ -61,6 +61,90 @@ pub fn add_tag(name: String, color: String) -> Result<Tag, String> {
 }
 
 #[tauri::command]
+pub fn update_tag(tag_id: String, name: String, color: String) -> Result<Tag, String> {
+    run_exclusive_operation(move |db| update_tag_in_db(db, &tag_id, &name, &color))
+}
+
+fn update_tag_in_db(db: &Connection, tag_id: &str, name: &str, color: &str) -> Result<Tag, String> {
+    let changed = db
+        .execute(
+            "UPDATE tags SET name = ?, color = ? WHERE id = ?",
+            params![name, color, tag_id],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed == 0 {
+        return Err("标签不存在".to_string());
+    }
+    Ok(Tag {
+        id: tag_id.to_string(),
+        name: name.to_string(),
+        color: color.to_string(),
+    })
+}
+
+#[tauri::command]
+pub fn delete_tag(tag_id: String) -> Result<String, String> {
+    run_exclusive_operation(move |db| delete_tag_in_db(db, &tag_id))
+}
+
+fn delete_tag_in_db(db: &Connection, tag_id: &str) -> Result<String, String> {
+    let transaction = db
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let assignments = {
+        let mut statement = transaction
+            .prepare("SELECT skill_path, COALESCE(tags, ''), tags_json FROM skill_tags")
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        rows
+    };
+
+    for (skill_path, legacy_tags, tags_json) in assignments {
+        let mut tag_ids = serde_json::from_str::<Vec<String>>(&tags_json)
+            .map_err(|error| format!("Skill {} 的 tags_json 损坏: {}", skill_path, error))?;
+        if !tag_ids.iter().any(|id| id == tag_id)
+            && !parse_legacy_list(&legacy_tags)
+                .iter()
+                .any(|id| id == tag_id)
+        {
+            continue;
+        }
+        tag_ids.retain(|id| id != tag_id);
+        let mut legacy_tag_ids = parse_legacy_list(&legacy_tags);
+        legacy_tag_ids.retain(|id| id != tag_id);
+        transaction
+            .execute(
+                "UPDATE skill_tags SET tags = ?, tags_json = ? WHERE skill_path = ?",
+                params![
+                    legacy_tag_ids.join(","),
+                    serde_json::to_string(&tag_ids).map_err(|error| error.to_string())?,
+                    skill_path
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+
+    let changed = transaction
+        .execute("DELETE FROM tags WHERE id = ?", params![tag_id])
+        .map_err(|error| error.to_string())?;
+    if changed == 0 {
+        return Err("标签不存在".to_string());
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok("已删除".to_string())
+}
+
+#[tauri::command]
 pub fn update_skill_tags(skill_path: String, tags: Vec<String>) -> Result<String, String> {
     run_exclusive_operation(move |db| update_skill_tags_in_db(db, Path::new(&skill_path), &tags))
 }
@@ -197,5 +281,74 @@ mod tests {
             })
             .unwrap();
         assert_eq!(stored_path, expected_path);
+    }
+
+    #[test]
+    fn update_tag_changes_name_and_color() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL);
+             INSERT INTO tags VALUES ('tag-one', '旧名称', '#111111');",
+        )
+        .unwrap();
+
+        let tag = update_tag_in_db(&db, "tag-one", "新名称", "#abcdef").unwrap();
+
+        assert_eq!(tag.name, "新名称");
+        assert_eq!(tag.color, "#abcdef");
+        let stored = db
+            .query_row(
+                "SELECT name, color FROM tags WHERE id = 'tag-one'",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(stored, ("新名称".to_string(), "#abcdef".to_string()));
+    }
+
+    #[test]
+    fn delete_tag_removes_skill_assignments() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL);
+             CREATE TABLE skill_tags (
+                skill_path TEXT PRIMARY KEY, tags TEXT, tags_json TEXT NOT NULL DEFAULT '[]'
+             );
+             INSERT INTO tags VALUES ('tag-one', '待删除', '#111111');
+             INSERT INTO tags VALUES ('tag-two', '保留', '#222222');
+             INSERT INTO skill_tags VALUES ('/tmp/a', 'tag-one,tag-two', '[\"tag-one\",\"tag-two\"]');
+             INSERT INTO skill_tags VALUES ('/tmp/b', 'tag-two', '[\"tag-two\"]');",
+        )
+        .unwrap();
+
+        delete_tag_in_db(&db, "tag-one").unwrap();
+
+        let tag_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM tags WHERE id = 'tag-one'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tag_count, 0);
+        let assignment = db
+            .query_row(
+                "SELECT tags, tags_json FROM skill_tags WHERE skill_path = '/tmp/a'",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            assignment,
+            ("tag-two".to_string(), "[\"tag-two\"]".to_string())
+        );
+        let untouched: String = db
+            .query_row(
+                "SELECT tags_json FROM skill_tags WHERE skill_path = '/tmp/b'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(untouched, "[\"tag-two\"]");
     }
 }

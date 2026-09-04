@@ -62,8 +62,8 @@ use operation_coordinator::{
 };
 use operation_plan::verify_operation_plan;
 use organization_commands::{
-    add_tag, create_scenario, delete_scenario, get_all_tags, get_all_tags_from_db, get_scenarios,
-    get_scenarios_from_db, update_skill_tags, Scenario, Tag,
+    add_tag, create_scenario, delete_scenario, delete_tag, get_all_tags, get_all_tags_from_db,
+    get_scenarios, get_scenarios_from_db, update_skill_tags, update_tag, Scenario, Tag,
 };
 use project_inspection::{inspect_project_skills, ProjectInspection};
 use rusqlite::Connection;
@@ -93,7 +93,9 @@ use skill_orchestration::{
     save_current_profile,
 };
 use skill_origin::{
-    save_installed_git_meta as save_git_origin_meta, sync_info_json, update_skill_from_upstream,
+    save_installed_git_meta as save_git_origin_meta,
+    save_installed_local_meta as save_local_origin_meta, sync_info_json,
+    update_skill_from_upstream,
 };
 use skill_package::PackageDetection;
 use skill_profile::{read_skill_profiles, SkillSetProfilePreview, SkillSetProfileStore};
@@ -175,6 +177,7 @@ pub struct SkillOriginFields {
     pub last_probe_at: Option<i64>,
     pub last_sync_at: Option<i64>,
     pub managed_by_app: bool,
+    pub can_check: bool,
     pub can_sync: bool,
     pub symlink_source: Option<String>,
 }
@@ -1146,13 +1149,30 @@ pub(crate) fn finalize_library_install_registration(
         let skill_id = if reuse_existing_library {
             library_skill_id(db, library_path)?
         } else {
-            register_library_skill(
+            let skill_id = register_library_skill(
                 db,
                 library_path,
                 package,
                 source,
                 (!resolved_ref.trim().is_empty()).then_some(resolved_ref),
-            )?
+            )?;
+            if source == "local"
+                && skill_origin::load_origin_meta(db, &library_path.to_string_lossy())?.is_none()
+            {
+                let source = find_managed_installation(db, library_path)?
+                    .map(|installation| installation.skill.source)
+                    .unwrap_or_else(|| package.trim().to_string());
+                let source_path = expand_path(&source);
+                let source_path = if source_path.is_absolute() {
+                    source_path
+                } else {
+                    std::env::current_dir()
+                        .map_err(|error| format!("无法记录本地来源: {error}"))?
+                        .join(source_path)
+                };
+                save_local_origin_meta(db, library_path, &source_path)?;
+            }
+            skill_id
         };
         skill_ids.push(skill_id);
     }
@@ -1545,6 +1565,7 @@ fn failed_sync_info(message: &str) -> serde_json::Value {
         "lastProbeAt": now_ms(),
         "lastSyncAt": null,
         "managedByApp": false,
+        "canCheck": false,
         "canSync": false,
         "hasUpdate": false,
         "behindCount": 0,
@@ -1735,6 +1756,7 @@ pub fn run() {
             Ok(())
         })
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_all_assistants,
@@ -1746,6 +1768,8 @@ pub fn run() {
             adopt_skill,
             get_all_tags,
             add_tag,
+            update_tag,
+            delete_tag,
             update_skill_tags,
             get_scenarios,
             create_scenario,
@@ -2308,6 +2332,16 @@ mod tests {
                 .unwrap(),
             1
         );
+        let origin =
+            skill_origin::load_origin_meta(&db, &library_root.join("writer").to_string_lossy())
+                .unwrap()
+                .unwrap();
+        assert_eq!(origin.origin_kind, "local");
+        assert_eq!(
+            origin.origin_locator,
+            source.join("writer").to_string_lossy()
+        );
+        assert!(origin.managed_by_app);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2714,6 +2748,7 @@ mod tests {
                         last_probe_at: None,
                         last_sync_at: None,
                         managed_by_app: false,
+                        can_check: true,
                         can_sync: false,
                         symlink_source: Some("/tmp/skillmate/skills/skill-a".into()),
                     },

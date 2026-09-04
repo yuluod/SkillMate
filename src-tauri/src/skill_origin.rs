@@ -40,6 +40,7 @@ pub struct SkillOriginMeta {
 #[derive(Debug, Clone)]
 pub struct SkillSyncInfo {
     pub meta: SkillOriginMeta,
+    pub can_check: bool,
     pub can_sync: bool,
     pub has_update: bool,
 }
@@ -334,6 +335,13 @@ pub fn can_sync(meta: &SkillOriginMeta, path: &Path) -> bool {
     }
 }
 
+pub fn can_check(meta: &SkillOriginMeta) -> bool {
+    matches!(
+        meta.origin_kind.as_str(),
+        "git" | "local" | "npm" | "legacy_npm" | "pip" | "legacy_pip"
+    )
+}
+
 pub fn build_sync_info_with_cache(
     db: &Connection,
     path: &Path,
@@ -377,6 +385,7 @@ pub fn build_sync_info_with_cache(
     let has_update = meta.sync_state == "behind" || meta.lag_count > 0;
     let can_sync_now = can_sync_with_cache(&meta, path, cache);
     SkillSyncInfo {
+        can_check: can_check(&meta),
         meta,
         can_sync: can_sync_now,
         has_update,
@@ -411,6 +420,7 @@ pub fn sync_info_json(info: &SkillSyncInfo) -> serde_json::Value {
         "lastProbeAt": info.meta.last_probe_at,
         "lastSyncAt": info.meta.last_sync_at,
         "managedByApp": info.meta.managed_by_app,
+        "canCheck": info.can_check,
         "canSync": info.can_sync,
         "hasUpdate": info.has_update,
         "behindCount": info.meta.lag_count,
@@ -686,6 +696,7 @@ fn prepare_probe_from_meta(
             path: path.to_path_buf(),
             baseline,
             info: SkillSyncInfo {
+                can_check: can_check(&meta),
                 meta,
                 can_sync: can_sync_now,
                 has_update,
@@ -722,6 +733,7 @@ fn probe_meta(
         path: path.to_path_buf(),
         baseline,
         info: SkillSyncInfo {
+            can_check: can_check(&meta),
             meta,
             can_sync: can_sync_now,
             has_update,
@@ -797,6 +809,7 @@ pub(crate) fn prepare_skill_probes(
                 path,
                 baseline,
                 info: SkillSyncInfo {
+                    can_check: can_check(&meta),
                     meta,
                     can_sync: can_sync_now,
                     has_update,
@@ -867,6 +880,32 @@ pub fn save_installed_git_meta(
         meta.sync_message = "已安装，但 Skill 结构非标准".to_string();
     }
     save_origin_meta(db, &meta)
+}
+
+pub fn save_installed_local_meta(
+    db: &Connection,
+    target_path: &Path,
+    source_path: &Path,
+) -> Result<(), String> {
+    let locator = source_path.to_string_lossy().to_string();
+    save_origin_meta(
+        db,
+        &SkillOriginMeta {
+            skill_path: target_path.to_string_lossy().to_string(),
+            origin_kind: "local".to_string(),
+            origin_locator: locator.clone(),
+            resolved_locator: locator,
+            tracking_ref: String::new(),
+            installed_ref: String::new(),
+            latest_ref: String::new(),
+            sync_state: "unprobed".to_string(),
+            sync_message: "待检查本地来源".to_string(),
+            lag_count: 0,
+            last_probe_at: None,
+            last_sync_at: None,
+            managed_by_app: true,
+        },
+    )
 }
 
 pub fn update_skill_from_upstream(db: &Connection, path: &Path) -> Result<String, String> {
@@ -1111,6 +1150,7 @@ mod tests {
             path: path.to_path_buf(),
             baseline: load_origin_record(db, &path.to_string_lossy()).unwrap(),
             info: SkillSyncInfo {
+                can_check: can_check(&meta),
                 meta,
                 can_sync: false,
                 has_update: false,
@@ -1216,6 +1256,36 @@ mod tests {
         let mut subdir_snapshot = root_snapshot;
         subdir_snapshot.origin_locator = "example/skills#main:skills/writer".into();
         assert!(can_sync(&subdir_snapshot, &path));
+    }
+
+    #[test]
+    fn check_capability_is_independent_from_available_update() {
+        let path = test_dir("git-current-check").join("writer");
+        let mut meta = SkillOriginMeta {
+            skill_path: path.to_string_lossy().to_string(),
+            origin_kind: "git".into(),
+            origin_locator: "example/skills#main:writer".into(),
+            resolved_locator: "https://github.com/example/skills.git".into(),
+            tracking_ref: "main".into(),
+            installed_ref: "current".into(),
+            latest_ref: "current".into(),
+            sync_state: "current".into(),
+            sync_message: "已是最新".into(),
+            lag_count: 0,
+            last_probe_at: None,
+            last_sync_at: None,
+            managed_by_app: true,
+        };
+
+        assert!(can_check(&meta));
+        assert!(!can_sync(&meta, &path));
+
+        for origin_kind in ["local", "legacy_npm", "legacy_pip"] {
+            meta.origin_kind = origin_kind.into();
+            assert!(can_check(&meta));
+        }
+        meta.origin_kind = "unknown".into();
+        assert!(!can_check(&meta));
     }
 
     #[test]

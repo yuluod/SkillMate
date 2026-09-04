@@ -441,6 +441,7 @@ pub(crate) fn build_skill(
             last_probe_at: sync_info.meta.last_probe_at,
             last_sync_at: sync_info.meta.last_sync_at,
             managed_by_app,
+            can_check: sync_info.can_check,
             can_sync: sync_info.can_sync,
             symlink_source,
         },

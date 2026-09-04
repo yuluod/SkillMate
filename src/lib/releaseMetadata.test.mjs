@@ -213,7 +213,8 @@ test("Tauri updater 配置必须生成签名更新包", () => {
   assert.ok(capabilities.permissions.includes("updater:default"));
   assert.ok(capabilities.permissions.includes("process:default"));
   assert.doesNotMatch(cargoToml, /features\s*=\s*\[[^\]]*"devtools"/);
-  assert.doesNotMatch(cargoToml, /tauri-plugin-(?:shell|fs|dialog)/);
+  assert.doesNotMatch(cargoToml, /tauri-plugin-(?:shell|fs)/);
+  assert.ok(capabilities.permissions.includes("dialog:allow-open"));
 });
 
 test("Release workflow 必须发布 updater metadata", () => {
