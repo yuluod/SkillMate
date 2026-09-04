@@ -2,6 +2,18 @@
   <img src="src-tauri/icons/icon.png" alt="SkillMate" width="128" />
 </p>
 
+<p align="center">
+  <a href="https://github.com/yuluod/SkillMate/actions/workflows/ci.yml"><img src="https://github.com/yuluod/SkillMate/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" /></a>
+  <a href="https://github.com/yuluod/SkillMate/actions/workflows/release.yml"><img src="https://github.com/yuluod/SkillMate/actions/workflows/release.yml/badge.svg" alt="Release" /></a>
+  <a href="https://github.com/yuluod/SkillMate/releases/latest"><img src="https://img.shields.io/github/v/release/yuluod/SkillMate?sort=semver" alt="Latest release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/yuluod/SkillMate" alt="License" /></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-59636e" alt="macOS, Windows and Linux" />
+</p>
+
+<p align="center">
+  简体中文 · <a href="README.en.md">English</a>
+</p>
+
 # SkillMate
 
 SkillMate 是一个跨平台的 **AI Skills 管理器**，用于统一盘点、添加、接管、启用和维护散落在不同 AI 编程工具中的目录型 Skills。
@@ -257,7 +269,7 @@ SkillMate 当前专注于目录型 Agent Skills，暂不提供：
 
 ## 本地开发
 
-需要 Node.js 22.13+、pnpm 11、Rust，以及当前系统对应的 [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/)。
+需要 Node.js 24.20.0+、pnpm 11、Rust，以及当前系统对应的 [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/)。
 
 ```bash
 pnpm install
