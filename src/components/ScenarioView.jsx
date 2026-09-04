@@ -157,9 +157,9 @@ export default function ScenarioView({ scenarios, skills, flow }) {
               </div>
               <div className="card-actions">
                 <button className="btn btn-secondary btn-sm" onClick={() => flow.setExpandedId(flow.expandedId === scenario.id ? "" : scenario.id)}><Icon name="preview" size={14} />{t(flow.expandedId === scenario.id ? "scenarios.collapse" : "scenarios.expand")}</button>
-                <button className="btn btn-primary btn-sm" onClick={() => flow.apply(scenario)}><Icon name="sparkles" size={14} />{t("scenarios.apply")}</button>
-                <button className="btn btn-secondary btn-sm" onClick={() => flow.loadIntoEditor(scenario)}><Icon name="check" size={14} />{t("scenarios.load")}</button>
-                <button className="btn btn-secondary btn-sm" onClick={() => flow.copyPaths(scenario.skill_ids)}><Icon name="folder" size={14} />{t("scenarios.copyPaths")}</button>
+                <button className="btn btn-primary btn-sm" onClick={() => flow.apply(scenario)}><Icon name="play" size={14} />{t("scenarios.apply")}</button>
+                <button className="btn btn-secondary btn-sm" onClick={() => flow.loadIntoEditor(scenario)}><Icon name="edit" size={14} />{t("scenarios.load")}</button>
+                <button className="btn btn-secondary btn-sm" onClick={() => flow.copyPaths(scenario.skill_ids)}><Icon name="copy" size={14} />{t("scenarios.copyPaths")}</button>
                 <button className="btn btn-ghost btn-sm danger" onClick={() => flow.remove(scenario.id)} title={t("scenarios.remove", { name: scenario.name })} aria-label={t("scenarios.remove", { name: scenario.name })}><Icon name="trash" size={16} /></button>
               </div>
             </div>

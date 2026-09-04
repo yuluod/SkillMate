@@ -6,9 +6,9 @@ const Icon = React.memo(function Icon({ name, size = 18, className = "" }) {
     plus: <><path d="M12 5v14" /><path d="M5 12h14" /></>,
     skills: <><rect x="4" y="5" width="16" height="14" rx="2" /><path d="M8 9h8" /><path d="M8 13h5" /></>,
     assistants: <><circle cx="12" cy="8" r="3" /><path d="M5 19a7 7 0 0 1 14 0" /></>,
-    scenarios: <><path d="M3 7h7l2 2h9v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></>,
-    updates: <><path d="M21 12a9 9 0 1 1-2.64-6.36" /><path d="M21 3v6h-6" /></>,
-    settings: <><circle cx="12" cy="12" r="3" /><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" /></>,
+    scenarios: <><path d="m12 3 9 5-9 5-9-5z" /><path d="m3 12 9 5 9-5" /><path d="m3 16 9 5 9-5" /></>,
+    updates: <><circle cx="12" cy="12" r="9" /><path d="M12 7v9" /><path d="m8 12 4 4 4-4" /></>,
+    settings: <><path d="m12 2 1.2 2.4 2.6.7L18 3.7 20.3 6l-1.4 2.2.7 2.6L22 12l-2.4 1.2-.7 2.6 1.4 2.2-2.3 2.3-2.2-1.4-2.6.7L12 22l-1.2-2.4-2.6-.7L6 20.3 3.7 18l1.4-2.2-.7-2.6L2 12l2.4-1.2.7-2.6L3.7 6 6 3.7l2.2 1.4 2.6-.7z" /><circle cx="12" cy="12" r="3" /></>,
     folder: <><path d="M3 7h7l2 2h9v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></>,
     preview: <><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z" /><circle cx="12" cy="12" r="2.5" /></>,
     trash: <><path d="M4 7h16" /><path d="M9 7V5h6v2" /><path d="M7 7l1 12h8l1-12" /></>,
@@ -21,6 +21,7 @@ const Icon = React.memo(function Icon({ name, size = 18, className = "" }) {
     tag: <><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z" /><circle cx="7" cy="7" r="1" /></>,
     x: <><path d="M18 6L6 18M6 6l12 12" /></>,
     upload: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></>,
+    download: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="M7 10l5 5 5-5" /><path d="M12 15V3" /></>,
     clock: <><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></>,
     box: <><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" /><polyline points="3.27 6.96 12 12.01 20.73 6.96" /><line x1="12" y1="22.08" x2="12" y2="12" /></>,
     sparkles: <><path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z" /><path d="M5 19l.5 1.5L7 21l-1.5.5L5 23l-.5-1.5L3 21l1.5-.5L5 19z" /><path d="M19 13l.5 1.5L21 15l-1.5.5L19 17l-.5-1.5L17 15l1.5-.5L19 13z" /></>
@@ -31,6 +32,11 @@ const Icon = React.memo(function Icon({ name, size = 18, className = "" }) {
     external: <><path d="M14 3h7v7" /><path d="M10 14L21 3" /><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" /></>,
     globe: <><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" /></>,
     undo: <><path d="M9 7l-5 5 5 5" /><path d="M4 12h10a6 6 0 0 1 6 6" /></>,
+    power: <><path d="M12 2v10" /><path d="M18.4 6.6a8 8 0 1 1-12.8 0" /></>,
+    unlink: <><path d="m18.8 12.3 1.8-1.8a5 5 0 0 0-7.1-7.1l-1.8 1.8" /><path d="m5.2 11.8-1.8 1.8a5 5 0 0 0 7.1 7.1l1.8-1.8" /><path d="M8 2v3M2 8h3M16 19v3M19 16h3" /></>,
+    play: <><path d="m8 5 11 7-11 7z" /></>,
+    edit: <><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4z" /></>,
+    copy: <><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3" /></>,
     more: <><circle cx="5" cy="12" r="1" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" /><circle cx="19" cy="12" r="1" fill="currentColor" stroke="none" /></>,
   };
   return (
