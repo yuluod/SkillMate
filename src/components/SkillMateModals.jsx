@@ -119,12 +119,13 @@ export function InstallModal({
       detectionView: installDetectionView,
     },
     target: {
-      assistant: installAssistant,
-      setAssistant: setInstallAssistant,
+      assistants: installAssistants = [],
+      toggleAssistant,
       mode: installMode,
       setMode: setInstallMode,
       projectPath,
       setProjectPath,
+      pickProjectDirectory,
       projectPreview: projectTargetPreview,
       previewingProject: previewingProjectTargets,
       showProjectLinkOption,
@@ -202,14 +203,26 @@ export function InstallModal({
       )}
       {workflow === "enable" && (
         <div className="install-target">
-          <div className="form">
-            <label htmlFor="install-assistant">{t("install.target")}</label>
-            <select id="install-assistant" value={installAssistant} onChange={e => setInstallAssistant(e.target.value)}>
-              {assistants.map((assistant) => (
-                <option key={assistant.name} value={assistant.name}>{assistant.name}</option>
-              ))}
-            </select>
-          </div>
+          <fieldset className="install-assistant-field">
+            <legend>{t("install.target")}</legend>
+            <div className="install-assistant-options">
+              {assistants.map((assistant) => {
+                const unavailable = installMode === "symlink" && !assistant.supports_project_skills;
+                return (
+                  <label className={`install-assistant-option ${unavailable ? "disabled" : ""}`} key={assistant.name}>
+                    <input
+                      type="checkbox"
+                      checked={installAssistants.includes(assistant.name)}
+                      disabled={unavailable}
+                      onChange={() => toggleAssistant(assistant.name)}
+                    />
+                    <span>{assistant.name}</span>
+                  </label>
+                );
+              })}
+            </div>
+            <small className="form-help">{t("enable.targetHint.multiple")}</small>
+          </fieldset>
           <div className="form install-scope-field">
             <label htmlFor="install-scope">{t("install.scope")}</label>
             <select id="install-scope" value={installMode} onChange={e => setInstallMode(e.target.value)}>
@@ -224,7 +237,10 @@ export function InstallModal({
         <div className="install-project">
           <div className="form">
             <label htmlFor="install-project-path">{t("install.projectPath")}</label>
-            <input id="install-project-path" value={projectPath} onChange={e => setProjectPath(e.target.value)} placeholder="/path/to/project" />
+            <div className="project-path-control">
+              <input id="install-project-path" value={projectPath} onChange={e => setProjectPath(e.target.value)} placeholder="/path/to/project" />
+              <button className="btn btn-secondary" type="button" onClick={pickProjectDirectory}><Icon name="folder" size={15} />{t("install.chooseProject")}</button>
+            </div>
           </div>
           {previewingProjectTargets && <div className="git-meta">{t("install.detectingTargets")}</div>}
           {projectTargetPreview.length > 0 && (
@@ -263,12 +279,19 @@ export function InstallModal({
           </ul>
           {installPreviewView?.actions?.length > 0 && (
             <div className="install-plan-actions" aria-label={t("install.planWrites")}>
-              {installPreviewView.actions.map((action) => (
-                <div key={`${action.action}-${action.target}`}>
-                  <span className="stamp muted">{action.label}</span>
-                  <span><strong>{action.source}</strong><small>{action.target}</small></span>
-                </div>
-              ))}
+              {installPreviewView.actions.map((action) => {
+                const reason = installPreviewView.conflicts.find((conflict) => conflict.target === action.target)?.reason
+                  || action.reason;
+                return (
+                  <div key={`${action.action}-${action.target}`}>
+                    <span className="stamp muted">{action.label}</span>
+                    <span>
+                      <strong>{reason}</strong>
+                      <small title={action.target}>{action.target}</small>
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           )}
           {!installPreviewCurrent && <p>{t("install.stale")}</p>}
@@ -407,12 +430,30 @@ export function AdoptionModal({ candidate, onClose, onComplete }) {
   );
 }
 
-export function PreviewModal({ preview, onClose, onCheckUpdate, onOpenDrift, driftGroup }) {
+export function PreviewModal({ preview, getSyncInfo, onClose, onCheckUpdate, onOpenDrift, driftGroup }) {
   const { t } = useI18n();
   const skill = preview.skill || {};
-  const card = buildSkillCardView(skill, t);
-  const sourceLocator = skill.origin_locator || skill.upstream_url || "—";
-  const resolvedLocator = skill.resolved_locator || skill.upstream_url || "—";
+  const syncInfo = getSyncInfo?.(skill);
+  const liveSkill = syncInfo ? {
+    ...skill,
+    origin_kind: syncInfo.originKind ?? skill.origin_kind,
+    origin_locator: syncInfo.originLocator ?? skill.origin_locator,
+    resolved_locator: syncInfo.resolvedLocator ?? skill.resolved_locator,
+    tracking_ref: syncInfo.trackingRef ?? skill.tracking_ref,
+    installed_ref: syncInfo.installedRef ?? skill.installed_ref,
+    latest_ref: syncInfo.latestRef ?? skill.latest_ref,
+    sync_state: syncInfo.syncState ?? skill.sync_state,
+    sync_message: syncInfo.message ?? skill.sync_message,
+    lag_count: syncInfo.lagCount ?? skill.lag_count,
+    last_probe_at: syncInfo.lastProbeAt ?? skill.last_probe_at,
+    last_sync_at: syncInfo.lastSyncAt ?? skill.last_sync_at,
+    managed_by_app: syncInfo.managedByApp ?? skill.managed_by_app,
+    can_check: syncInfo.canCheck ?? skill.can_check,
+    can_sync: syncInfo.canSync ?? skill.can_sync,
+  } : skill;
+  const card = buildSkillCardView(liveSkill, t);
+  const sourceLocator = liveSkill.origin_locator || liveSkill.upstream_url || "—";
+  const resolvedLocator = liveSkill.resolved_locator || liveSkill.upstream_url || "—";
   return (
     <ModalShell title={preview.title} className="large" onClose={onClose}>
       {preview.diagnostics?.length > 0 && (
@@ -443,26 +484,26 @@ export function PreviewModal({ preview, onClose, onCheckUpdate, onOpenDrift, dri
         </section>
         <section className="skill-detail-section">
           <div className="skill-detail-title"><Icon name="updates" size={17} /><strong>{t("preview.update")}</strong></div>
-          <p>{skill.can_sync ? t("preview.updatable") : t("preview.notUpdatable")}</p>
+          <p>{card.updateSummary}</p>
           <div className="skill-detail-actions">
-            {skill.path && <button className="btn btn-secondary btn-sm" onClick={() => onCheckUpdate?.(skill.path)} disabled={!skill.can_sync}><Icon name="refresh" size={14} />{t("preview.checkUpdate")}</button>}
+            {liveSkill.path && <button className="btn btn-secondary btn-sm" onClick={() => onCheckUpdate?.(liveSkill.path)} disabled={!card.canCheck || syncInfo?.checking}><Icon name="refresh" size={14} />{t("preview.checkUpdate")}</button>}
             {driftGroup && <button className="btn btn-secondary btn-sm" onClick={() => onOpenDrift?.(driftGroup)}><Icon name="branch" size={14} />{t("preview.openDrift")}</button>}
           </div>
         </section>
       </div>
       <section className="skill-detail-section skill-provenance">
-        <div className="skill-detail-title"><Icon name="branch" size={17} /><strong>{t("preview.provenance")}</strong><span className={`structure-badge ${skill.managed_by_app ? "success" : ""}`}>{skill.managed_by_app ? t("common.managed") : t("common.unmanaged")}</span></div>
+        <div className="skill-detail-title"><Icon name="branch" size={17} /><strong>{t("preview.provenance")}</strong><span className={`structure-badge ${liveSkill.managed_by_app ? "success" : ""}`}>{liveSkill.managed_by_app ? t("common.managed") : t("common.unmanaged")}</span></div>
         <dl>
           <div><dt>{t("provenance.sourceLabel")}</dt><dd>{card.contentSourceLabel}</dd></div>
           <div><dt>{t("provenance.managerLabel")}</dt><dd>{card.managerLabel}</dd></div>
           <div><dt>{t("provenance.updateLabel")}</dt><dd>{card.updateStrategyLabel}</dd></div>
-          <div><dt>{t("preview.sourceKind")}</dt><dd>{skill.origin_kind || skill.source_type || "—"}</dd></div>
+          <div><dt>{t("preview.sourceKind")}</dt><dd>{liveSkill.origin_kind || liveSkill.source_type || "—"}</dd></div>
           <div><dt>{t("preview.origin")}</dt><dd title={sourceLocator}>{sourceLocator}</dd></div>
           <div><dt>{t("preview.resolved")}</dt><dd title={resolvedLocator}>{resolvedLocator}</dd></div>
-          <div><dt>{t("preview.tracking")}</dt><dd>{skill.tracking_ref || "—"}</dd></div>
-          <div><dt>{t("preview.installed")}</dt><dd>{skill.installed_ref || "—"}</dd></div>
-          <div><dt>{t("preview.latest")}</dt><dd>{skill.latest_ref || "—"}</dd></div>
-          <div><dt>{t("preview.hash")}</dt><dd>{skill.content_hash || "—"}</dd></div>
+          <div><dt>{t("preview.tracking")}</dt><dd>{liveSkill.tracking_ref || "—"}</dd></div>
+          <div><dt>{t("preview.installed")}</dt><dd>{liveSkill.installed_ref || "—"}</dd></div>
+          <div><dt>{t("preview.latest")}</dt><dd>{liveSkill.latest_ref || "—"}</dd></div>
+          <div><dt>{t("preview.hash")}</dt><dd>{liveSkill.content_hash || "—"}</dd></div>
         </dl>
       </section>
       <pre className="readme">{preview.content}</pre>
@@ -501,6 +542,57 @@ export function TagEditorModal({
       <div className="card-actions" style={{ justifyContent: "flex-end", marginTop: 20 }}>
         <button className="btn btn-secondary btn-sm" onClick={onClose}>{t("common.cancel")}</button>
         <button className="btn btn-primary btn-sm" onClick={saveSkillTags} disabled={batch && tagEditor.selected.length === 0}>{t(batch ? "tags.addAction" : "common.save")}</button>
+      </div>
+    </ModalShell>
+  );
+}
+
+export function TagManagerModal({
+  tags,
+  name,
+  color,
+  setName,
+  setColor,
+  onAdd,
+  onUpdate,
+  onDelete,
+  onClose,
+}) {
+  const { t } = useI18n();
+  return (
+    <ModalShell title={t("tags.manageTitle")} onClose={onClose}>
+      <p className="modal-intro">{t("tags.manageHint")}</p>
+      <form
+        className="tag-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void onAdd();
+        }}
+      >
+        <input aria-label={t("settings.tags.name")} value={name} onChange={(event) => setName(event.target.value)} placeholder={t("settings.tags.name")} />
+        <input aria-label={t("settings.tags.color")} type="color" value={color} onChange={(event) => setColor(event.target.value)} />
+        <button className="btn btn-primary btn-sm" type="submit"><Icon name="plus" size={14} />{t("settings.tags.add")}</button>
+      </form>
+      <div className="tag-manager-list">
+        {tags.map((tag) => (
+          <form
+            className="tag-manager-row"
+            key={tag.id}
+            onSubmit={(event) => {
+              event.preventDefault();
+              const values = new FormData(event.currentTarget);
+              void onUpdate(tag.id, values.get("name"), values.get("color"));
+            }}
+          >
+            <input name="name" aria-label={t("tags.nameFor", { name: tag.name })} defaultValue={tag.name} required />
+            <input name="color" aria-label={t("tags.colorFor", { name: tag.name })} type="color" defaultValue={tag.color} />
+            <div className="tag-manager-actions">
+              <button className="btn btn-secondary btn-sm" type="submit">{t("tags.save")}</button>
+              <button className="btn btn-danger btn-sm" type="button" onClick={() => onDelete(tag)}>{t("tags.delete")}</button>
+            </div>
+          </form>
+        ))}
+        {tags.length === 0 && <p className="empty-hint">{t("tags.empty")}</p>}
       </div>
     </ModalShell>
   );

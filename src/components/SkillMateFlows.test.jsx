@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AiAvatar, AssistantsView, SkillsView, UpdatesView } from "./InventoryViews.jsx";
 import DashboardView, { MarketDiscovery } from "./DashboardView.jsx";
-import { AdoptionModal, InstallModal, PreviewModal } from "./SkillMateModals.jsx";
+import { AdoptionModal, InstallModal, PreviewModal, TagManagerModal } from "./SkillMateModals.jsx";
 import SettingsView from "./SettingsView.jsx";
 import ScenarioView from "./ScenarioView.jsx";
 import { persistPreference } from "../App.jsx";
@@ -46,10 +46,13 @@ function installFlow(overrides = {}) {
     target: {
       assistant: "Codex",
       setAssistant: vi.fn(),
+      assistants: ["Codex"],
+      toggleAssistant: vi.fn(),
       mode: "copy",
       setMode: vi.fn(),
       projectPath: "",
       setProjectPath: vi.fn(),
+      pickProjectDirectory: vi.fn(),
       projectPreview: [],
       previewingProject: false,
       showProjectLinkOption: false,
@@ -150,6 +153,10 @@ describe("Dashboard 数据加载", () => {
 
     const sections = [...container.querySelectorAll(".dashboard-section")];
     expect(sections[0].classList.contains("market-search")).toBe(false);
+    const headerActions = container.querySelector(".surface-header-actions");
+    const statusSummary = screen.getByLabelText("本机 Skill 状态摘要");
+    expect(headerActions?.querySelector(".dashboard-status")).toBeNull();
+    expect(statusSummary.parentElement).toBe(container.firstElementChild);
     fireEvent.click(screen.getByRole("button", { name: "添加 Skill" }));
     expect(onInstall).toHaveBeenCalledTimes(1);
   });
@@ -193,6 +200,41 @@ describe("Dashboard 数据加载", () => {
     expect(invoke).not.toHaveBeenCalledWith("install_skill", expect.anything());
   });
 
+  it("市场结果已在库中时不再显示检查并添加", async () => {
+    invoke.mockResolvedValue({
+      source: "skills-sh",
+      total: 1,
+      items: [{
+        id: "skills-sh:writer",
+        source: "skills-sh",
+        name: "writer",
+        skillId: "writer",
+        repository: "owner/repo",
+        installs: 1,
+        stars: 0,
+        url: "https://skills.sh/owner/repo/writer",
+        installSource: "https://github.com/owner/repo.git",
+      }],
+    });
+
+    render(
+      <MarketDiscovery
+        onInstall={vi.fn()}
+        installedSkills={[{
+          name: "writer",
+          origin_kind: "git",
+          origin_locator: "https://github.com/owner/repo.git#main:skills/writer",
+        }]}
+      />,
+    );
+    fireEvent.change(screen.getByPlaceholderText("搜索写作、测试、PDF..."), { target: { value: "writer" } });
+    fireEvent.click(screen.getByRole("button", { name: "查找" }));
+
+    const added = await screen.findByRole("button", { name: "已添加" });
+    expect(added.disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "检查并添加" })).toBeNull();
+  });
+
   it("结构验证失败时仍展示 Skill 文档和诊断", async () => {
     invoke.mockImplementation(async (command) => {
       if (command === "get_skill_readme") return "# Writer\n\n写作说明";
@@ -206,6 +248,90 @@ describe("Dashboard 数据加载", () => {
     expect(screen.getByText(/# Writer/)).toBeTruthy();
     expect(screen.getByText(/结构验证暂时不可用/)).toBeTruthy();
     expect(preview.validation).toBeNull();
+  });
+
+  it("Git Skill 已是最新时仍可重新检查", () => {
+    const onCheckUpdate = vi.fn();
+    render(
+      <PreviewModal
+        preview={{
+          title: "writer",
+          content: "# Writer",
+          skill: {
+            path: "/tmp/writer",
+            origin_kind: "git",
+            managed_by_app: true,
+            update_strategy: "skillmate",
+            sync_state: "current",
+            can_check: true,
+            can_sync: false,
+          },
+        }}
+        onCheckUpdate={onCheckUpdate}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("已是最新，可随时重新检查")).toBeTruthy();
+    const button = screen.getByRole("button", { name: "检查更新" });
+    expect(button.disabled).toBe(false);
+    fireEvent.click(button);
+    expect(onCheckUpdate).toHaveBeenCalledWith("/tmp/writer");
+  });
+
+  it("详情弹窗在检查后展示实时更新状态", async () => {
+    const user = userEvent.setup();
+    let syncInfo = {
+      originKind: "git",
+      syncState: "current",
+      canCheck: true,
+      canSync: false,
+      checking: false,
+    };
+    const getSyncInfo = vi.fn(() => syncInfo);
+    const onCheckUpdate = vi.fn();
+    const preview = {
+      title: "writer",
+      content: "# Writer",
+      skill: {
+        path: "/tmp/writer",
+        origin_kind: "git",
+        managed_by_app: true,
+        update_strategy: "skillmate",
+        sync_state: "current",
+        can_check: true,
+        can_sync: false,
+      },
+    };
+    const { rerender } = render(
+      <PreviewModal
+        preview={preview}
+        getSyncInfo={getSyncInfo}
+        onCheckUpdate={onCheckUpdate}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "检查更新" }));
+    expect(onCheckUpdate).toHaveBeenCalledWith("/tmp/writer");
+
+    syncInfo = {
+      ...syncInfo,
+      syncState: "behind",
+      latestRef: "new-ref",
+      canSync: true,
+    };
+    rerender(
+      <PreviewModal
+        preview={preview}
+        getSyncInfo={getSyncInfo}
+        onCheckUpdate={onCheckUpdate}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("发现更新，可由 SkillMate 安装")).toBeTruthy();
+    expect(screen.getByText("new-ref")).toBeTruthy();
   });
 });
 
@@ -370,7 +496,7 @@ describe("外观偏好与登记册布局", () => {
     render(<AssistantsView assistants={[]} installedCount={0} onAdopt={onAdopt} />);
 
     fireEvent.change(screen.getByLabelText("项目路径"), { target: { value: "/work/demo" } });
-    fireEvent.click(screen.getByRole("button", { name: "检查项目" }));
+    fireEvent.click(screen.getByRole("button", { name: "检查" }));
     await screen.findByText("共 2 · 项目 1 · 全局 1");
     fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
 
@@ -506,7 +632,8 @@ describe("安装流程交互", () => {
     invoke.mockReset();
   });
 
-  it("添加只显示来源，启用才显示平台与范围", () => {
+  it("添加只显示来源，启用支持选择多个平台", async () => {
+    const user = userEvent.setup();
     const addFlow = installFlow();
     const { rerender } = render(
       <InstallModal flow={addFlow} assistants={[{ name: "Codex" }]} loading={false} onClose={vi.fn()} />
@@ -523,16 +650,69 @@ describe("安装流程交互", () => {
         kind: "local",
         package: "/tmp/skillmate/skills/writer",
       },
+      target: {
+        ...addFlow.target,
+        assistants: ["Codex"],
+        toggleAssistant: vi.fn(),
+      },
       commandPreview: "在 Codex 中全局启用",
     });
     rerender(
-      <InstallModal flow={enableFlow} assistants={[{ name: "Codex" }]} loading={false} onClose={vi.fn()} />
+      <InstallModal flow={enableFlow} assistants={[{ name: "Codex" }, { name: "Claude Code" }]} loading={false} onClose={vi.fn()} />
     );
 
     expect(screen.getByRole("heading", { name: "启用 Skill" })).toBeTruthy();
-    expect(screen.getByLabelText("使用平台")).toBeTruthy();
+    expect(screen.getByRole("group", { name: "使用平台" })).toBeTruthy();
+    await user.click(screen.getByRole("checkbox", { name: "Claude Code" }));
+    expect(enableFlow.target.toggleAssistant).toHaveBeenCalledWith("Claude Code");
     expect(screen.getByLabelText("生效范围")).toBeTruthy();
     expect(screen.queryByLabelText("Skill 来源")).toBeNull();
+  });
+
+  it("跳过安装时显示原因和完整目标路径，而不是内部相对路径", () => {
+    const target = "/Users/yuluo/Library/Application Support/skillmate/skills/writing-dna-skill";
+    const flow = installFlow();
+    flow.preview.structure = {
+      ...flow.preview.structure,
+      target_actions: [{ action: "skip", source: ".", target, reason: "目标目录已存在" }],
+      conflicts: [{ target, reason: "target_exists" }],
+    };
+    flow.preview.view = {
+      ...flow.preview.view,
+      actions: [{ action: "skip", source: ".", target, reason: "目标目录已存在", label: "跳过" }],
+      conflicts: [{ target, reason: "目标目录已存在" }],
+    };
+
+    render(<InstallModal flow={flow} assistants={[{ name: "Codex" }]} loading={false} onClose={vi.fn()} />);
+
+    expect(screen.getByText("目标目录已存在")).toBeTruthy();
+    expect(screen.queryByText(".")).toBeNull();
+    expect(screen.getByText(target).getAttribute("title")).toBe(target);
+  });
+
+  it("项目范围可以通过系统目录选择器填写路径", async () => {
+    const user = userEvent.setup();
+    const pickProjectDirectory = vi.fn();
+    const base = installFlow();
+    const flow = installFlow({
+      workflow: "enable",
+      source: {
+        ...base.source,
+        kind: "local",
+        package: "/tmp/skillmate/skills/writer",
+      },
+      target: {
+        ...base.target,
+        mode: "symlink",
+        showProjectLinkOption: true,
+        pickProjectDirectory,
+      },
+    });
+
+    render(<InstallModal flow={flow} assistants={[{ name: "Codex", supports_project_skills: true }]} loading={false} onClose={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "选择项目目录" }));
+    expect(pickProjectDirectory).toHaveBeenCalledTimes(1);
   });
 
   it("高级来源可以选择 Claude Marketplace", () => {
@@ -634,6 +814,63 @@ describe("安装流程交互", () => {
     expect(result.current.source.kind).toBe("local");
     expect(result.current.source.package).toBe("/tmp/skillmate/skills/writer");
     expect(result.current.workflow).toBe("enable");
+  });
+
+  it("一次启用会为每个所选平台分别预览并执行", async () => {
+    const assistants = [
+      { name: "Codex", supports_project_skills: true },
+      { name: "Claude Code", supports_project_skills: true },
+    ];
+    invoke.mockImplementation(async (command, args) => {
+      if (command === "detect_install_source") {
+        return { normalized_source: "local", confidence: "high", warnings: [] };
+      }
+      if (command === "preview_install_skill") {
+        return {
+          can_install: true,
+          can_apply: true,
+          message: "可以启用",
+          structure_status: "complete",
+          structure_features: [],
+          structure_warnings: [],
+          package_detection: { detected_skills: [{ relative_path: "." }], warnings: [] },
+          target_actions: [{ action: "symlink", source: "/library/writer", target: `/target/${args.assistantName}/writer`, reason: "启用" }],
+          conflicts: [],
+          plan_token: `plan-${args.assistantName}`,
+        };
+      }
+      if (command === "install_skill") {
+        return { success: true, structure_status: "complete", structure_features: [], structure_warnings: [] };
+      }
+      throw new Error(`未处理命令: ${command}`);
+    });
+    const setInstallOpen = vi.fn();
+    const loadData = vi.fn();
+    const { result } = renderHook(() => useInstallFlow({
+      installOpen: true,
+      assistants,
+      setInstallOpen,
+      showToast: vi.fn(),
+      loadData,
+      setLoading: vi.fn(),
+    }));
+
+    act(() => result.current.source.prepare("/library/writer", "", "local", "enable"));
+    await waitFor(() => expect(result.current.target.assistants).toEqual(["Codex"]));
+    act(() => result.current.target.toggleAssistant("Claude Code"));
+    await act(async () => result.current.preview.runPrimaryAction());
+    await waitFor(() => expect(result.current.preview.primaryAction.action).toBe("install"));
+    await act(async () => result.current.preview.runPrimaryAction());
+
+    const previews = invoke.mock.calls.filter(([command]) => command === "preview_install_skill");
+    expect(previews.map(([, args]) => args.assistantName).sort()).toEqual(["Claude Code", "Codex"]);
+    const installs = invoke.mock.calls.filter(([command]) => command === "install_skill");
+    expect(installs.map(([, args]) => [args.assistantName, args.planToken]).sort()).toEqual([
+      ["Claude Code", "plan-Claude Code"],
+      ["Codex", "plan-Codex"],
+    ]);
+    expect(setInstallOpen).toHaveBeenCalledWith(false);
+    expect(loadData).toHaveBeenCalled();
   });
 
   it("手动选择来源后不再被自动识别结果覆盖", async () => {
@@ -992,6 +1229,42 @@ describe("统一库设置", () => {
     expect(screen.getByLabelText("统一库目录").disabled).toBe(true);
     expect(screen.getByRole("button", { name: "保存" }).disabled).toBe(true);
     expect(screen.getByText(/SKILLMATE_LIBRARY_DIR/)).toBeTruthy();
+  });
+});
+
+describe("标签管理", () => {
+  it("不再把标签作为设置页签", () => {
+    render(<SettingsView activeTab="language" setActiveTab={vi.fn()} />);
+
+    expect(screen.queryByRole("tab", { name: "标签" })).toBeNull();
+  });
+
+  it("可以修改或删除已有标签", async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi.fn();
+    const onDelete = vi.fn();
+    render(
+      <TagManagerModal
+        tags={[{ id: "tag-one", name: "常用", color: "#58a6ff" }]}
+        name=""
+        color="#58a6ff"
+        setName={vi.fn()}
+        setColor={vi.fn()}
+        onAdd={vi.fn()}
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const nameInput = screen.getByLabelText("标签“常用”的名称");
+    await user.clear(nameInput);
+    await user.type(nameInput, "写作");
+    await user.click(screen.getByRole("button", { name: "更新" }));
+    expect(onUpdate).toHaveBeenCalledWith("tag-one", "写作", "#58a6ff");
+
+    await user.click(screen.getByRole("button", { name: "删除" }));
+    expect(onDelete).toHaveBeenCalledWith({ id: "tag-one", name: "常用", color: "#58a6ff" });
   });
 });
 

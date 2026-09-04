@@ -36,10 +36,10 @@ export const AiAvatar = React.memo(function AiAvatar({ name, brand, size = 36 })
         background: metadata.bg,
       }}
       title={name}
-      aria-label={name}
+      aria-hidden="true"
     >
       {metadata.src ? (
-        <img className={`ai-avatar-img ${metadata.mode || "contain"}`} src={metadata.src} alt={name} loading="lazy" draggable="false" />
+        <img className={`ai-avatar-img ${metadata.mode || "contain"}`} src={metadata.src} alt="" loading="lazy" draggable="false" />
       ) : (
         <span style={{ fontSize: Math.max(10, size * 0.34), fontWeight: 700 }}>{name.slice(0, 1)}</span>
       )}
@@ -196,7 +196,7 @@ export function SkillsView({
                 </div>
                 <div className="registry-size" role="cell">{skill.size}</div>
                 <div className="registry-actions" role="cell">
-                  {card.canEnable && <button className="btn btn-primary btn-sm" onClick={() => onEnable(skill)} aria-label={t("skills.enable", { name: skill.name })}><Icon name="plus" size={15} />{t("skills.enableAction")}</button>}
+                  {card.canEnable && <button className="btn btn-primary btn-sm" onClick={() => onEnable(skill)} aria-label={t("skills.enable", { name: skill.name })}><Icon name="power" size={15} />{t("skills.enableAction")}</button>}
                   {card.canAdopt && <button className="btn btn-primary btn-sm" onClick={() => onAdopt({ skill, assistant: skill.ai, projectPath: "" })} aria-label={t("adoption.actionFor", { name: skill.name })}><Icon name="branch" size={15} />{t("adoption.action")}</button>}
                   <button className={`btn btn-sm ${needsReview ? "btn-review" : "btn-secondary"}`} onClick={() => onPreview(skill.path)} aria-label={t(needsReview ? "skills.reviewOne" : "skills.preview", { name: skill.name })}><Icon name={needsReview ? "shield" : "preview"} size={15} />{t(needsReview ? "skills.review" : "common.details")}</button>
                   <details className="registry-more">
@@ -205,7 +205,7 @@ export function SkillsView({
                       <button className="btn btn-ghost btn-sm" onClick={() => onEditTags(skill)} aria-label={t("skills.editTags", { name: skill.name })}><Icon name="tag" size={15} />{t("skills.tagsAction")}</button>
                       <button className="btn btn-ghost btn-sm" onClick={() => onOpenDirectory(skill.path)} aria-label={t("skills.openFolder", { name: skill.name })}><Icon name="folder" size={15} />{t("skills.folderAction")}</button>
                       {card.canUnlink ? (
-                        <button className="btn btn-ghost btn-sm danger" onClick={() => onUnlink(skill.path, skill.name)} aria-label={t("skills.unlink", { name: skill.name })}><Icon name="x" size={15} />{t("skills.unlinkAction")}</button>
+                        <button className="btn btn-ghost btn-sm danger" onClick={() => onUnlink(skill.path, skill.name)} aria-label={t("skills.unlink", { name: skill.name })}><Icon name="unlink" size={15} />{t("skills.unlinkAction")}</button>
                       ) : card.canDelete ? (
                         <button className="btn btn-ghost btn-sm danger" onClick={() => onRemove(skill.path, skill.name, card.availableIn)} aria-label={t("skills.remove", { name: skill.name })}><Icon name="trash" size={15} />{t("skills.removeAction")}</button>
                       ) : null}
@@ -525,8 +525,8 @@ export function UpdatesView({ skills, orderedSkills, stats, updateState, getSync
                   <span className={`stamp ${stateTone(info.syncState)}`}>{stateText(info.syncState, t)}</span>
                 </div>
                 <div className="registry-actions" role="cell">
-                  <button className="btn btn-secondary btn-sm" onClick={() => checkOne(skill.path)} disabled={info.checking || info.updating}><Icon name="refresh" size={14} />{t(info.checking ? "common.checking" : "common.check")}</button>
-                  {info.canSync && <button className="btn btn-primary btn-sm" onClick={() => updateOne(skill.path)} disabled={info.checking || info.updating}><Icon name="upload" size={14} />{updateButtonText(info, t)}</button>}
+                  <button className="btn btn-secondary btn-sm" onClick={() => checkOne(skill.path)} disabled={!info.canCheck || info.checking || info.updating}><Icon name="refresh" size={14} />{t(info.checking ? "common.checking" : "common.check")}</button>
+                  {info.canSync && <button className="btn btn-primary btn-sm" onClick={() => updateOne(skill.path)} disabled={info.checking || info.updating}><Icon name="download" size={14} />{updateButtonText(info, t)}</button>}
                   {!info.canSync && (
                     <span className="update-hint" title={skill.managed_by_app ? (info.message || t("updates.notSupported")) : t("updates.externalManaged")}>
                       {skill.managed_by_app ? (info.message || t("updates.notSupported")) : t("updates.externalManaged")}

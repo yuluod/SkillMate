@@ -88,6 +88,8 @@ export const skillmateApi = Object.freeze({
   }),
   tags: Object.freeze({
     add: (name, color) => invoke("add_tag", { name, color }),
+    update: (tagId, name, color) => invoke("update_tag", { tagId, name, color }),
+    delete: (tagId) => invoke("delete_tag", { tagId }),
     updateSkill: (skillPath, tags) => invoke("update_skill_tags", { skillPath, tags }),
   }),
   scenarios: Object.freeze({

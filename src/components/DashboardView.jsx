@@ -15,7 +15,26 @@ function AttentionRow({ icon, tone = "", title, body, onClick, action }) {
   );
 }
 
-function MarketResult({ item, onInstall, onOpenSource }) {
+function repositoryIdentity(value = "") {
+  const normalized = String(value).trim().toLowerCase().replace(/\.git(?:[#/:].*)?$/, "");
+  const github = normalized.match(/github\.com[/:]([^/#]+\/[^/#]+)/);
+  return (github?.[1] || normalized.split("#")[0]).replace(/\.git$/, "");
+}
+
+function isMarketSkillInstalled(item, installedSkills) {
+  if (item.source !== "skills-sh") return false;
+  const repository = repositoryIdentity(item.repository || item.installSource);
+  const identities = [item.skillId, item.name].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
+  return installedSkills.some((skill) => {
+    const locator = skill.origin_locator || skill.resolved_locator || skill.upstream_url || "";
+    const installedPathName = String(locator).split(":").pop().split("/").pop().toLowerCase();
+    return repositoryIdentity(locator) === repository
+      && (identities.includes(String(skill.name || "").trim().toLowerCase())
+        || identities.includes(installedPathName));
+  });
+}
+
+function MarketResult({ item, installed, onInstall, onOpenSource }) {
   const { t } = useI18n();
   return (
     <article className="market-result">
@@ -30,13 +49,13 @@ function MarketResult({ item, onInstall, onOpenSource }) {
       </div>
       <div className="market-result-actions">
         <button className="btn btn-ghost btn-sm" type="button" onClick={() => onOpenSource(item)}><Icon name="external" size={14} />{t("market.open")}</button>
-        <button className="btn btn-primary btn-sm" type="button" onClick={() => onInstall(item)}><Icon name="shield" size={14} />{t("market.safeInstall")}</button>
+        <button className="btn btn-primary btn-sm" type="button" disabled={installed} onClick={() => onInstall(item)}><Icon name={installed ? "check" : "shield"} size={14} />{t(installed ? "market.added" : "market.safeInstall")}</button>
       </div>
     </article>
   );
 }
 
-export function MarketDiscovery({ onInstall }) {
+export function MarketDiscovery({ onInstall, installedSkills = [] }) {
   const { t } = useI18n();
   const [source, setSource] = useState("skills-sh");
   const [query, setQuery] = useState("");
@@ -80,7 +99,7 @@ export function MarketDiscovery({ onInstall }) {
       <p className="market-source-note">{t(source === "skills-sh" ? "market.sourceHint.skillsSh" : "market.sourceHint.github")}</p>
       {market.error && <div className="install-compact error" role="alert"><strong>{market.error}</strong></div>}
       {!market.error && market.items.length === 0 && <div className="market-empty">{market.searched ? t("market.noResults") : t("market.empty")}</div>}
-      {market.items.length > 0 && <div className="market-grid">{market.items.map((item) => <MarketResult key={item.id} item={item} onInstall={onInstall} onOpenSource={openSource} />)}</div>}
+      {market.items.length > 0 && <div className="market-grid">{market.items.map((item) => <MarketResult key={item.id} item={item} installed={isMarketSkillInstalled(item, installedSkills)} onInstall={onInstall} onOpenSource={openSource} />)}</div>}
     </section>
   );
 }
@@ -97,18 +116,17 @@ export default function DashboardView({ stats, tagCount, driftGroups, onNavigate
         title={t("dashboard.title")}
         description={t("dashboard.subtitle")}
         actions={(
-          <>
-            <div className="dashboard-status" aria-label={t("dashboard.title")}>
-              <span className="stamp"><span className="stamp-num">{stats.skills}</span>{t("dashboard.skills")}</span>
-              <span className="stamp"><span className="stamp-num">{stats.assistants}</span>{t("dashboard.assistants")}</span>
-              <span className="stamp"><span className="stamp-num">{tagCount}</span>{t("dashboard.tags")}</span>
-              <span className={`stamp ${stats.updates ? "warn" : "success"}`}><span className="stamp-num">{stats.updates}</span>{t("dashboard.updates")}</span>
-              <span className={`stamp ${attentionCount ? "error" : "success"}`}><span className="stamp-num">{attentionCount}</span>{t("dashboard.risks")}</span>
-            </div>
-            <button className="btn btn-primary btn-sm" type="button" onClick={onInstall}><Icon name="plus" size={14} />{t("common.install")}</button>
-          </>
+          <button className="btn btn-primary btn-sm" type="button" onClick={onInstall}><Icon name="plus" size={14} />{t("common.install")}</button>
         )}
       />
+
+      <div className="dashboard-status" aria-label={t("dashboard.statusSummary")}>
+        <span className="stamp"><span className="stamp-num">{stats.skills}</span>{t("dashboard.skills")}</span>
+        <span className="stamp"><span className="stamp-num">{stats.assistants}</span>{t("dashboard.assistants")}</span>
+        <span className="stamp"><span className="stamp-num">{tagCount}</span>{t("dashboard.tags")}</span>
+        <span className={`stamp ${stats.updates ? "warn" : "success"}`}><span className="stamp-num">{stats.updates}</span>{t("dashboard.updates")}</span>
+        <span className={`stamp ${attentionCount ? "error" : "success"}`}><span className="stamp-num">{attentionCount}</span>{t("dashboard.risks")}</span>
+      </div>
 
       <section className="dashboard-section">
         <SurfaceSectionHeader title={t("dashboard.attention")} description={t("dashboard.attentionHint")} />
@@ -116,7 +134,7 @@ export default function DashboardView({ stats, tagCount, driftGroups, onNavigate
           {stats.updates > 0 && <AttentionRow icon="updates" tone="warn" title={t("dashboard.updateTitle", { count: stats.updates })} body={t("dashboard.updateBody")} action={t("dashboard.review")} onClick={() => onNavigate("updates")} />}
           {stats.securityRisks > 0 && <AttentionRow icon="shield" tone="error" title={t("dashboard.securityTitle", { count: stats.securityRisks })} body={t("dashboard.securityBody")} action={t("dashboard.review")} onClick={() => onNavigate("skills")} />}
           {stats.structureIssues > 0 && <AttentionRow icon="skills" tone="warn" title={t("dashboard.structureTitle", { count: stats.structureIssues })} body={t("dashboard.structureBody")} action={t("dashboard.review")} onClick={() => onNavigate("skills")} />}
-          {stats.localChanges > 0 && <AttentionRow icon="lock" tone="error" title={t("dashboard.localTitle", { count: stats.localChanges })} body={t("dashboard.localBody")} action={t("dashboard.review")} onClick={() => onNavigate("skills")} />}
+          {stats.localChanges > 0 && <AttentionRow icon="edit" tone="error" title={t("dashboard.localTitle", { count: stats.localChanges })} body={t("dashboard.localBody")} action={t("dashboard.review")} onClick={() => onNavigate("skills")} />}
           {driftGroups.map((group) => <AttentionRow key={group.id} icon="branch" tone="warn" title={`${group.name} · ${t("drift.versions", { count: group.versionCount })}`} body={t("dashboard.driftBody")} action={t("dashboard.review")} onClick={() => onOpenDrift(group)} />)}
           {stats.diagnostics > 0 && <AttentionRow icon="search" title={t("dashboard.diagnosticTitle", { count: stats.diagnostics })} body={t("dashboard.diagnosticBody")} action={t("dashboard.review")} onClick={() => onNavigate("ai")} />}
           {attentionCount === 0 && <div className="attention-empty"><Icon name="check" size={22} /><div><strong>{t("dashboard.allClear")}</strong><p>{t("dashboard.allClearHint")}</p></div></div>}

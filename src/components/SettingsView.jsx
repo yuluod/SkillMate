@@ -31,7 +31,6 @@ const SETTINGS_GROUPS = [
     items: [
       ["data", "settings.tabs.data", "upload"],
       ["skillset", "settings.tabs.skillset", "skills"],
-      ["tags", "settings.tabs.tags", "tag"],
     ],
   },
 ];
@@ -354,20 +353,7 @@ function SkillSetSettings({ value }) {
   );
 }
 
-function TagSettings({ value }) {
-  const { t } = useI18n();
-  return (
-    <div className="settings-card">
-      <SurfaceHeader className="settings-surface-header" title={t("settings.tags.title")} />
-      <div className="settings-body">
-        <div className="tag-form"><input aria-label={t("settings.tags.name")} value={value.name} onChange={event => value.setName(event.target.value)} placeholder={t("settings.tags.name")} /><input aria-label={t("settings.tags.color")} type="color" value={value.color} onChange={event => value.setColor(event.target.value)} /><button className="btn btn-primary btn-sm" onClick={value.add}><Icon name="plus" size={14} />{t("settings.tags.add")}</button></div>
-        <div className="tag-list settings-action-row">{value.tags.map(tag => <div key={tag.id} className="tag-chip active" style={{ "--c": tag.color }}><span className="tag-dot" />{tag.name}</div>)}</div>
-      </div>
-    </div>
-  );
-}
-
-export default function SettingsView({ activeTab, setActiveTab, appearance, backup, appUpdate, installPolicy, librarySettings, data, skillSet, tags }) {
+export default function SettingsView({ activeTab, setActiveTab, appearance, backup, appUpdate, installPolicy, librarySettings, data, skillSet }) {
   const { t } = useI18n();
   return (
     <div className="settings">
@@ -394,7 +380,6 @@ export default function SettingsView({ activeTab, setActiveTab, appearance, back
         {activeTab === "library" && <LibrarySettings value={librarySettings} />}
         {activeTab === "data" && <DataSettings value={data} />}
         {activeTab === "skillset" && <SkillSetSettings value={skillSet} />}
-        {activeTab === "tags" && <TagSettings value={tags} />}
       </section>
     </div>
   );

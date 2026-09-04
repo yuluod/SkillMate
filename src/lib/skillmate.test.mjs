@@ -170,7 +170,7 @@ test("应用更新状态视图应当映射按钮能力和版本信息", () => {
       canRestart: false,
       primaryAction: "install",
       primaryActionLabel: "下载并安装后重启",
-      primaryActionIcon: "upload",
+      primaryActionIcon: "download",
       canRunPrimaryAction: true,
       showSecondaryCheck: true,
       error: "",
@@ -241,6 +241,35 @@ test("经典主题的页眉与登记册只保留一处分隔线", () => {
 
   assert.match(surfaceHeaderRule, /border-bottom:\s*3px double var\(--rule\)/);
   assert.match(registryRule, /border-top:\s*0/);
+});
+
+test("状态提示在弹窗遮罩上保持不透明背景", () => {
+  const styles = readStylesSource();
+  for (const tone of ["success", "error", "warn"]) {
+    const rule = styles.match(new RegExp(`\\.toast\\.${tone}\\s*\\{([^}]*)\\}`, "s"))?.[1] ?? "";
+    assert.match(rule, /background:\s*color-mix\([^;]+var\(--bg2\)\)/);
+    assert.doesNotMatch(rule, /background:\s*rgba\(/);
+  }
+});
+
+test("独立输入框复用统一控件尺寸", () => {
+  const styles = readStylesSource();
+  const controlRule = styles.match(/:where\(([\s\S]*?)\)\s*\{\s*width:\s*100%;\s*min-height:\s*var\(--control-height\)/)?.[1] ?? "";
+
+  assert.match(controlRule, /\.tag-manager-row input:not\(\[type="color"\]\)/);
+  assert.match(controlRule, /\.project-inspector-input input/);
+});
+
+test("维护页统计和登记条目保持可读尺寸", () => {
+  const styles = readStylesSource();
+  const toolbarStamp = styles.match(/\.update-toolbar \.stamp\s*\{([^}]*)\}/s)?.[1] ?? "";
+  const updateRegistry = styles.match(/\.registry:has\(\.registry-refs\)\s*\{([^}]*)\}/s)?.[1] ?? "";
+  const probe = styles.match(/\.registry-probe\s*\{([^}]*)\}/s)?.[1] ?? "";
+
+  assert.match(toolbarStamp, /min-height:\s*30px/);
+  assert.match(toolbarStamp, /font-size:\s*0\.72rem/);
+  assert.match(updateRegistry, /minmax\(190px,\s*1fr\)/);
+  assert.match(probe, /flex-wrap:\s*wrap/);
 });
 
 test("安装来源保留 Git、本地目录与 Claude Marketplace", () => {
@@ -374,7 +403,7 @@ test("添加与启用流程应当使用各自的主操作", () => {
       loading: false,
       workflow: "enable",
     }),
-    { action: "install", label: "启用", icon: "check", disabled: false }
+    { action: "install", label: "启用", icon: "power", disabled: false }
   );
 });
 
@@ -780,8 +809,10 @@ test("Skill 卡片视图应当优先使用 manifest 标题和说明", () => {
       contentSourceLabel: "Git 仓库",
       managerLabel: "SkillMate",
       updateStrategyLabel: "由 SkillMate 更新",
+      canCheck: true,
       canSync: true,
       hasUpdate: true,
+      updateSummary: "尚未检查来源",
       canEnable: false,
       canDelete: true,
       canUnlink: false,
@@ -791,6 +822,50 @@ test("Skill 卡片视图应当优先使用 manifest 标题和说明", () => {
       isShared: false,
     }
   );
+});
+
+test("Skill 更新提示应当区分检查、发现更新和执行更新", () => {
+  const current = buildSkillCardView({
+    origin_kind: "git",
+    managed_by_app: true,
+    sync_state: "current",
+    can_check: true,
+    can_sync: false,
+  });
+  const managedUpdate = buildSkillCardView({
+    origin_kind: "git",
+    managed_by_app: true,
+    sync_state: "behind",
+    can_check: true,
+    can_sync: true,
+  });
+  const externalUpdate = buildSkillCardView({
+    origin_kind: "legacy_npm",
+    update_strategy: "external_cli",
+    sync_state: "behind",
+    can_check: true,
+    can_sync: false,
+  });
+  const local = buildSkillCardView({
+    origin_kind: "local",
+    sync_state: "local_fixed",
+    can_check: true,
+    can_sync: false,
+  });
+  const unsupported = buildSkillCardView({
+    origin_kind: "git",
+    sync_state: "unsupported",
+    can_check: true,
+    can_sync: false,
+  });
+
+  assert.equal(current.canCheck, true);
+  assert.equal(current.canSync, false);
+  assert.equal(current.updateSummary, "已是最新，可随时重新检查");
+  assert.equal(managedUpdate.updateSummary, "发现更新，可由 SkillMate 安装");
+  assert.equal(externalUpdate.updateSummary, "发现更新，请通过原安装器更新");
+  assert.equal(local.updateSummary, "原始本地目录可用，内容由你手工维护");
+  assert.equal(unsupported.updateSummary, "当前来源配置无法完成更新检查");
 });
 
 test("共享目录中的 Skill 在总览只保留一条并聚合可用助手", () => {

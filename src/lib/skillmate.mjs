@@ -104,6 +104,15 @@ const UPDATE_STRATEGY_LABELS = {
   manual: "手工维护",
 };
 
+const CHECKABLE_ORIGIN_KINDS = new Set([
+  "git",
+  "local",
+  "npm",
+  "legacy_npm",
+  "pip",
+  "legacy_pip",
+]);
+
 const INSTALL_CONFIDENCE_LABELS = {
   high: "高置信度",
   medium: "中置信度",
@@ -161,9 +170,9 @@ const APP_UPDATE_PRIMARY_ACTIONS = {
   idle: { action: "check", label: "检查更新", icon: "refresh", enabled: true },
   checking: { action: "check", label: "检查中", icon: "refresh", enabled: false },
   current: { action: "check", label: "重新检查", icon: "refresh", enabled: true },
-  available: { action: "install", label: "下载并安装后重启", icon: "upload", enabled: true },
-  downloading: { action: "install", label: "下载中", icon: "upload", enabled: false },
-  installing: { action: "install", label: "安装中", icon: "upload", enabled: false },
+  available: { action: "install", label: "下载并安装后重启", icon: "download", enabled: true },
+  downloading: { action: "install", label: "下载中", icon: "download", enabled: false },
+  installing: { action: "install", label: "安装中", icon: "box", enabled: false },
   restarting: { action: "restart", label: "正在重启", icon: "refresh", enabled: false },
   ready_to_restart: { action: "restart", label: "重启应用", icon: "refresh", enabled: true },
   error: { action: "check", label: "重新检查", icon: "refresh", enabled: true },
@@ -275,7 +284,7 @@ export function buildInstallPrimaryAction({
       label: workflow === "enable"
         ? localized(t, "install.action.enable", "启用")
         : localized(t, "install.action.add", "添加到库"),
-      icon: workflow === "enable" ? "check" : "plus",
+      icon: workflow === "enable" ? "power" : "plus",
       disabled,
     };
   }
@@ -488,9 +497,33 @@ export function buildSkillCardView(skill, t) {
   const isSymlink = ["symlink", "deployment"].includes(skill?.source_type);
   const isManaged = Boolean(skill?.managed_by_app);
   const securityWarnings = structure.warnings.filter((warning) => SECURITY_WARNING_CODES.has(warning));
-  const inferredSource = skill?.content_source || (["git", "github"].includes(skill?.origin_kind || skill?.source_type) ? (skill?.upstream_url?.includes("github.com") ? "github" : "git") : "unknown");
+  const originKind = skill?.origin_kind || skill?.source_type || "unknown";
+  const inferredSource = skill?.content_source || (["git", "github"].includes(originKind) ? (skill?.upstream_url?.includes("github.com") ? "github" : "git") : "unknown");
   const inferredManager = skill?.manager || (isManaged ? "skillmate" : "external");
-  const inferredUpdate = skill?.update_strategy || (isManaged && skill?.can_sync ? "skillmate" : "manual");
+  const inferredUpdate = skill?.update_strategy || (isManaged && originKind === "git" ? "skillmate" : "manual");
+  const canCheck = typeof skill?.can_check === "boolean"
+    ? skill.can_check
+    : CHECKABLE_ORIGIN_KINDS.has(originKind);
+  const canSync = Boolean(skill?.can_sync);
+  const syncState = skill?.sync_state || "unknown";
+  const updateSummary = (() => {
+    if (syncState === "current") return localized(t, "preview.updateCurrent", "已是最新，可随时重新检查");
+    if (syncState === "behind") {
+      if (canSync) return localized(t, "preview.updateReady", "发现更新，可由 SkillMate 安装");
+      if (inferredUpdate === "external_cli") return localized(t, "preview.updateExternalReady", "发现更新，请通过原安装器更新");
+      if (inferredUpdate === "external") return localized(t, "preview.updateOutsideReady", "发现更新，请通过原工具更新");
+      return localized(t, "preview.updateManualReady", "发现来源变化，需要手工处理");
+    }
+    if (syncState === "local_fixed") return localized(t, "preview.localAvailable", "原始本地目录可用，内容由你手工维护");
+    if (syncState === "source_missing") return localized(t, "preview.localMissing", "原始本地目录已不存在");
+    if (syncState === "ahead_local") return localized(t, "preview.gitAhead", "本地内容领先远端，SkillMate 不会覆盖");
+    if (syncState === "diverged") return localized(t, "preview.gitDiverged", "本地内容与远端已分叉，需要手工处理");
+    if (syncState === "failed") return localized(t, "preview.checkFailed", "上次检查失败，可以重新检查");
+    if (syncState === "unsupported") return localized(t, "preview.checkUnsupported", "当前来源配置无法完成更新检查");
+    return canCheck
+      ? localized(t, "preview.notChecked", "尚未检查来源")
+      : localized(t, "preview.notCheckable", "当前来源无法检查更新");
+  })();
   const availableIn = Array.isArray(skill?.availableIn) && skill.availableIn.length > 0
     ? skill.availableIn
     : (skill?.ai ? [{ name: skill.ai, icon: skill.aiIcon || "" }] : []);
@@ -509,8 +542,10 @@ export function buildSkillCardView(skill, t) {
     contentSourceLabel: localized(t, `provenance.source.${inferredSource}`, CONTENT_SOURCE_LABELS[inferredSource] || skill?.source || "未知来源"),
     managerLabel: localized(t, `provenance.manager.${inferredManager}`, MANAGER_LABELS[inferredManager] || "外部或手工管理"),
     updateStrategyLabel: localized(t, `provenance.update.${inferredUpdate}`, UPDATE_STRATEGY_LABELS[inferredUpdate] || "手工维护"),
-    canSync: Boolean(skill?.can_sync),
+    canCheck,
+    canSync,
     hasUpdate: Boolean(skill?.has_update),
+    updateSummary,
     canEnable: Boolean(skill?.in_library || skill?.source_type === "deployment"),
     canDelete: isManaged && !isSymlink,
     canUnlink: isManaged && isSymlink,

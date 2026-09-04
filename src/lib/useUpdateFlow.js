@@ -24,6 +24,7 @@ export function useUpdateFlow({ updatable, showToast, loadData }) {
       lastProbeAt: state.lastProbeAt ?? skill.last_probe_at,
       lastSyncAt: state.lastSyncAt ?? skill.last_sync_at,
       managedByApp: state.managedByApp ?? skill.managed_by_app,
+      canCheck: state.canCheck ?? skill.can_check ?? false,
       canSync: state.canSync ?? skill.can_sync ?? false,
       checking: Boolean(state.checking),
       updating: Boolean(state.updating)

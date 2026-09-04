@@ -8,6 +8,7 @@ import {
   InstallModal,
   PreviewModal,
   TagEditorModal,
+  TagManagerModal,
 } from "./components/SkillMateModals.jsx";
 import SettingsView from "./components/SettingsView.jsx";
 import ScenarioView from "./components/ScenarioView.jsx";
@@ -60,7 +61,6 @@ const SETTINGS_TAB_LABELS = {
   library: "settings.tabs.library",
   data: "settings.tabs.data",
   skillset: "settings.tabs.skillset",
-  tags: "settings.tabs.tags",
 };
 
 const VIEW_CONTEXT_LABELS = {
@@ -147,9 +147,8 @@ const Logo = React.memo(function Logo() {
   return <img className="logo" src={appIcon} alt="" />;
 });
 
-function TagFilterBar({ tags, selectedCount, onToggle, onClear }) {
+function TagFilterBar({ tags, selectedCount, onToggle, onClear, onManage }) {
   const { t } = useI18n();
-  if (tags.length === 0) return null;
 
   return (
     <div className="content-tag-filter" aria-label={t("sidebar.tags")}>
@@ -169,8 +168,12 @@ function TagFilterBar({ tags, selectedCount, onToggle, onClear }) {
             <span className="tag-dot" />{tag.name}
           </button>
         ))}
+        {tags.length === 0 && <span className="content-tag-filter-empty">{t("tags.empty")}</span>}
       </div>
-      {selectedCount > 0 && <button className="content-tag-filter-clear" onClick={onClear}>{t("common.clear")}</button>}
+      <div className="content-tag-filter-actions">
+        {selectedCount > 0 && <button className="content-tag-filter-clear" onClick={onClear}>{t("common.clear")}</button>}
+        {onManage && <button className="btn btn-ghost btn-sm" onClick={onManage}><Icon name="tag" size={14} />{t("tags.manage")}</button>}
+      </div>
     </div>
   );
 }
@@ -209,6 +212,7 @@ function App() {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [preview, setPreview] = useState({ title: "", content: "", validation: null, diagnostics: [] });
   const [tagEditor, setTagEditor] = useState({ open: false, skills: [], selected: [], mode: "replace" });
+  const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const [selectedSkillPaths, setSelectedSkillPaths] = useState([]);
   const [toastState, setToastState] = useState({ show: false, msg: "", type: "", action: "", actionLabel: "", skipLabel: "" });
   const [theme, setTheme] = useState(getSavedThemeMode);
@@ -564,6 +568,39 @@ function App() {
     } catch (e) { showToast(t("tags.addFailed", { message: String(e) }), "error"); }
   }
 
+  async function updateTag(tagId, name, color) {
+    const nextName = String(name || "").trim();
+    if (!nextName) { showToast(t("tags.enterName"), "error"); return; }
+    try {
+      const updated = await skillmateApi.tags.update(tagId, nextName, String(color));
+      setTags((current) => current.map((tag) => tag.id === tagId ? { ...tag, ...updated } : tag));
+      showToast(t("tags.tagUpdated"), "success");
+    } catch (e) {
+      showToast(t("tags.tagUpdateFailed", { message: String(e) }), "error");
+    }
+  }
+
+  function requestDeleteTag(tag) {
+    confirmAction(
+      t("tags.deleteTitle"),
+      t("tags.deleteConfirm", { name: tag.name }),
+      async () => {
+        try {
+          await skillmateApi.tags.delete(tag.id);
+          setTagEditor((current) => ({
+            ...current,
+            selected: current.selected.filter((id) => id !== tag.id),
+          }));
+          await loadData({ resetUpdates: false });
+          showToast(t("tags.deleted"), "success");
+        } catch (e) {
+          showToast(t("tags.deleteFailed", { message: String(e) }), "error");
+        }
+      },
+      { confirmLabel: t("tags.delete") },
+    );
+  }
+
   function openTagEditor(skillOrSkills) {
     const batch = Array.isArray(skillOrSkills);
     const editorSkills = batch ? skillOrSkills : [skillOrSkills];
@@ -827,12 +864,13 @@ function App() {
               </div>
             </div>
           )}
-          {(view === "skills" || view === "updates") && (
+          {(view === "skills" || (view === "updates" && tags.length > 0)) && (
             <TagFilterBar
               tags={tags}
               selectedCount={selectedTags.length}
               onToggle={toggleTag}
               onClear={() => setTags(current => current.map(tag => ({ ...tag, selected: false })))}
+              onManage={view === "skills" ? () => setTagManagerOpen(true) : undefined}
             />
           )}
           {init ? <Skeleton /> : view === "dashboard" && (
@@ -849,7 +887,7 @@ function App() {
               onInstall={startAddSkill}
               onToggleDiscovery={() => setDiscoveryOpen((open) => !open)}
               discoveryOpen={discoveryOpen}
-              discovery={discoveryOpen ? <MarketDiscovery onInstall={installMarketSkill} /> : null}
+              discovery={discoveryOpen ? <MarketDiscovery onInstall={installMarketSkill} installedSkills={allSkills} /> : null}
               onClearFilters={() => {
                 clearSearch();
                 setTags(current => current.map(tag => ({ ...tag, selected: false })));
@@ -948,14 +986,6 @@ function App() {
                 applyProfile: profileFlow.applyOne,
                 rollbackProfile: profileFlow.rollback,
               }}
-              tags={{
-                tags,
-                name: newTagName,
-                color: newTagColor,
-                setName: setNewTagName,
-                setColor: setNewTagColor,
-                add: addTag,
-              }}
             />
           )}
         </main>
@@ -973,6 +1003,7 @@ function App() {
       {previewOpen && (
         <PreviewModal
           preview={preview}
+          getSyncInfo={getSyncInfo}
           driftGroup={driftGroups.find((group) => group.name === preview.skill?.name)}
           onCheckUpdate={checkUpdate}
           onOpenDrift={(group) => {
@@ -993,6 +1024,20 @@ function App() {
         />
       )}
 
+      {tagManagerOpen && (
+        <TagManagerModal
+          tags={tags}
+          name={newTagName}
+          color={newTagColor}
+          setName={setNewTagName}
+          setColor={setNewTagColor}
+          onAdd={addTag}
+          onUpdate={updateTag}
+          onDelete={requestDeleteTag}
+          onClose={() => setTagManagerOpen(false)}
+        />
+      )}
+
       <div className={`toast ${toastState.show ? "show" : ""} ${toastState.type}`} role="status" aria-live="polite" aria-atomic="true">
         {toastState.show && (
           <>
@@ -1007,7 +1052,7 @@ function App() {
                     void installAppUpdate();
                   }}
                 >
-                  <Icon name="upload" size={14} />{toastState.actionLabel}
+                  <Icon name="download" size={14} />{toastState.actionLabel}
                 </button>
                 <button
                   className="btn btn-ghost btn-sm toast-action"
