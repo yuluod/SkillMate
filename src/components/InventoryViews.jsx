@@ -86,6 +86,7 @@ export function SkillsView({
 }) {
   const { t } = useI18n();
   const selectedSkills = (allSkills ?? skills).filter((skill) => selectedSkillPaths.includes(skill.path));
+  const canEnableSelection = selectedSkills.every((skill) => buildSkillCardView(skill, t).canEnable);
   const allVisibleSelected = skills.length > 0 && skills.every((skill) => selectedSkillPaths.includes(skill.path));
   return (
     <div className="view-shell">
@@ -106,9 +107,11 @@ export function SkillsView({
         <div className="bulk-toolbar" role="region" aria-label={t("skills.bulkActions")}>
           <strong>{t("skills.selected", { count: selectedSkills.length })}</strong>
           <div>
+            <button className="btn btn-secondary btn-sm" disabled={!canEnableSelection} onClick={() => onEnable(selectedSkills)}><Icon name="power" size={14} />{t("skills.enableMany")}</button>
             <button className="btn btn-secondary btn-sm" onClick={() => onEditTags(selectedSkills)}><Icon name="tag" size={14} />{t("skills.addTags")}</button>
             <button className="btn btn-ghost btn-sm" onClick={onClearSelection}>{t("common.cancel")}</button>
           </div>
+          {!canEnableSelection && <span>{t("skills.enableLibraryOnly")}</span>}
         </div>
       )}
       <div className="registry" role="table" aria-label={t("skills.title")}>

@@ -24,6 +24,12 @@ function mergeInstallPreviews(previews) {
     ...first,
     can_install: previews.every((preview) => preview.can_install),
     can_apply: previews.every((preview) => preview.can_apply),
+    structure_warnings: [...new Set(previews.flatMap((preview) => preview.structure_warnings || []))],
+    install_policy: {
+      ...(previews.find((preview) => preview.install_policy?.allowed === false)?.install_policy || first.install_policy),
+      findings: unique(previews.flatMap((preview) => preview.install_policy?.findings || []),
+        (finding) => JSON.stringify(finding)),
+    },
     target_actions: unique(
       previews.flatMap((preview) => preview.target_actions || []),
       (action) => `${action.action}\0${action.source}\0${action.target}`,
@@ -45,6 +51,7 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
   const [installAssistants, setInstallAssistants] = useState([]);
   const [installMode, setInstallMode] = useState("copy");
   const [workflow, setWorkflow] = useState("add");
+  const [enablePaths, setEnablePaths] = useState([]);
   const [projectPath, setProjectPath] = useState("");
   const [projectTargetPreview, setProjectTargetPreview] = useState([]);
   const [previewingProjectTargets, setPreviewingProjectTargets] = useState(false);
@@ -65,7 +72,9 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
   }, []);
 
   const preparePackage = useCallback((value, preferredId = "", sourceKind = "git", nextWorkflow = "add") => {
-    setSourceInput({ kind: sourceKind, package: value, manual: false });
+    const paths = [...new Set(Array.isArray(value) ? value : [value])];
+    setEnablePaths(nextWorkflow === "enable" ? paths : []);
+    setSourceInput({ kind: sourceKind, package: paths[0] || "", manual: false });
     setWorkflow(nextWorkflow === "enable" ? "enable" : "add");
     setPreferredSkillId(String(preferredId || "").trim());
     setSelectedSkillPaths([]);
@@ -174,7 +183,7 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
   }, [installAssistants, installMode, installOpen, projectPath, workflow]);
 
   useEffect(() => {
-    if (!installOpen || !pkg.trim()) {
+    if (!installOpen || !pkg.trim() || workflow === "enable") {
       setInstallDetection(null);
       return undefined;
     }
@@ -209,7 +218,7 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [installOpen, pkg]);
+  }, [installOpen, pkg, workflow]);
 
   useEffect(() => {
     if (
@@ -289,7 +298,7 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
     [operationAssistant, operationMode, projectPath, src, t]
   );
   const installPreviewCurrent = useMemo(
-    () => Boolean(installPreviewToken?.planToken) && isInstallPreviewCurrent({
+    () => Boolean(installPreviewToken?.planToken) && (workflow !== "enable" || installPreviewToken.enablePaths === JSON.stringify(enablePaths)) && isInstallPreviewCurrent({
         previewToken: installPreviewToken,
         packageValue: pkg,
         source: src,
@@ -299,7 +308,7 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
         selectedSkillPaths,
         preferredSkillId,
       }),
-    [installPreviewToken, operationAssistant, operationMode, pkg, preferredSkillId, projectPath, selectedSkillPaths, src]
+    [enablePaths, workflow, installPreviewToken, operationAssistant, operationMode, pkg, preferredSkillId, projectPath, selectedSkillPaths, src]
   );
   const installPrimaryAction = useMemo(() => {
     const action = buildInstallPrimaryAction({
@@ -364,9 +373,10 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
         preferredSkillId,
       });
       const targetAssistants = workflow === "enable" ? installAssistants : [""];
-      const plans = await Promise.all(targetAssistants.map(async (assistantName) => {
+      const packages = workflow === "enable" ? enablePaths : [pkg.trim()];
+      const plans = await Promise.all(packages.flatMap((packageValue) => targetAssistants.map(async (assistantName) => {
         const preview = await skillmateApi.install.preview({
-          packageValue: pkg.trim(),
+          packageValue,
           source: src,
           assistantName,
           installMode: operationMode,
@@ -374,8 +384,8 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
           selectedSkillPaths: selectedSkillPaths.length > 0 ? selectedSkillPaths : undefined,
           preferredSkillId: preferredSkillId || undefined,
         });
-        return { assistantName, preview, planToken: preview.plan_token || "" };
-      }));
+        return { packageValue, assistantName, preview, planToken: preview.plan_token || "" };
+      })));
       const result = mergeInstallPreviews(plans.map((plan) => plan.preview));
       const resolvedSelectedPaths = workflow === "add"
         ? (result.package_detection?.detected_skills || []).map((skill) => skill.relative_path)
@@ -384,6 +394,7 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
       setInstallStructurePreview(result);
       setInstallPreviewToken({
         ...token,
+        enablePaths: JSON.stringify(enablePaths),
         selectedSkillPaths: [...new Set(resolvedSelectedPaths)].sort(),
         planToken: plans[0]?.planToken || "",
         plans,
@@ -414,7 +425,7 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
     } finally {
       setPreviewingInstall(false);
     }
-  }, [installAssistants, operationAssistant, operationMode, pkg, preferredSkillId, projectPath, selectedSkillPaths, showToast, src, t, workflow]);
+  }, [enablePaths, installAssistants, operationAssistant, operationMode, pkg, preferredSkillId, projectPath, selectedSkillPaths, showToast, src, t, workflow]);
 
   const install = useCallback(async () => {
     if (!pkg) { showToast(t("install.toast.enterPackage"), "error"); return; }
@@ -442,10 +453,10 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
       const results = [];
       for (const plan of plans) {
         const execution = planExecutorRef.current.run(
-          `install:${plan.assistantName || "library"}`,
+          `install:${plan.packageValue}:${plan.assistantName || "library"}`,
           skillmateCommands.installSkill,
           {
-            package: pkg.trim(),
+            package: plan.packageValue || pkg.trim(),
             source: src,
             assistantName: plan.assistantName,
             installMode: operationMode,
@@ -456,7 +467,8 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
           plan.planToken,
         );
         if (!execution.started) return;
-        results.push({ assistantName: plan.assistantName, result: await execution.promise });
+        const result = await execution.promise.catch((error) => ({ success: false, message: String(error) }));
+        results.push({ packageValue: plan.packageValue, assistantName: plan.assistantName, result });
       }
       const failed = results.filter(({ result }) => !result.success);
       if (failed.length === 0) {
@@ -480,10 +492,12 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
         setInstallStructurePreview(null);
         setInstallPreviewToken(null);
         await loadData();
-        showToast(t("install.toast.enablePartial", {
+        showToast(t(workflow === "enable" ? "install.toast.enablePartial" : "install.toast.failed", {
           success: results.length - failed.length,
           failed: failed.length,
-          message: failed.map(({ assistantName, result }) => `${assistantName}: ${result.message}`).join(t("common.messageSeparator")),
+          message: failed.map(({ packageValue, assistantName, result }) => workflow === "enable"
+            ? `${packageValue} → ${assistantName}: ${result.message}`
+            : result.message).join(t("common.messageSeparator")),
         }), "error");
       }
     } catch (e) {
@@ -512,6 +526,7 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
     workflow,
     startAdd,
     source: {
+      paths: enablePaths,
       kind: src,
       setKind: setSrc,
       package: pkg,

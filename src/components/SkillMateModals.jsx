@@ -115,6 +115,7 @@ export function InstallModal({
       kind: src,
       setKind: setSrc,
       package: pkg,
+      paths = [pkg],
       setPackage: setPkg,
       detectionView: installDetectionView,
     },
@@ -162,8 +163,14 @@ export function InstallModal({
       ) : (
         <div className="install-compact success">
           <span>{t("enable.librarySource")}</span>
-          <strong>{pkg.split(/[\\/]/).filter(Boolean).pop() || pkg}</strong>
-          <p className="registry-path">{pkg}</p>
+          <div className="install-skill-options">
+            {paths.map((path) => (
+              <div key={path}>
+                <strong>{path.split(/[\\/]/).filter(Boolean).pop() || path}</strong>
+                <p className="registry-path" title={path}>{path}</p>
+              </div>
+            ))}
+          </div>
         </div>
       )}
       {workflow === "add" && installDetectionView && (

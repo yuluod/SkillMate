@@ -816,7 +816,11 @@ describe("安装流程交互", () => {
     expect(result.current.workflow).toBe("enable");
   });
 
-  it("一次启用会为每个所选平台分别预览并执行", async () => {
+  it.each([
+    ["单个", "/library/writer", ["/library/writer"]],
+    ["批量并去重", ["/library/writer", "/library/reviewer", "/library/writer"], ["/library/writer", "/library/reviewer"]],
+    ["部分失败", ["/library/writer", "/library/reviewer"], ["/library/writer", "/library/reviewer"], true],
+  ])("%s启用会为每个所选平台分别预览并执行", async (_label, source, paths, partialFailure = false) => {
     const assistants = [
       { name: "Codex", supports_project_skills: true },
       { name: "Claude Code", supports_project_skills: true },
@@ -834,28 +838,30 @@ describe("安装流程交互", () => {
           structure_features: [],
           structure_warnings: [],
           package_detection: { detected_skills: [{ relative_path: "." }], warnings: [] },
-          target_actions: [{ action: "symlink", source: "/library/writer", target: `/target/${args.assistantName}/writer`, reason: "启用" }],
+          target_actions: [{ action: "symlink", source: args.package, target: `/target/${args.assistantName}/${args.package.split("/").pop()}`, reason: "启用" }],
           conflicts: [],
-          plan_token: `plan-${args.assistantName}`,
+          plan_token: `plan-${args.package}-${args.assistantName}`,
         };
       }
       if (command === "install_skill") {
+        if (partialFailure && args.package === "/library/reviewer") throw new Error("目标不可写");
         return { success: true, structure_status: "complete", structure_features: [], structure_warnings: [] };
       }
       throw new Error(`未处理命令: ${command}`);
     });
     const setInstallOpen = vi.fn();
     const loadData = vi.fn();
+    const showToast = vi.fn();
     const { result } = renderHook(() => useInstallFlow({
       installOpen: true,
       assistants,
       setInstallOpen,
-      showToast: vi.fn(),
+      showToast,
       loadData,
       setLoading: vi.fn(),
     }));
 
-    act(() => result.current.source.prepare("/library/writer", "", "local", "enable"));
+    act(() => result.current.source.prepare(source, "", "local", "enable"));
     await waitFor(() => expect(result.current.target.assistants).toEqual(["Codex"]));
     act(() => result.current.target.toggleAssistant("Claude Code"));
     await act(async () => result.current.preview.runPrimaryAction());
@@ -863,14 +869,48 @@ describe("安装流程交互", () => {
     await act(async () => result.current.preview.runPrimaryAction());
 
     const previews = invoke.mock.calls.filter(([command]) => command === "preview_install_skill");
-    expect(previews.map(([, args]) => args.assistantName).sort()).toEqual(["Claude Code", "Codex"]);
+    expect(previews.map(([, args]) => [args.package, args.assistantName]).sort()).toEqual(
+      paths.flatMap((path) => [[path, "Claude Code"], [path, "Codex"]]).sort(),
+    );
     const installs = invoke.mock.calls.filter(([command]) => command === "install_skill");
-    expect(installs.map(([, args]) => [args.assistantName, args.planToken]).sort()).toEqual([
-      ["Claude Code", "plan-Claude Code"],
-      ["Codex", "plan-Codex"],
-    ]);
-    expect(setInstallOpen).toHaveBeenCalledWith(false);
+    expect(installs.map(([, args]) => [args.package, args.assistantName, args.planToken]).sort()).toEqual(
+      paths.flatMap((path) => ["Claude Code", "Codex"].map((name) => [path, name, `plan-${path}-${name}`])).sort(),
+    );
+    if (partialFailure) {
+      expect(setInstallOpen).not.toHaveBeenCalledWith(false);
+      expect(result.current.preview.current).toBe(false);
+      expect(showToast).toHaveBeenCalledWith(expect.stringContaining("已完成 2 项启用，2 项失败"), "error");
+    } else expect(setInstallOpen).toHaveBeenCalledWith(false);
     expect(loadData).toHaveBeenCalled();
+  });
+
+  it("批量启用确认框列出全部主副本", () => {
+    const flow = installFlow();
+    flow.workflow = "enable";
+    flow.source.package = "/library/writer";
+    flow.source.paths = ["/library/writer", "/library/reviewer"];
+    render(<InstallModal flow={flow} assistants={[]} loading={false} onClose={vi.fn()} />);
+    expect(screen.getByText("/library/writer")).toBeTruthy();
+    expect(screen.getByText("/library/reviewer")).toBeTruthy();
+  });
+
+  it.each([true, false])("批量启用保留隐藏选择且只允许库内内容：%s", async (inLibrary) => {
+    const user = userEvent.setup();
+    const onEnable = vi.fn();
+    const allSkills = [
+      { path: "/library/writer", name: "writer", tags: [], ai: "Codex", aiIcon: "codex", in_library: true },
+      { path: "/library/reviewer", name: "reviewer", tags: [], ai: "Codex", aiIcon: "codex", in_library: inLibrary },
+    ];
+    render(<SkillsView skills={[allSkills[0]]} allSkills={allSkills} allSkillCount={2}
+      tags={[]} selectedSkillPaths={allSkills.map((skill) => skill.path)} onEnable={onEnable} />);
+    const button = screen.getByRole("button", { name: "批量启用" });
+    expect(button.disabled).toBe(!inLibrary);
+    await user.click(button);
+    if (inLibrary) expect(onEnable).toHaveBeenCalledWith(allSkills);
+    else {
+      expect(onEnable).not.toHaveBeenCalled();
+      expect(screen.getByText("所选内容包含未入库的 Skill，请先添加或接管，再启用。")).toBeTruthy();
+    }
   });
 
   it("手动选择来源后不再被自动识别结果覆盖", async () => {

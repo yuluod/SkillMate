@@ -803,6 +803,7 @@ body {
 }
 
 .bulk-toolbar {
+  flex-wrap: wrap;
   min-height: 48px;
   margin: -8px 0 14px;
   padding: 8px 10px 8px 14px;
@@ -816,7 +817,7 @@ body {
 }
 
 .bulk-toolbar strong { color: var(--text); font-size: 0.82rem; }
-.bulk-toolbar > div { display: flex; align-items: center; gap: 6px; }
+.bulk-toolbar > div { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 
 .surface-header h2 {
   font-size: 1.5rem;

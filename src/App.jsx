@@ -765,7 +765,8 @@ function App() {
   }
 
   function enableLibrarySkill(skill) {
-    installFlow.source.prepare(skill.symlink_source || skill.path, "", "local", "enable");
+    const skillsToEnable = Array.isArray(skill) ? skill : [skill];
+    installFlow.source.prepare(skillsToEnable.map((item) => item.symlink_source || item.path), "", "local", "enable");
     setInstallOpen(true);
   }
 
