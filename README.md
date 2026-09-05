@@ -195,6 +195,7 @@ SkillMate 可以通过 GitHub Releases 和 Tauri updater 检查、验证并安�
 
 - **标签**：为 Skill 添加标签并筛选
 - **应用场景**：按写作、开发、审查等任务保存一组 Skills，查看缺失状态并复用组合
+- **批量启用**：在技能库勾选已入库的 Skills，统一选择平台及全局／项目范围。无需创建场景；场景筛选后也可使用同一入口，不会自动停用其他 Skills。
 - **导入 / 导出**：导出标签、应用场景和受管 Skill 清单，导入前预览变化
 - **Git 备份**：把明确登记的受管内容快照到本地 Git 仓库，并可推送远端
 - **SkillMate manifest**：使用 `skillmate.toml` 以 `install` / `keep` / `remove` 计划对齐目标状态

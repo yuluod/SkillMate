@@ -195,6 +195,7 @@ SkillMate checks, verifies, and installs application updates through GitHub Rele
 
 - **Tags**: tag and filter Skills; create, rename, recolor, and delete tags.
 - **Scenarios**: save groups of Skills for writing, development, review, or other tasks, inspect missing entries, and reuse the group.
+- **Bulk enablement**: select library Skills and choose platforms and global or project scope together. No scenario is required; scenario-filtered results use the same action. Other Skills are not automatically disabled.
 - **Import / export**: export tags, scenarios, and the managed Skill inventory, with a change preview before import.
 - **Git backup**: snapshot explicitly managed content into a local Git repository and optionally push it to a remote.
 - **SkillMate manifest**: use `skillmate.toml` to reconcile a target state through `install`, `keep`, and `remove` actions.
