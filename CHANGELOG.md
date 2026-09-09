@@ -6,6 +6,19 @@
 
 ## [Unreleased]
 
+## [0.0.15] - 2026-09-09
+
+### 新增
+
+- 技能库支持批量启用：多选 Skill 后复用现有启用流程一次完成，并补充批量启用与可选场景的使用说明。
+
+### 改进
+
+- 应用图标重新设计为米白底蓝调山峰插画风，全平台图标尺寸（含 Android/iOS/Windows Store）同步更新。
+- 升级 pnpm 至 12.3.4 并更新前端依赖（@tauri-apps/plugin-updater 2.11.0、@testing-library/user-event 14.6.7、vitest 5.0.0）。
+- 批量刷新 Rust 依赖（tauri-plugin-updater 2.11.0、tauri-plugin-single-instance 2.4.4、ureq 3.4.1 等）。
+- 新增英文 README 与项目徽章。
+
 ## [0.0.14] - 2026-09-04
 
 ### 新增
