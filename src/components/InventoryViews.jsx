@@ -142,7 +142,11 @@ export function SkillsView({
             <div className="registry-platform" role="cell" />
             <div className="registry-size" role="cell" />
             <div className="registry-actions" role="cell">
-              {allSkillCount > 0 && <button className="btn btn-secondary btn-sm" onClick={onClearFilters}><Icon name="x" size={14} />{t("skills.clearFilters")}</button>}
+              {allSkillCount > 0 ? (
+                <button className="btn btn-secondary btn-sm" onClick={onClearFilters}><Icon name="x" size={14} />{t("skills.clearFilters")}</button>
+              ) : (
+                <button className="btn btn-primary btn-sm" onClick={onInstall}><Icon name="plus" size={14} />{t("common.install")}</button>
+              )}
             </div>
           </div>
         ) : (
@@ -474,7 +478,7 @@ export function UpdatesView({ skills, orderedSkills, stats, updateState, getSync
         meta={skills.length}
         actions={(
           <>
-          <div className="update-toolbar"><span className="stamp warn">{t("updates.pending", { count: stats.behind })}</span><span className="stamp muted">{t("updates.syncable", { count: stats.syncable })}</span>{stats.failed > 0 && <span className="stamp error">{t("updates.failed", { count: stats.failed })}</span>}</div>
+          <div className="update-toolbar"><span className={`stamp ${stats.behind > 0 ? "warn" : "success"}`}>{t("updates.pending", { count: stats.behind })}</span><span className="stamp muted">{t("updates.syncable", { count: stats.syncable })}</span>{stats.failed > 0 && <span className="stamp error">{t("updates.failed", { count: stats.failed })}</span>}</div>
           <button className="btn btn-primary btn-sm" onClick={checkAll} disabled={skills.some(skill => (updateState[skill.path] || {}).checking)}><Icon name="refresh" size={14} />{t("updates.checkAll")}</button>
           </>
         )}
