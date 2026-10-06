@@ -160,6 +160,14 @@ External physical directories found during scanning remain read-only by default.
 
 Nested Skills from Git repositories retain their path relative to the repository root, so later updates do not accidentally target the whole repository. If any step fails, SkillMate attempts to restore the original directory and registration data.
 
+### Make an independent project copy (optional)
+
+Enablement still creates a directory link to the library by default; Skills are never automatically copied into a project. To commit Skill files alongside a project, enter its path in the project inspector on Enablement locations, expand the relevant Agent, and select “Make project copy” next to a managed project link. Review the plan and confirm the conversion.
+
+Only the selected project link is replaced. The library original and other deployments remain intact. The physical copy is released from management at that location, retaining provenance and tags. The project maintains it independently, without following library updates; scanning never adopts it automatically. External links, global links, and existing physical directories cannot be converted through this action.
+
+Conversion reuses structure validation, safety policy, and transaction recovery. Internal links, incomplete safety scans, or content changes after preview block the operation. A copy or registration failure restores the original link and managed state.
+
 ### Library location
 
 The default library is stored under the system application-data directory at `skillmate/skills`. You can change it in Settings or use an environment variable:
