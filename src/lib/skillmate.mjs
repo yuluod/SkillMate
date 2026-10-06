@@ -550,6 +550,7 @@ export function buildSkillCardView(skill, t) {
     canDelete: isManaged && !isSymlink,
     canUnlink: isManaged && isSymlink,
     canAdopt: !isManaged && !isSymlink && skill?.skill_type === "skill-folder",
+    canMaterialize: isManaged && skill?.source_type === "deployment" && skill?.scope === "project",
     availableIn,
     availabilityLabel: availableIn.map((assistant) => assistant.name).join(localized(t, "common.listSeparator", "、")),
     isShared: availableIn.length > 1,

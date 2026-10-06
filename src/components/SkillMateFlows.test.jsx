@@ -532,6 +532,65 @@ describe("外观偏好与登记册布局", () => {
     await waitFor(() => expect(onComplete).toHaveBeenCalledWith("接管完成"));
   });
 
+  it("仅为项目受管链接提供副本操作，核验不会自动转换", async () => {
+    const onMaterialize = vi.fn();
+    const linked = { name: "writer", path: "/work/demo/.agents/skills/writer", scope: "project", source_type: "deployment", skill_type: "skill-folder", managed_by_app: true };
+    invoke.mockImplementation(async (command) => {
+      if (command === "inspect_project") return {
+        project_path: "/work/demo",
+        assistants: [{ name: "Codex", icon: "codex", project_count: 3, global_count: 1, shadowed_count: 0, skills: [
+          linked,
+          { ...linked, name: "global", scope: "global", path: "/home/demo/.agents/skills/global" },
+          { ...linked, name: "external", managed_by_app: false, source_type: "symlink", path: "/work/demo/.agents/skills/external" },
+          { ...linked, name: "physical", source_type: "local", path: "/work/demo/.agents/skills/physical" },
+        ] }],
+      };
+      throw new Error(`未处理命令: ${command}`);
+    });
+    render(<AssistantsView assistants={[]} installedCount={0} onMaterialize={onMaterialize} />);
+    fireEvent.change(screen.getByLabelText("项目路径"), { target: { value: "/work/demo" } });
+    fireEvent.click(screen.getByRole("button", { name: "检查" }));
+    await screen.findByText("共 4 · 项目 3 · 全局 1");
+    fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
+    expect(screen.getAllByRole("button", { name: /转为项目副本/ })).toHaveLength(1);
+    expect(onMaterialize).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "将 writer 转为项目副本" }));
+    expect(onMaterialize).toHaveBeenCalledWith({ skill: linked, assistant: "Codex", projectPath: "/work/demo", operation: "materialize" });
+    expect(invoke.mock.calls.every(([command]) => command === "inspect_project")).toBe(true);
+  });
+
+  it("项目副本必须预览并确认，携带计划令牌执行", async () => {
+    const onComplete = vi.fn();
+    invoke.mockImplementation(async (command) => {
+      if (command === "preview_materialize_skill") return {
+        can_apply: true, structure_status: "complete", message: "将项目链接替换为独立副本",
+        package_detection: { detected_skills: [], warnings: [] },
+        target_actions: [{ action: "replace", source: "/library/writer", target: "/work/.agents/skills/writer" }],
+        conflicts: [], plan_token: "materialize-plan",
+      };
+      if (command === "materialize_skill") return { success: true, message: "已转换为项目独立副本" };
+      throw new Error(`未处理命令: ${command}`);
+    });
+    render(<AdoptionModal candidate={{ skill: { name: "writer", path: "/work/.agents/skills/writer" }, assistant: "Codex", projectPath: "/work", operation: "materialize" }} onClose={vi.fn()} onComplete={onComplete} />);
+    expect(screen.getByRole("button", { name: "确认转换为副本" }).disabled).toBe(true);
+    await screen.findByText("将项目链接替换为独立副本");
+    expect(invoke).not.toHaveBeenCalledWith("materialize_skill", expect.anything());
+    expect(screen.getByText(/不再跟随统一库更新/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "确认转换为副本" }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("materialize_skill", {
+      path: "/work/.agents/skills/writer", assistantName: "Codex", projectPath: "/work", planToken: "materialize-plan",
+    }));
+    await waitFor(() => expect(onComplete).toHaveBeenCalledWith("已转换为项目独立副本"));
+  });
+
+  it("项目副本预览失败时保持确认按钮禁用", async () => {
+    invoke.mockRejectedValue(new Error("链接已偏离登记的主副本"));
+    render(<AdoptionModal candidate={{ skill: { name: "writer", path: "/work/.agents/skills/writer" }, assistant: "Codex", projectPath: "/work", operation: "materialize" }} onClose={vi.fn()} onComplete={vi.fn()} />);
+    await screen.findByRole("alert");
+    expect(screen.getByRole("button", { name: "确认转换为副本" }).disabled).toBe(true);
+    expect(invoke).not.toHaveBeenCalledWith("materialize_skill", expect.anything());
+  });
+
   it("来源签章由稳定来源类型决定样式", () => {
     const unmanagedRender = render(
       <SkillsView

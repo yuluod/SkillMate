@@ -228,7 +228,7 @@ export function SkillsView({
   );
 }
 
-export function AssistantsView({ assistants, installedCount, onManageSkills, onAdopt }) {
+export function AssistantsView({ assistants, installedCount, onManageSkills, onAdopt, onMaterialize, projectRevision = 0 }) {
   const { t } = useI18n();
   const [expandedAssistant, setExpandedAssistant] = React.useState(null);
   return (
@@ -239,7 +239,7 @@ export function AssistantsView({ assistants, installedCount, onManageSkills, onA
         meta={t("assistants.configuredCount", { installed: installedCount, total: assistants.length })}
         actions={onManageSkills && <button className="btn btn-primary btn-sm" onClick={onManageSkills}><Icon name="skills" size={14} />{t("assistants.manage")}</button>}
       />
-      <ProjectInspectionPanel onAdopt={onAdopt} />
+      <ProjectInspectionPanel onAdopt={onAdopt} onMaterialize={onMaterialize} revision={projectRevision} />
       <div className="registry assistant-registry" role="table" aria-label={t("nav.assistants")}>
         <div className="registry-colhead" role="row">
           <span role="columnheader">{t("assistants.platform")}</span>
@@ -345,13 +345,34 @@ export function AssistantsView({ assistants, installedCount, onManageSkills, onA
   );
 }
 
-function ProjectInspectionPanel({ onAdopt }) {
+function ProjectInspectionPanel({ onAdopt, onMaterialize, revision }) {
   const { t } = useI18n();
   const [projectPath, setProjectPath] = React.useState("");
   const [inspection, setInspection] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   const [expanded, setExpanded] = React.useState("");
+  const inspectionRef = React.useRef(null);
+  inspectionRef.current = inspection;
+
+  React.useEffect(() => {
+    const project = inspectionRef.current?.project_path;
+    if (!project) return;
+    let cancelled = false;
+    setBusy(true);
+    setError("");
+    skillmateApi.inventory.inspectProject(project).then((result) => {
+      if (!cancelled) setInspection(result);
+    }).catch((reason) => {
+      if (!cancelled) {
+        setInspection(null);
+        setError(String(reason));
+      }
+    }).finally(() => {
+      if (!cancelled) setBusy(false);
+    });
+    return () => { cancelled = true; };
+  }, [revision]);
 
   async function inspect() {
     if (!projectPath.trim()) return;
@@ -399,6 +420,7 @@ function ProjectInspectionPanel({ onAdopt }) {
                     <span className="project-effective-copy"><strong>{entry.manifest_title || entry.name}</strong><small title={entry.path}>{formatHomePath(entry.path)}</small></span>
                     <span className="project-effective-owner">{card.managerLabel}</span>
                     {card.canAdopt && <button className="btn btn-secondary btn-sm" onClick={() => onAdopt?.({ skill: entry, assistant: assistant.name, projectPath: entry.scope === "project" ? inspection.project_path : "" })}><Icon name="branch" size={13} />{t("adoption.action")}</button>}
+                    {card.canMaterialize && <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onMaterialize?.({ skill: entry, assistant: assistant.name, projectPath: inspection.project_path, operation: "materialize" })} aria-label={t("materialization.actionFor", { name: entry.name })}><Icon name="copy" size={13} />{t("materialization.action")}</button>}
                   </div>;
                 })}
               </div>}

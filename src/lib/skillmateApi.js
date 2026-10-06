@@ -78,6 +78,10 @@ export const skillmateApi = Object.freeze({
     preview: ({ path, assistantName, projectPath }) => invoke("preview_adopt_skill", { path, assistantName, projectPath }),
     apply: ({ path, assistantName, projectPath, planToken }) => invoke("adopt_skill", { path, assistantName, projectPath, planToken }),
   }),
+  materialization: Object.freeze({
+    preview: ({ path, assistantName, projectPath }) => invoke("preview_materialize_skill", { path, assistantName, projectPath }),
+    apply: ({ path, assistantName, projectPath, planToken }) => invoke("materialize_skill", { path, assistantName, projectPath, planToken }),
+  }),
   market: Object.freeze({
     search: (source, query) => invoke("search_market", { source, query }),
     openSource: (url) => invoke("open_external_url", { url }),

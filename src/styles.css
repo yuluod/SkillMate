@@ -1258,6 +1258,7 @@ body {
 .project-effective-copy strong { overflow: hidden; font-size: 0.78rem; text-overflow: ellipsis; white-space: nowrap; }
 .project-effective-copy small { overflow: hidden; color: var(--text3); font: 0.67rem var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .project-effective-owner { color: var(--text2); font-size: 0.7rem; white-space: nowrap; }
+.materialization-modal .registry-path { white-space: normal; overflow-wrap: anywhere; }
 
 /* ============================
    Scenario Cards

@@ -817,6 +817,7 @@ test("Skill 卡片视图应当优先使用 manifest 标题和说明", () => {
       canDelete: true,
       canUnlink: false,
       canAdopt: false,
+      canMaterialize: false,
       availableIn: [],
       availabilityLabel: "",
       isShared: false,

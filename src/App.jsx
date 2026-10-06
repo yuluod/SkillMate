@@ -224,6 +224,7 @@ function App() {
   const [trashReceipt, setTrashReceipt] = useState(null);
   const [driftGroup, setDriftGroup] = useState(null);
   const [adoptionCandidate, setAdoptionCandidate] = useState(null);
+  const [projectInspectionRevision, setProjectInspectionRevision] = useState(0);
   const {
     input: searchInput,
     query: search,
@@ -778,6 +779,7 @@ function App() {
   async function completeAdoption(message) {
     showToast(String(message || t("adoption.complete")), "success");
     await loadData();
+    setProjectInspectionRevision((revision) => revision + 1);
   }
 
   return (
@@ -909,7 +911,7 @@ function App() {
           )}
 
           {view === "ai" && (
-            <AssistantsView assistants={data.assistants} installedCount={statAI} onManageSkills={() => setView("skills")} onAdopt={setAdoptionCandidate} />
+            <AssistantsView assistants={data.assistants} installedCount={statAI} onManageSkills={() => setView("skills")} onAdopt={setAdoptionCandidate} onMaterialize={setAdoptionCandidate} projectRevision={projectInspectionRevision} />
           )}
 
           {view === "scenarios" && (

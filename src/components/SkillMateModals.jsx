@@ -369,6 +369,8 @@ export function InstallModal({
 
 export function AdoptionModal({ candidate, onClose, onComplete }) {
   const { t } = useI18n();
+  const operation = candidate.operation === "materialize" ? "materialization" : "adoption";
+  const api = skillmateApi[operation];
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState("preview");
   const [error, setError] = useState("");
@@ -377,32 +379,34 @@ export function AdoptionModal({ candidate, onClose, onComplete }) {
   useEffect(() => {
     let cancelled = false;
     setBusy("preview");
-    skillmateApi.adoption.preview({
+    setPreview(null);
+    setError("");
+    api.preview({
       path: candidate.skill.path,
       assistantName: candidate.assistant,
       projectPath: candidate.projectPath || undefined,
     }).then((result) => {
       if (!cancelled) setPreview(result);
     }).catch((reason) => {
-      if (!cancelled) setError(String(reason));
+      if (!cancelled) setError(toUserErrorMessage(reason, t("error.safeRetry")));
     }).finally(() => {
       if (!cancelled) setBusy("");
     });
     return () => { cancelled = true; };
-  }, [candidate]);
+  }, [candidate, api, t]);
 
   async function apply() {
     if (!preview?.plan_token || !previewView?.canApply) return;
     setBusy("apply");
     setError("");
     try {
-      const result = await skillmateApi.adoption.apply({
+      const result = await api.apply({
         path: candidate.skill.path,
         assistantName: candidate.assistant,
         projectPath: candidate.projectPath || undefined,
         planToken: preview.plan_token,
       });
-      if (!result.success) throw new Error(result.message || result.output || t("adoption.failed"));
+      if (!result.success) throw new Error([result.message, result.output].filter(Boolean).join("；") || t(`${operation}.failed`));
       await onComplete(result.message);
       onClose();
     } catch (reason) {
@@ -413,16 +417,16 @@ export function AdoptionModal({ candidate, onClose, onComplete }) {
   }
 
   return (
-    <ModalShell title={t("adoption.title")} icon="branch" className="large adoption-modal" onClose={onClose}>
-      <p className="modal-intro">{t("adoption.hint")}</p>
+    <ModalShell title={t(`${operation}.title`)} icon="branch" className={`large adoption-modal${operation === "materialization" ? " materialization-modal" : ""}`} onClose={() => { if (busy !== "apply") onClose(); }}>
+      <p className="modal-intro">{t(`${operation}.hint`)}</p>
       <div className="install-compact warn">
         <span>{candidate.assistant} · {candidate.projectPath ? t("projectInspection.scope.project") : t("projectInspection.scope.global")}</span>
         <strong>{candidate.skill.manifest_title || candidate.skill.name}</strong>
         <p className="registry-path">{candidate.skill.path}</p>
       </div>
-      {busy === "preview" && <div className="install-compact"><strong>{t("adoption.previewing")}</strong></div>}
+      {busy === "preview" && <div className="install-compact"><strong>{t(`${operation}.previewing`)}</strong></div>}
       {preview && <div className={`structure-preview install-preview-card ${previewView?.canApply ? "success" : "error"}`}>
-        <div className="structure-preview-head"><span>{t("adoption.plan")}</span><strong>{preview.message}</strong></div>
+        <div className="structure-preview-head"><span>{t(`${operation}.plan`)}</span><strong>{preview.message}</strong></div>
         {previewView?.actions?.length > 0 && <div className="install-plan-actions">
           {previewView.actions.map((action) => <div key={`${action.action}-${action.target}`}><span className="stamp muted">{action.label}</span><span><strong>{action.source}</strong><small>{action.target}</small></span></div>)}
         </div>}
@@ -431,7 +435,7 @@ export function AdoptionModal({ candidate, onClose, onComplete }) {
       {error && <div className="install-compact error" role="alert"><strong>{error}</strong></div>}
       <div className="modal-actions">
         <button className="btn btn-secondary" onClick={onClose} disabled={busy === "apply"}>{t("common.cancel")}</button>
-        <button className="btn btn-primary" onClick={apply} disabled={!previewView?.canApply || Boolean(busy)}><Icon name="check" size={15} />{busy === "apply" ? t("adoption.applying") : t("adoption.confirm")}</button>
+        <button className="btn btn-primary" onClick={apply} disabled={!previewView?.canApply || Boolean(busy)}><Icon name="check" size={15} />{busy === "apply" ? t(`${operation}.applying`) : t(`${operation}.confirm`)}</button>
       </div>
     </ModalShell>
   );
