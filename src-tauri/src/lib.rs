@@ -22,6 +22,7 @@ mod skill_install;
 mod skill_install_source;
 mod skill_inventory;
 mod skill_library;
+mod skill_materialization;
 mod skill_model;
 mod skill_orchestration;
 mod skill_origin;
@@ -518,6 +519,50 @@ async fn adopt_skill(
     {
         Ok(Ok(result)) => result,
         Ok(Err(error)) | Err(error) => install_result(false, "接管任务异常终止", error, None),
+    }
+}
+
+#[tauri::command]
+async fn preview_materialize_skill(
+    path: String,
+    assistant_name: String,
+    project_path: String,
+) -> Result<InstallPreview, String> {
+    run_blocking_task(move || {
+        run_exclusive_operation(|db| {
+            skill_materialization::preview_materialize_skill(
+                db,
+                &path,
+                &assistant_name,
+                &project_path,
+            )
+        })
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn materialize_skill(
+    path: String,
+    assistant_name: String,
+    project_path: String,
+    plan_token: Option<String>,
+) -> InstallResult {
+    match run_blocking_task(move || {
+        run_exclusive_operation(|db| {
+            Ok(skill_materialization::materialize_skill(
+                db,
+                &path,
+                &assistant_name,
+                &project_path,
+                plan_token.as_deref(),
+            ))
+        })
+    })
+    .await
+    {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) | Err(error) => install_result(false, "项目副本任务异常终止", error, None),
     }
 }
 
@@ -1766,6 +1811,8 @@ pub fn run() {
             inspect_project,
             preview_adopt_skill,
             adopt_skill,
+            preview_materialize_skill,
+            materialize_skill,
             get_all_tags,
             add_tag,
             update_tag,
@@ -1892,6 +1939,373 @@ mod tests {
 
     fn test_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("skillmate-test-{}-{}", name, now_ms()))
+    }
+
+    fn materialization_fixture(
+        label: &str,
+    ) -> (
+        Connection,
+        PathBuf,
+        PathBuf,
+        PathBuf,
+        skill_library::TestLibraryRootGuard,
+    ) {
+        let db = test_db();
+        let root = test_dir(label);
+        fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let library = root.join("library");
+        let guard = skill_library::use_test_library_root(library.clone());
+        let source = root.join("writer");
+        let project = root.join("project");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(
+            source.join("SKILL.md"),
+            "---\nname: writer\ndescription: 写作\n---\n原始内容\n",
+        )
+        .unwrap();
+        apply_manifest(
+            &db,
+            &SkillMateManifest {
+                version: 2,
+                reconcile: false,
+                skills: vec![SkillDescriptor {
+                    assistant: "Codex".to_string(),
+                    source: source.to_string_lossy().to_string(),
+                    source_kind: "local".to_string(),
+                    scope: Some("project".to_string()),
+                    project_path: Some(project.to_string_lossy().to_string()),
+                    ..Default::default()
+                }],
+            },
+        )
+        .unwrap();
+        let target = project_skill_root_by_name("Codex", &project)
+            .unwrap()
+            .join("writer");
+        assert!(fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        save_local_origin_meta(&db, &library.join("writer"), &source).unwrap();
+        copy_origin_to_deployment(&db, &library.join("writer"), &target).unwrap();
+        (db, root, project, target, guard)
+    }
+
+    #[test]
+    fn materialization_releases_only_the_project_copy_and_preserves_library() {
+        let (db, root, project, target, _guard) = materialization_fixture("materialize-success");
+        let library = root.join("library/writer");
+        fs::create_dir_all(library.join("scripts")).unwrap();
+        fs::write(library.join("scripts/helper.txt"), "辅助内容").unwrap();
+        let library_hash = managed_state::content_fingerprint(&library).unwrap();
+        let other_project = root.join("other-project");
+        fs::create_dir_all(&other_project).unwrap();
+        let other_root = project_skill_root_by_name("Codex", &other_project).unwrap();
+        let other_target = other_root.join("writer");
+        finalize_library_install_registration(
+            &db,
+            &library.to_string_lossy(),
+            "local",
+            "Codex",
+            "project",
+            Some(&other_project.to_string_lossy()),
+            &root.join("library"),
+            Some(&other_root),
+            std::slice::from_ref(&library),
+            std::slice::from_ref(&other_target),
+            "",
+            true,
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO skill_tags (skill_path, tags_json) VALUES (?, '[\"writing\"]')",
+            [library.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        let path = target.to_string_lossy();
+        let project_path = project.to_string_lossy();
+        let preview =
+            skill_materialization::preview_materialize_skill(&db, &path, "Codex", &project_path)
+                .unwrap();
+        assert!(preview.can_apply, "{}", preview.message);
+        assert!(fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let result = skill_materialization::materialize_skill(
+            &db,
+            &path,
+            "Codex",
+            &project_path,
+            Some(&preview.plan_token),
+        );
+        assert!(result.success, "{}: {}", result.message, result.output);
+        assert!(!fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read(target.join("SKILL.md")).unwrap(),
+            fs::read(library.join("SKILL.md")).unwrap()
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("scripts/helper.txt")).unwrap(),
+            "辅助内容"
+        );
+        assert_eq!(
+            managed_state::content_fingerprint(&library).unwrap(),
+            library_hash
+        );
+        assert!(find_managed_installation(&db, &target).unwrap().is_none());
+        assert!(skill_library::find_deployment(&db, &target)
+            .unwrap()
+            .is_none());
+        assert!(!is_explicitly_managed(&db, &target).unwrap());
+        assert!(find_managed_installation(&db, &library).unwrap().is_some());
+        assert!(skill_library::find_deployment(&db, &other_target)
+            .unwrap()
+            .is_some());
+        assert!(fs::symlink_metadata(&other_target)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let origin = skill_origin::load_origin_meta(&db, &path).unwrap().unwrap();
+        assert!(!origin.managed_by_app);
+        assert_eq!(origin.origin_kind, "local");
+        let tags: String = db
+            .query_row(
+                "SELECT tags_json FROM skill_tags WHERE skill_path = ?",
+                [&*path],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tags, "[\"writing\"]");
+        let inspection = inspect_project_skills(&db, &project).unwrap();
+        let copy = inspection
+            .assistants
+            .iter()
+            .find(|assistant| assistant.name == "Codex")
+            .unwrap()
+            .skills
+            .iter()
+            .find(|skill| skill.scope == "project")
+            .unwrap();
+        assert!(!copy.skill.origin.managed_by_app);
+        assert!(!copy.skill.origin.can_sync);
+        assert!(copy.skill.origin.symlink_source.is_none());
+        fs::write(library.join("scripts/helper.txt"), "库更新").unwrap();
+        assert_eq!(
+            fs::read_to_string(target.join("scripts/helper.txt")).unwrap(),
+            "辅助内容"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn materialization_rejects_stale_or_missing_plan_without_replacing_link() {
+        let (db, root, project, target, _guard) = materialization_fixture("materialize-stale");
+        let path = target.to_string_lossy();
+        let project_path = project.to_string_lossy();
+        let preview =
+            skill_materialization::preview_materialize_skill(&db, &path, "Codex", &project_path)
+                .unwrap();
+        let missing =
+            skill_materialization::materialize_skill(&db, &path, "Codex", &project_path, None);
+        assert!(!missing.success);
+        fs::write(
+            root.join("library/writer/SKILL.md"),
+            "---\nname: writer\ndescription: 新内容\n---\n",
+        )
+        .unwrap();
+        let stale = skill_materialization::materialize_skill(
+            &db,
+            &path,
+            "Codex",
+            &project_path,
+            Some(&preview.plan_token),
+        );
+        assert!(!stale.success);
+        assert!(stale.message.contains("已过期"));
+        assert!(fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(is_explicitly_managed(&db, &target).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn materialization_rolls_back_files_database_and_sidecar_on_metadata_failure() {
+        let (db, root, project, target, _guard) = materialization_fixture("materialize-rollback");
+        let path = target.to_string_lossy();
+        let project_path = project.to_string_lossy();
+        let original_link = fs::read_link(&target).unwrap();
+        let state_path = target
+            .parent()
+            .unwrap()
+            .join(managed_state::STATE_FILE_NAME);
+        let state = fs::read(&state_path).unwrap();
+        let preview =
+            skill_materialization::preview_materialize_skill(&db, &path, "Codex", &project_path)
+                .unwrap();
+        db.execute_batch("CREATE TRIGGER fail_released_origin BEFORE INSERT ON skill_origin_meta WHEN NEW.managed_by_app = 0 BEGIN SELECT RAISE(FAIL, '模拟来源登记失败'); END;").unwrap();
+        let result = skill_materialization::materialize_skill(
+            &db,
+            &path,
+            "Codex",
+            &project_path,
+            Some(&preview.plan_token),
+        );
+        assert!(!result.success);
+        assert!(result.output.contains("模拟来源登记失败"));
+        assert_eq!(fs::read_link(&target).unwrap(), original_link);
+        assert_eq!(fs::read(state_path).unwrap(), state);
+        assert!(find_managed_installation(&db, &target).unwrap().is_some());
+        assert!(skill_library::find_deployment(&db, &target)
+            .unwrap()
+            .is_some());
+        assert!(
+            skill_origin::load_origin_meta(&db, &path)
+                .unwrap()
+                .unwrap()
+                .managed_by_app
+        );
+        verify_managed_content_unchanged(&db, &target).unwrap();
+        assert!(root.join("library/writer/SKILL.md").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn materialization_rejects_wrong_project_platform_and_unmanaged_or_physical_target() {
+        let (db, root, project, target, _guard) = materialization_fixture("materialize-scope");
+        let path = target.to_string_lossy();
+        let project_path = project.to_string_lossy();
+        assert!(skill_materialization::preview_materialize_skill(&db, &path, "Codex", "").is_err());
+        assert!(skill_materialization::preview_materialize_skill(
+            &db,
+            &path,
+            "Claude Code",
+            &project_path
+        )
+        .is_err());
+        assert!(skill_materialization::preview_materialize_skill(
+            &db,
+            &root.join("library/writer").to_string_lossy(),
+            "Codex",
+            &project_path
+        )
+        .is_err());
+        let other_project = root.join("other-project");
+        fs::create_dir_all(other_project.join(".agents/skills")).unwrap();
+        assert!(skill_materialization::preview_materialize_skill(
+            &db,
+            &path,
+            "Codex",
+            &other_project.to_string_lossy()
+        )
+        .is_err());
+        cleanup_skill_metadata(&db, &target).unwrap();
+        assert!(skill_materialization::preview_materialize_skill(
+            &db,
+            &path,
+            "Codex",
+            &project_path
+        )
+        .is_err());
+        app_core::remove_path(&target).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        assert!(skill_materialization::preview_materialize_skill(
+            &db,
+            &path,
+            "Codex",
+            &project_path
+        )
+        .is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn materialization_obeys_policy_changes_and_rejects_retargeted_links() {
+        let (db, root, project, target, _guard) = materialization_fixture("materialize-policy");
+        let path = target.to_string_lossy();
+        let project_path = project.to_string_lossy();
+        let preview =
+            skill_materialization::preview_materialize_skill(&db, &path, "Codex", &project_path)
+                .unwrap();
+        save_install_policy(
+            &db,
+            InstallPolicyConfig {
+                mode: "trusted-only".to_string(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let blocked =
+            skill_materialization::preview_materialize_skill(&db, &path, "Codex", &project_path)
+                .unwrap();
+        assert!(!blocked.can_apply);
+        let result = skill_materialization::materialize_skill(
+            &db,
+            &path,
+            "Codex",
+            &project_path,
+            Some(&preview.plan_token),
+        );
+        assert!(!result.success);
+        assert!(fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        save_install_policy(&db, InstallPolicyConfig::default()).unwrap();
+        app_core::remove_path(&target).unwrap();
+        deploy_library_skill(&root.join("writer"), &target).unwrap();
+        assert!(skill_materialization::preview_materialize_skill(
+            &db,
+            &path,
+            "Codex",
+            &project_path
+        )
+        .is_err());
+        assert!(fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn materialization_rejects_internal_symlinks_without_dropping_files() {
+        let (db, root, project, target, _guard) =
+            materialization_fixture("materialize-internal-link");
+        let library = root.join("library/writer");
+        std::os::unix::fs::symlink(root.join("writer/SKILL.md"), library.join("linked.txt"))
+            .unwrap();
+        let path = target.to_string_lossy();
+        let project_path = project.to_string_lossy();
+        let preview =
+            skill_materialization::preview_materialize_skill(&db, &path, "Codex", &project_path)
+                .unwrap();
+        assert!(!preview.can_apply);
+        assert!(preview.message.contains("内部链接"));
+        let result = skill_materialization::materialize_skill(
+            &db,
+            &path,
+            "Codex",
+            &project_path,
+            Some(&preview.plan_token),
+        );
+        assert!(!result.success);
+        assert!(fs::symlink_metadata(&target)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(fs::symlink_metadata(library.join("linked.txt"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
