@@ -69,12 +69,16 @@ fn find_windows_path_key(
         .map_err(|error| error.to_string())
 }
 
-fn database_path() -> Result<PathBuf, String> {
+pub(crate) fn data_directory() -> Result<PathBuf, String> {
     let directory = dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("skillmate");
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-    Ok(directory.join("data.db"))
+    Ok(directory)
+}
+
+fn database_path() -> Result<PathBuf, String> {
+    Ok(data_directory()?.join("data.db"))
 }
 
 pub fn create_db_connection() -> Result<Connection, String> {

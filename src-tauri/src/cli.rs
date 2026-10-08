@@ -1,7 +1,6 @@
-use crate::database::create_db_connection;
 use crate::install_policy::load_install_policy;
 use crate::operation_coordinator::{
-    check_skill_updates, run_exclusive_operation, run_startup_maintenance,
+    check_skill_updates, initialize_managed_database, run_exclusive_operation,
 };
 use crate::project_inspection::inspect_project_skills;
 use crate::skill_adoption;
@@ -127,8 +126,10 @@ fn option_value(args: &[String], index: &mut usize, name: &str) -> Result<String
 }
 
 fn initialize_database() -> Result<(), String> {
-    let db = create_db_connection()?;
-    run_startup_maintenance(&db)?;
+    let (_, report) = initialize_managed_database()?;
+    for warning in report.warnings {
+        eprintln!("{warning}");
+    }
     Ok(())
 }
 

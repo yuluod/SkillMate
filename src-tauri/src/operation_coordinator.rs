@@ -1,5 +1,5 @@
 use crate::app_core::{assistant_definitions, is_managed_skill_path, managed_skill_roots};
-use crate::database::open_db_connection;
+use crate::database::{create_db_connection, data_directory, open_db_connection};
 use crate::managed_installation::{
     backfill_managed_roots, find_managed_installation, list_managed_roots,
     prune_missing_managed_installations, record_managed_root, register_managed_root,
@@ -11,8 +11,10 @@ use crate::skill_origin::{
 use crate::skill_reconcile::recover_pending_transactions;
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
+use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::sync::{LockResult, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 static OPERATION_LOCK: Mutex<()> = Mutex::new(());
 pub(crate) type SkillCheckResult = (String, Result<SkillSyncInfo, String>);
@@ -25,8 +27,48 @@ pub(crate) struct StartupMaintenanceReport {
     pub(crate) warnings: Vec<String>,
 }
 
-fn acquire_operation_lock() -> Result<MutexGuard<'static, ()>, String> {
-    map_operation_lock(OPERATION_LOCK.lock())
+struct OperationGuard {
+    // Keep the lock file on disk: removing it could let another process lock a new inode.
+    // Closing the handle releases the OS lock, including after a process crash.
+    _file: File,
+    _thread: MutexGuard<'static, ()>,
+}
+
+fn acquire_operation_lock() -> Result<OperationGuard, String> {
+    let thread = map_operation_lock(OPERATION_LOCK.lock())?;
+    let file = acquire_file_lock(
+        &data_directory()?.join("operations.lock"),
+        Duration::from_secs(30),
+    )?;
+    Ok(OperationGuard {
+        _file: file,
+        _thread: thread,
+    })
+}
+
+fn acquire_file_lock(path: &Path, timeout: Duration) -> Result<File, String> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|error| format!("无法打开操作锁 {}: {error}", path.display()))?;
+    let start = Instant::now();
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(TryLockError::WouldBlock) if start.elapsed() < timeout => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(TryLockError::WouldBlock) => {
+                return Err("另一个 SkillMate 窗口或 CLI 正在操作，请稍后重试".to_string());
+            }
+            Err(TryLockError::Error(error)) => {
+                return Err(format!("无法取得跨进程操作锁: {error}"));
+            }
+        }
+    }
 }
 
 fn map_operation_lock<T>(lock: LockResult<T>) -> Result<T, String> {
@@ -156,13 +198,18 @@ fn resolve_probe_path(db: &Connection, requested_path: &Path) -> Result<PathBuf,
     Ok(probe_path)
 }
 
-pub(crate) fn run_startup_maintenance(db: &Connection) -> Result<StartupMaintenanceReport, String> {
+pub(crate) fn initialize_managed_database() -> Result<(Connection, StartupMaintenanceReport), String>
+{
     let _guard = acquire_operation_lock()?;
+    // Migration, recovery and registry maintenance must share the same process lock.
+    let db = create_db_connection()?;
     let global_roots = assistant_definitions()
         .iter()
         .flat_map(|assistant| assistant.global_discovery_roots())
         .collect::<Vec<_>>();
-    run_startup_maintenance_with(db, &global_roots, || recover_pending_transactions(db))
+    let report =
+        run_startup_maintenance_with(&db, &global_roots, || recover_pending_transactions(&db))?;
+    Ok((db, report))
 }
 
 fn run_startup_maintenance_with<F>(
@@ -232,6 +279,70 @@ mod tests {
     use super::*;
     use crate::managed_state::{content_fingerprint, mark_managed_skill};
     use std::fs;
+
+    #[test]
+    fn file_lock_child() {
+        let Some(root) = std::env::var_os("SKILLMATE_LOCK_TEST_ROOT").map(PathBuf::from) else {
+            return;
+        };
+        let mode = std::env::var("SKILLMATE_LOCK_TEST_MODE").unwrap();
+        if mode == "exit-with-lock" {
+            let _guard = acquire_file_lock(&root.join("operations.lock"), Duration::ZERO).unwrap();
+            // Exit without Rust destructors to exercise OS cleanup after an abrupt exit.
+            std::process::exit(0);
+        }
+        let result = run_exclusive_operation_with(
+            || acquire_file_lock(&root.join("operations.lock"), Duration::from_millis(100)),
+            || Connection::open_in_memory().map_err(|error| error.to_string()),
+            |_| {
+                fs::write(root.join("recovery-ran"), "recovered").unwrap();
+                Ok(1)
+            },
+            |_| Ok(()),
+        );
+        if mode == "blocked" {
+            assert!(result.unwrap_err().contains("正在操作"));
+            assert!(!root.join("recovery-ran").exists());
+        } else {
+            result.unwrap();
+            assert!(root.join("recovery-ran").exists());
+        }
+    }
+
+    #[test]
+    fn process_lock_blocks_recovery_and_releases_after_exit() {
+        let root = std::env::temp_dir().join(format!(
+            "skillmate-process-lock-{}-{}",
+            std::process::id(),
+            crate::app_core::generate_id()
+        ));
+        fs::create_dir(&root).unwrap();
+        let child = |mode: &str| {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "operation_coordinator::tests::file_lock_child",
+                    "--nocapture",
+                ])
+                .env("SKILLMATE_LOCK_TEST_ROOT", &root)
+                .env("SKILLMATE_LOCK_TEST_MODE", mode)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        let guard = acquire_file_lock(&root.join("operations.lock"), Duration::ZERO).unwrap();
+        child("blocked");
+        assert!(!root.join("recovery-ran").exists());
+        drop(guard);
+        child("exit-with-lock");
+        child("acquired");
+        fs::remove_dir_all(root).unwrap();
+    }
 
     fn startup_database() -> Connection {
         let db = Connection::open_in_memory().unwrap();

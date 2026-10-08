@@ -39,8 +39,7 @@ use app_core::{
     assistant_root_by_name, expand_path, managed_skill_roots, now_ms, project_skill_root_by_name,
 };
 use database::{
-    create_db_connection, database_initialization_error, open_db_connection,
-    remember_database_initialization_error,
+    database_initialization_error, open_db_connection, remember_database_initialization_error,
 };
 use git_backup::GitBackup;
 use install_policy::{
@@ -58,8 +57,8 @@ use managed_installation::{
     verify_managed_content_unchanged,
 };
 use operation_coordinator::{
-    check_skill_update, check_skill_updates, is_known_skill_path, run_exclusive_operation,
-    run_startup_maintenance,
+    check_skill_update, check_skill_updates, initialize_managed_database, is_known_skill_path,
+    run_exclusive_operation,
 };
 use operation_plan::verify_operation_plan;
 use organization_commands::{
@@ -1746,37 +1745,25 @@ fn is_same_path(left: &Path, right: &Path) -> bool {
 }
 
 fn initialize_database_state() -> Option<Connection> {
-    let db = match create_db_connection() {
-        Ok(db) => db,
+    let (db, report) = match initialize_managed_database() {
+        Ok(result) => result,
         Err(error) => {
             let message = remember_database_initialization_error(&error);
             eprintln!("{}", message);
             return None;
         }
     };
-    if let Err(error) = skill_trash::purge_abandoned_trash(&db) {
+    if let Err(error) = run_exclusive_operation(skill_trash::purge_abandoned_trash) {
         eprintln!("清理遗留可撤销暂存区失败: {}", error);
     }
-    match run_startup_maintenance(&db) {
-        Ok(report) => {
-            if report.recovered_transactions > 0 {
-                eprintln!(
-                    "已恢复 {} 个未完成的文件事务",
-                    report.recovered_transactions
-                );
-            }
-            for warning in report.warnings {
-                eprintln!("{}", warning);
-            }
-        }
-        Err(error) => {
-            let message = remember_database_initialization_error(&format!(
-                "启动文件事务恢复失败，已跳过后续受管状态维护: {}",
-                error
-            ));
-            eprintln!("{}", message);
-            return None;
-        }
+    if report.recovered_transactions > 0 {
+        eprintln!(
+            "已恢复 {} 个未完成的文件事务",
+            report.recovered_transactions
+        );
+    }
+    for warning in report.warnings {
+        eprintln!("{}", warning);
     }
     Some(db)
 }
