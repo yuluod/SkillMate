@@ -1,2 +1,5 @@
+pmOnFail: error
+verifyDepsBeforeRun: error
+networkConcurrency: 8
 allowBuilds:
   esbuild: true
