@@ -1,6 +1,7 @@
 use crate::app_core::assistant_definitions;
-use crate::skill_inventory::{build_skill, collect_skill_entries, ManagedSkill};
-use crate::skill_origin::OriginInferenceCache;
+use crate::skill_inventory::{
+    build_skill_with_cache, collect_skill_entries, InventoryScanCache, ManagedSkill,
+};
 use crate::{Skill, SkillScanDiagnostic};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -44,7 +45,7 @@ pub fn inspect_project_skills(
     }
 
     let mut assistants = Vec::new();
-    let mut origin_cache = OriginInferenceCache::default();
+    let mut scan_cache = InventoryScanCache::default();
     for assistant in assistant_definitions() {
         let project_root = assistant
             .project_install_root(&project)
@@ -76,7 +77,7 @@ pub fn inspect_project_skills(
         let mut shadowed_count = 0;
         append_effective_skills(
             db,
-            &mut origin_cache,
+            &mut scan_cache,
             project_entries,
             "project",
             &mut identities,
@@ -86,7 +87,7 @@ pub fn inspect_project_skills(
         let project_count = skills.len();
         append_effective_skills(
             db,
-            &mut origin_cache,
+            &mut scan_cache,
             global_entries,
             "global",
             &mut identities,
@@ -119,7 +120,7 @@ pub fn inspect_project_skills(
 
 fn append_effective_skills(
     db: &Connection,
-    origin_cache: &mut OriginInferenceCache,
+    scan_cache: &mut InventoryScanCache,
     paths: Vec<PathBuf>,
     scope: &str,
     identities: &mut HashSet<String>,
@@ -131,7 +132,7 @@ fn append_effective_skills(
             .file_name()
             .map(|value| value.to_string_lossy().to_string())
             .unwrap_or_default();
-        let skill = build_skill(db, &ManagedSkill { path, name }, origin_cache);
+        let skill = build_skill_with_cache(db, &ManagedSkill { path, name }, scan_cache);
         let identity = skill
             .structure
             .manifest_title

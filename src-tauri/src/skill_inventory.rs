@@ -24,10 +24,40 @@ fn inventory_cache_key(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// Owned by one read-only scan. Never retain across scans or filesystem mutations.
+#[derive(Default)]
+pub(crate) struct InventoryScanCache {
+    origin: OriginInferenceCache,
+    fingerprints: FingerprintCache,
+}
+
+#[derive(Default)]
+struct FingerprintCache {
+    // Do not canonicalize: a top-level symlink hashes its link target, not its contents.
+    values: HashMap<PathBuf, Result<String, String>>,
+    #[cfg(test)]
+    computations: usize,
+}
+
+impl FingerprintCache {
+    fn get(&mut self, path: &Path) -> Result<String, String> {
+        self.values
+            .entry(path.to_path_buf())
+            .or_insert_with(|| {
+                #[cfg(test)]
+                {
+                    self.computations += 1;
+                }
+                content_fingerprint(path)
+            })
+            .clone()
+    }
+}
+
 pub fn scan_all_assistants(db: &Connection) -> Result<Vec<AIAssistant>, String> {
     let managed_installations = list_managed_installations(db)?;
     let mut skill_cache = HashMap::<PathBuf, Skill>::new();
-    let mut origin_cache = OriginInferenceCache::default();
+    let mut scan_cache = InventoryScanCache::default();
     let mut assistants = Vec::new();
     for assistant in assistant_definitions() {
         let expanded = assistant.global_install_root();
@@ -54,7 +84,7 @@ pub fn scan_all_assistants(db: &Connection) -> Result<Vec<AIAssistant>, String> 
                 .map(|value| value.to_string_lossy().to_string())
                 .unwrap_or_default();
             let managed = ManagedSkill { path, name };
-            let skill = build_skill(db, &managed, &mut origin_cache);
+            let skill = build_skill_with_cache(db, &managed, &mut scan_cache);
             skill_cache.insert(identity, skill.clone());
             skills.push(skill);
         }
@@ -246,6 +276,23 @@ pub(crate) fn build_skill(
     managed: &ManagedSkill,
     origin_cache: &mut OriginInferenceCache,
 ) -> Skill {
+    build_skill_with_fingerprints(db, managed, origin_cache, &mut FingerprintCache::default())
+}
+
+pub(crate) fn build_skill_with_cache(
+    db: &Connection,
+    managed: &ManagedSkill,
+    cache: &mut InventoryScanCache,
+) -> Skill {
+    build_skill_with_fingerprints(db, managed, &mut cache.origin, &mut cache.fingerprints)
+}
+
+fn build_skill_with_fingerprints(
+    db: &Connection,
+    managed: &ManagedSkill,
+    origin_cache: &mut OriginInferenceCache,
+    fingerprints: &mut FingerprintCache,
+) -> Skill {
     let ep = &managed.path;
     let modified = ep
         .metadata()
@@ -291,10 +338,7 @@ pub(crate) fn build_skill(
     };
     let sync_info = build_sync_info_with_cache(db, ep, origin_cache);
     let deployment = find_deployment(db, ep).ok().flatten();
-    let content_path = deployment
-        .as_ref()
-        .map(|deployment| deployment.library_path.as_path())
-        .unwrap_or(ep);
+    let content_path = metadata_path.as_path();
     let state_result = ep
         .parent()
         .map(|root| managed_state_entry(root, ep))
@@ -332,12 +376,14 @@ pub(crate) fn build_skill(
         structure.structure_warnings.push(warning);
     }
     let deployment_changed = state_entry.as_ref().is_some_and(|entry| {
-        content_fingerprint(ep)
+        fingerprints
+            .get(ep)
             .map(|fingerprint| fingerprint != entry.last_seen_hash)
             .unwrap_or(true)
     });
     let library_content_changed = content_state_entry.as_ref().is_some_and(|entry| {
-        content_fingerprint(content_path)
+        fingerprints
+            .get(content_path)
             .map(|fingerprint| fingerprint != entry.last_seen_hash)
             .unwrap_or(true)
     });
@@ -424,7 +470,7 @@ pub(crate) fn build_skill(
             description: structure.manifest_description.clone().unwrap_or_default(),
             readme: inspection.preview,
             version: inspection.version.unwrap_or_else(|| "未知".to_string()),
-            content_hash: content_fingerprint(content_path).unwrap_or_default(),
+            content_hash: fingerprints.get(content_path).unwrap_or_default(),
         },
         origin: SkillOriginFields {
             upstream_url,
@@ -482,6 +528,195 @@ mod tests {
             name,
             crate::app_core::now_ms()
         ))
+    }
+
+    #[test]
+    fn managed_content_is_hashed_once_and_next_scan_observes_changes() {
+        let root = test_dir("fingerprint-refresh");
+        let path = root.join("writer");
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("SKILL.md"), "# Writer").unwrap();
+        crate::managed_state::mark_managed_skill(&root, "Codex", &path, "local").unwrap();
+        let db = Connection::open_in_memory().unwrap();
+        let managed = ManagedSkill {
+            path: path.clone(),
+            name: "writer".to_string(),
+        };
+        let mut cache = InventoryScanCache::default();
+        let first = build_skill_with_cache(&db, &managed, &mut cache);
+        assert_eq!(cache.fingerprints.computations, 1);
+        assert!(!first
+            .structure
+            .structure_warnings
+            .contains(&"managed_content_changed".to_string()));
+        let repeated = build_skill_with_cache(&db, &managed, &mut cache);
+        assert_eq!(cache.fingerprints.computations, 1);
+        assert_eq!(
+            first.inventory.content_hash,
+            repeated.inventory.content_hash
+        );
+
+        fs::write(path.join("SKILL.md"), "# Changed").unwrap();
+        let mut next_scan = InventoryScanCache::default();
+        let changed = build_skill_with_cache(&db, &managed, &mut next_scan);
+        assert_eq!(next_scan.fingerprints.computations, 1);
+        assert_ne!(first.inventory.content_hash, changed.inventory.content_hash);
+        assert!(changed
+            .structure
+            .structure_warnings
+            .contains(&"managed_content_changed".to_string()));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fingerprint_failure_is_cached_only_for_current_scan() {
+        let root = test_dir("fingerprint-error");
+        let mut cache = FingerprintCache::default();
+        assert!(cache.get(&root).is_err());
+        assert!(cache.get(&root).is_err());
+        assert_eq!(cache.computations, 1);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("SKILL.md"), "# Recovered").unwrap();
+        let mut next_scan = FingerprintCache::default();
+        assert_eq!(
+            next_scan.get(&root).unwrap(),
+            content_fingerprint(&root).unwrap()
+        );
+        assert_eq!(next_scan.computations, 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn deployments_share_content_hash_but_keep_link_and_inspection_identity() {
+        assert_deployment_fingerprint_reuse(true);
+    }
+
+    #[test]
+    fn deployments_share_content_hash_but_keep_directory_identity() {
+        assert_deployment_fingerprint_reuse(false);
+    }
+
+    fn assert_deployment_fingerprint_reuse(use_symlinks: bool) {
+        let root = test_dir(if use_symlinks {
+            "deployment-link-fingerprints"
+        } else {
+            "deployment-directory-fingerprints"
+        });
+        let source = root.join("library/writer");
+        let first = root.join("first/writer");
+        let second = root.join("second/renamed");
+        let external = root.join("external/writer");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(
+            source.join("SKILL.md"),
+            "---\nname: writer\ndescription: test\n---\nbody",
+        )
+        .unwrap();
+        for path in [&first, &second, &external] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            if use_symlinks {
+                if !crate::app_core::create_test_directory_symlink_or_skip(&source, path) {
+                    let _ = fs::remove_dir_all(root);
+                    return;
+                }
+            } else {
+                fs::create_dir_all(path).unwrap();
+                fs::copy(source.join("SKILL.md"), path.join("SKILL.md")).unwrap();
+            }
+        }
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE skill_deployments (target_path TEXT PRIMARY KEY, library_path TEXT, deploy_mode TEXT);").unwrap();
+        for path in [&first, &second] {
+            db.execute(
+                "INSERT INTO skill_deployments VALUES (?, ?, ?)",
+                rusqlite::params![
+                    path.to_string_lossy(),
+                    source.to_string_lossy(),
+                    if use_symlinks { "symlink" } else { "copy" }
+                ],
+            )
+            .unwrap();
+            crate::managed_state::mark_managed_skill(
+                path.parent().unwrap(),
+                "Codex",
+                path,
+                "deployment",
+            )
+            .unwrap();
+        }
+        crate::managed_state::mark_managed_skill(
+            source.parent().unwrap(),
+            "SkillMate",
+            &source,
+            "local",
+        )
+        .unwrap();
+        let mut cache = InventoryScanCache::default();
+        let mut skills = Vec::new();
+        for path in [&first, &second, &external] {
+            skills.push(build_skill_with_cache(
+                &db,
+                &ManagedSkill {
+                    path: path.clone(),
+                    name: path.file_name().unwrap().to_string_lossy().to_string(),
+                },
+                &mut cache,
+            ));
+        }
+        // Two deployment hashes + one shared content tree + one external path hash.
+        assert_eq!(cache.fingerprints.computations, 4);
+        assert_eq!(cache.fingerprints.values.len(), 4);
+        let content_hash = content_fingerprint(&source).unwrap();
+        let link_hash = content_fingerprint(&external).unwrap();
+        if use_symlinks {
+            assert_ne!(content_hash, link_hash);
+        }
+        for (skill, path) in skills.iter().zip([&first, &second, &external]) {
+            assert_eq!(skill.inventory.path, path.to_string_lossy());
+            assert_eq!(skill.inventory.id, path.to_string_lossy());
+            assert!(!skill
+                .structure
+                .structure_warnings
+                .contains(&"managed_content_changed".to_string()));
+        }
+        assert_eq!(skills[0].inventory.content_hash, content_hash);
+        assert_eq!(skills[1].inventory.content_hash, content_hash);
+        assert_eq!(skills[2].inventory.content_hash, link_hash);
+        assert_eq!(skills[0].inventory.source_type, "deployment");
+        assert_ne!(skills[2].inventory.source_type, "deployment");
+        assert!(!skills[0]
+            .structure
+            .structure_warnings
+            .contains(&"name_directory_mismatch".to_string()));
+        assert!(skills[1]
+            .structure
+            .structure_warnings
+            .contains(&"name_directory_mismatch".to_string()));
+
+        fs::write(
+            source.join("SKILL.md"),
+            "---\nname: writer\ndescription: changed\n---\nnew body",
+        )
+        .unwrap();
+        let mut next_scan = InventoryScanCache::default();
+        for path in [&first, &second] {
+            let skill = build_skill_with_cache(
+                &db,
+                &ManagedSkill {
+                    path: path.clone(),
+                    name: "writer".to_string(),
+                },
+                &mut next_scan,
+            );
+            assert_ne!(skill.inventory.content_hash, content_hash);
+            assert!(skill
+                .structure
+                .structure_warnings
+                .contains(&"managed_content_changed".to_string()));
+        }
+        assert_eq!(next_scan.fingerprints.computations, 3);
+        assert_eq!(content_fingerprint(&external).unwrap(), link_hash);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
