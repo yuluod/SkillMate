@@ -278,7 +278,7 @@ Natural-language or complex inputs that cannot be classified by local rules may 
 
 ## Local development
 
-You need Node.js 24.20.0+, pnpm 11, Rust, and the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your operating system.
+You need Node.js 24.20.0+, pnpm 12.3.4, Rust, and the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your operating system.
 
 ```bash
 pnpm install
