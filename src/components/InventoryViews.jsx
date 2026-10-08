@@ -501,7 +501,7 @@ export function UpdatesView({ skills, orderedSkills, stats, updateState, getSync
         actions={(
           <>
           <div className="update-toolbar"><span className={`stamp ${stats.behind > 0 ? "warn" : "success"}`}>{t("updates.pending", { count: stats.behind })}</span><span className="stamp muted">{t("updates.syncable", { count: stats.syncable })}</span>{stats.failed > 0 && <span className="stamp error">{t("updates.failed", { count: stats.failed })}</span>}</div>
-          <button className="btn btn-primary btn-sm" onClick={checkAll} disabled={skills.some(skill => (updateState[skill.path] || {}).checking)}><Icon name="refresh" size={14} />{t("updates.checkAll")}</button>
+          <button className="btn btn-primary btn-sm" onClick={checkAll} disabled={Object.values(updateState).some(state => state.checking || state.updating)}><Icon name="refresh" size={14} />{t("updates.checkAll")}</button>
           </>
         )}
       />

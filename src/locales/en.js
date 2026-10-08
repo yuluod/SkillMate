@@ -586,6 +586,7 @@ const en = {
   "updates.message.noResult": "Check failed: the backend returned no result",
   "updates.toast.batchPartial": "Check complete; {count} Skills failed",
   "updates.toast.batchDone": "All checks completed",
+  "updates.toast.batchIncomplete": "Check complete; {count} Skills could not be verified",
   "updates.toast.batchFailed": "Batch check failed: {message}",
   "updates.toast.checkFailed": "Check failed: {message}",
   "updates.toast.available": "Update available",

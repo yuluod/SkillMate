@@ -604,6 +604,7 @@ const zhCN = {
   "updates.message.noResult": "检查失败：后端未返回结果",
   "updates.toast.batchPartial": "检查完成，{count} 个 Skill 失败",
   "updates.toast.batchDone": "全部检查完成",
+  "updates.toast.batchIncomplete": "检查完成，{count} 个 Skill 未能确认更新状态",
   "updates.toast.batchFailed": "批量检查失败：{message}",
   "updates.toast.checkFailed": "检查失败：{message}",
   "updates.toast.available": "有更新",

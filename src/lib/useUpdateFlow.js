@@ -1,120 +1,115 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { skillmateApi } from "./skillmateApi.js";
 import { useI18n } from "./i18n.jsx";
 import { toUserErrorMessage } from "./errorMessage.mjs";
+import { adaptUpdateResult, getUpdateInfo, isIncompleteUpdateCheck, updateCheckNotice } from "./updateState.js";
 
 export function useUpdateFlow({ updatable, showToast, loadData }) {
   const { t, language } = useI18n();
   const [updateState, setUpdateState] = useState({});
+  const generation = useRef(0);
+  const active = useRef(new Map());
+  const batch = useRef(null);
 
-  const resetUpdateState = useCallback(() => setUpdateState({}), []);
+  useEffect(() => () => { generation.current += 1; }, []);
 
-  const getSyncInfo = useCallback((skill) => {
-    const state = updateState[skill.path] || {};
-    return {
-      originKind: state.originKind || skill.origin_kind,
-      originLocator: state.originLocator || skill.origin_locator,
-      resolvedLocator: state.resolvedLocator || skill.resolved_locator,
-      trackingRef: state.trackingRef || skill.tracking_ref,
-      installedRef: state.installedRef || skill.installed_ref,
-      latestRef: state.latestRef || skill.latest_ref,
-      syncState: state.syncState || skill.sync_state,
-      message: state.message || skill.sync_message || t("updates.state.unknown"),
-      lagCount: state.lagCount ?? skill.lag_count ?? 0,
-      lastProbeAt: state.lastProbeAt ?? skill.last_probe_at,
-      lastSyncAt: state.lastSyncAt ?? skill.last_sync_at,
-      managedByApp: state.managedByApp ?? skill.managed_by_app,
-      canCheck: state.canCheck ?? skill.can_check ?? false,
-      canSync: state.canSync ?? skill.can_sync ?? false,
-      checking: Boolean(state.checking),
-      updating: Boolean(state.updating)
-    };
-  }, [t, updateState]);
+  const resetUpdateState = useCallback(() => {
+    generation.current += 1;
+    setUpdateState({});
+    // IPC cannot be cancelled: locks stay until outstanding operations settle.
+  }, []);
 
-  const checkAllUpdates = useCallback(async () => {
-    if (updatable.length === 0) return;
-    const initial = {};
-    updatable.forEach(s => { initial[s.path] = { ...(updateState[s.path] || {}), checking: true }; });
-    setUpdateState(prev => ({ ...prev, ...initial }));
-    try {
-      const results = await skillmateApi.updates.checkAll(updatable.map((skill) => skill.path));
-      const byPath = new Map(results.map((result) => [result.path, result]));
-      setUpdateState((previous) => {
-        const next = { ...previous };
-        updatable.forEach((skill) => {
-          const result = byPath.get(skill.path);
-          next[skill.path] = result
-            ? { checking: false, updating: false, ...result }
-            : {
-                ...(previous[skill.path] || {}),
-                checking: false,
-                updating: false,
-                hasUpdate: false,
-                lagCount: 0,
-                message: t("updates.message.noResult"),
-                syncState: "failed",
-              };
-        });
-        return next;
-      });
-      const failed = results.filter((result) => result.syncState === "failed").length;
-      showToast(
-        failed > 0 ? t("updates.toast.batchPartial", { count: failed }) : t("updates.toast.batchDone"),
-        failed > 0 ? "warn" : "success"
-      );
-    } catch (error) {
-      setUpdateState((previous) => {
-        const next = { ...previous };
-        updatable.forEach((skill) => {
-          next[skill.path] = {
-            ...(previous[skill.path] || {}),
-            checking: false,
-            updating: false,
-            hasUpdate: false,
-            lagCount: 0,
-            message: t("updates.toast.checkFailed", { message: toUserErrorMessage(error, t("error.safeRetry")) }),
-            syncState: "failed",
-          };
-        });
-        return next;
-      });
-      showToast(t("updates.toast.batchFailed", { message: toUserErrorMessage(error, t("error.safeRetry")) }), "error");
-    }
-  }, [showToast, t, updatable, updateState]);
+  const getSyncInfo = useCallback((skill) =>
+    getUpdateInfo(skill, updateState[skill.path], t("updates.state.unknown")), [t, updateState]);
 
-  const checkUpdate = useCallback(async (path) => {
-    try {
-      setUpdateState(prev => ({ ...prev, [path]: { ...(prev[path] || {}), checking: true } }));
-      const r = await skillmateApi.updates.checkOne(path);
-      setUpdateState(prev => ({ ...prev, [path]: { ...(prev[path] || {}), checking: false, updating: false, ...r } }));
-      const hasUpdate = typeof r.hasUpdate === "boolean" ? r.hasUpdate : r.syncState === "behind";
-      const fallback = t(hasUpdate ? "updates.toast.available" : "updates.toast.current");
-      showToast(language === "en" ? fallback : (r.message || fallback), hasUpdate ? "warn" : "success");
-    } catch (e) {
-      setUpdateState(prev => ({ ...prev, [path]: { ...(prev[path] || {}), checking: false } }));
-      showToast(t("updates.toast.checkFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
-    }
-  }, [language, showToast, t]);
-
-  const updateSkill = useCallback(async (path) => {
-    try {
-      setUpdateState(prev => ({ ...prev, [path]: { ...(prev[path] || {}), updating: true } }));
-      const result = await skillmateApi.updates.applyOne(path);
-      showToast(language === "en" ? t("updates.toast.updated") : String(result || t("updates.toast.updated")), "success");
-      await checkUpdate(path);
-      await loadData();
-    } catch (e) {
-      setUpdateState(prev => ({ ...prev, [path]: { ...(prev[path] || {}), updating: false } }));
-      showToast(t("updates.toast.updateFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
-    }
-  }, [checkUpdate, language, loadData, showToast, t]);
-
-  return {
-    updateState,
-    resetUpdateState,
-    getSyncInfo,
-    checkAllUpdates,
-    checkUpdate,
-    updateSkill,
+  const isCurrent = operation => operation.generation === generation.current;
+  const change = (operation, paths, transform) => {
+    if (!isCurrent(operation)) return;
+    setUpdateState(previous => {
+      if (!isCurrent(operation)) return previous;
+      const next = { ...previous };
+      paths.forEach(path => { next[path] = transform(previous[path] || {}, path); });
+      return next;
+    });
   };
+  const begin = (paths, updating = false) => {
+    const operation = { generation: generation.current };
+    paths.forEach(path => active.current.set(path, operation));
+    change(operation, paths, state => ({ ...state, checking: !updating, updating }));
+    return operation;
+  };
+  const finish = (operation, paths) => {
+    paths.forEach(path => {
+      if (active.current.get(path) === operation) active.current.delete(path);
+    });
+    change(operation, paths, state => ({ ...state, checking: false, updating: false }));
+  };
+  const failedResult = error => ({ syncState: "failed",
+    message: t("updates.toast.checkFailed", { message: toUserErrorMessage(error, t("error.safeRetry")) }) });
+  const accept = (operation, path, result) => {
+    change(operation, [path], state => adaptUpdateResult(state, result, t("updates.message.noResult")));
+    return adaptUpdateResult({}, result, t("updates.message.noResult"));
+  };
+  const notify = result => {
+    const notice = updateCheckNotice(result);
+    showToast(language === "en" ? t(notice.key) : (result.message || t(notice.key)), notice.tone);
+  };
+  // Apply's follow-up check shares its lock instead of calling the public handler.
+  const probe = async (operation, path) => {
+    change(operation, [path], state => ({ ...state, checking: true }));
+    let result;
+    try { result = await skillmateApi.updates.checkOne(path); }
+    catch (error) { result = failedResult(error); }
+    if (!isCurrent(operation)) return;
+    notify(accept(operation, path, result));
+  };
+
+  const checkAllUpdates = async () => {
+    if (batch.current) return;
+    const paths = [...new Set(updatable.map(skill => skill.path))]
+      .filter(path => !active.current.has(path));
+    if (!paths.length) return;
+    const operation = begin(paths);
+    batch.current = operation;
+    try {
+      const results = await skillmateApi.updates.checkAll(paths);
+      if (!isCurrent(operation)) return;
+      const byPath = new Map(results.map(result => [result.path, result]));
+      const accepted = paths.map(path => accept(operation, path, byPath.get(path)));
+      const count = accepted.filter(isIncompleteUpdateCheck).length;
+      showToast(t(count ? "updates.toast.batchIncomplete" : "updates.toast.batchDone", { count }), count ? "warn" : "success");
+    } catch (error) {
+      if (!isCurrent(operation)) return;
+      paths.forEach(path => accept(operation, path, failedResult(error)));
+      showToast(t("updates.toast.batchFailed", { message: toUserErrorMessage(error, t("error.safeRetry")) }), "error");
+    } finally {
+      finish(operation, paths);
+      if (batch.current === operation) batch.current = null;
+    }
+  };
+
+  const checkUpdate = async path => {
+    if (active.current.has(path)) return;
+    const operation = begin([path]);
+    try { await probe(operation, path); }
+    finally { finish(operation, [path]); }
+  };
+
+  const updateSkill = async path => {
+    if (active.current.has(path)) return;
+    const operation = begin([path], true);
+    try {
+      const result = await skillmateApi.updates.applyOne(path);
+      if (!isCurrent(operation)) return;
+      showToast(language === "en" ? t("updates.toast.updated") : String(result || t("updates.toast.updated")), "success");
+      await probe(operation, path);
+      if (!isCurrent(operation)) return;
+      await loadData({ resetUpdates: false });
+    } catch (error) {
+      if (!isCurrent(operation)) return;
+      showToast(t("updates.toast.updateFailed", { message: toUserErrorMessage(error, t("error.safeRetry")) }), "error");
+    } finally { finish(operation, [path]); }
+  };
+
+  return { updateState, resetUpdateState, getSyncInfo, checkAllUpdates, checkUpdate, updateSkill };
 }
