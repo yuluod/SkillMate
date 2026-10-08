@@ -161,6 +161,13 @@ pub fn add_deployment_to_preview(
             });
         }
     }
+    if deployment_actions
+        .iter()
+        .any(|action| matches!(action.action.as_str(), "symlink" | "replace"))
+        && !directory_symlink_available()
+    {
+        block_directory_symlink_preview(&mut preview, deployment_root);
+    }
     preview.target_actions.extend(deployment_actions);
     if preview.can_apply {
         preview.message = format!(
@@ -174,6 +181,211 @@ pub fn add_deployment_to_preview(
         );
     }
     preview
+}
+
+pub(crate) fn directory_symlink_available() -> bool {
+    #[cfg(windows)]
+    {
+        directory_symlink_capability::available()
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
+pub(crate) fn block_directory_symlink_preview(preview: &mut InstallPreview, target: &Path) {
+    preview.can_install = false;
+    preview.can_apply = false;
+    preview.message = "Windows 无法创建目录符号链接，请开启开发者模式或使用具备创建符号链接权限的进程，稍后重新预览；若仍失败，请检查临时目录权限".to_string();
+    preview.conflicts.push(PreviewConflict {
+        target: target.to_string_lossy().into_owned(),
+        reason: "directory_symlink_unavailable".to_string(),
+    });
+}
+
+// Process capability only: the actual deployment still validates the destination
+// filesystem and permissions by creating its link inside the existing transaction.
+#[cfg(windows)]
+pub(crate) mod directory_symlink_capability {
+    use super::*;
+    use std::io;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    static CACHE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+
+    #[cfg(test)]
+    thread_local! {
+        static TEST_AVAILABLE: std::cell::Cell<Option<bool>> = const {
+            std::cell::Cell::new(None)
+        };
+    }
+
+    #[cfg(test)]
+    pub(crate) struct TestCapabilityGuard(Option<bool>);
+
+    #[cfg(test)]
+    impl Drop for TestCapabilityGuard {
+        fn drop(&mut self) {
+            TEST_AVAILABLE.with(|value| value.set(self.0));
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn use_test_capability(available: bool) -> TestCapabilityGuard {
+        TestCapabilityGuard(TEST_AVAILABLE.with(|value| value.replace(Some(available))))
+    }
+
+    pub(super) fn available() -> bool {
+        #[cfg(test)]
+        if let Some(value) = TEST_AVAILABLE.with(|value| value.get()) {
+            return value;
+        }
+        // Keep the lock during the probe so concurrent previews share one result.
+        let mut cache = CACHE.lock().unwrap_or_else(|error| error.into_inner());
+        cached_probe(&mut cache, Instant::now(), || probe().is_ok())
+    }
+
+    /// Always probes the OS, bypassing the preview cache and test override.
+    /// Integration fixtures can distinguish missing privilege (1314) from other errors.
+    pub(crate) fn probe() -> io::Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "skillmate-directory-symlink-probe-{}",
+            generate_id()
+        ));
+        probe_at(&root, |source, link| {
+            std::os::windows::fs::symlink_dir(source, link)
+        })
+    }
+
+    fn cached_probe(
+        cache: &mut Option<(Instant, bool)>,
+        now: Instant,
+        probe: impl FnOnce() -> bool,
+    ) -> bool {
+        if let Some((checked_at, available)) = *cache {
+            let ttl = Duration::from_secs(if available { 30 } else { 2 });
+            if now.duration_since(checked_at) < ttl {
+                return available;
+            }
+        }
+        let available = probe();
+        *cache = Some((now, available));
+        available
+    }
+
+    struct ProbeDirectory(PathBuf);
+
+    impl ProbeDirectory {
+        fn cleanup(&self) -> io::Result<()> {
+            // Never recurse through a link. All three entries are owned by this
+            // probe; remove_dir removes the Windows directory link itself.
+            for path in [self.0.join("link"), self.0.join("target"), self.0.clone()] {
+                match fs::remove_dir(path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for ProbeDirectory {
+        fn drop(&mut self) {
+            let _ = self.cleanup();
+        }
+    }
+
+    fn probe_at(
+        root: &Path,
+        create_link: impl FnOnce(&Path, &Path) -> io::Result<()>,
+    ) -> io::Result<()> {
+        // Exclusive creation: never clean up an existing directory on collision.
+        fs::create_dir(root)?;
+        let probe = ProbeDirectory(root.to_path_buf());
+        let target = root.join("target");
+        fs::create_dir(&target)?;
+        create_link(&target, &root.join("link"))?;
+        probe.cleanup()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn directory_symlink_cache_retries_failure_and_expires_success() {
+            let now = Instant::now();
+            let mut cache = None;
+            assert!(!cached_probe(&mut cache, now, || false));
+            assert!(!cached_probe(
+                &mut cache,
+                now + Duration::from_secs(1),
+                || panic!("cached")
+            ));
+            assert!(cached_probe(
+                &mut cache,
+                now + Duration::from_secs(2),
+                || true
+            ));
+            assert!(cached_probe(
+                &mut cache,
+                now + Duration::from_secs(31),
+                || panic!("cached")
+            ));
+            assert!(!cached_probe(
+                &mut cache,
+                now + Duration::from_secs(32),
+                || false
+            ));
+        }
+
+        #[test]
+        fn directory_symlink_probe_cleans_up_permission_failure() {
+            let root = std::env::temp_dir().join(format!("skillmate-probe-test-{}", generate_id()));
+            let error =
+                probe_at(&root, |_, _| Err(io::Error::from_raw_os_error(1314))).unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(1314));
+            assert!(!root.exists());
+        }
+
+        #[test]
+        fn directory_symlink_probe_preserves_existing_directory() {
+            let root = std::env::temp_dir().join(format!("skillmate-probe-test-{}", generate_id()));
+            fs::create_dir(&root).unwrap();
+            let sentinel = root.join("user.txt");
+            fs::write(&sentinel, "preserve").unwrap();
+            assert!(probe_at(&root, |_, _| panic!("must not create a link")).is_err());
+            assert_eq!(fs::read_to_string(&sentinel).unwrap(), "preserve");
+            fs::remove_file(sentinel).unwrap();
+            fs::remove_dir(root).unwrap();
+        }
+
+        #[test]
+        fn directory_symlink_real_probe_cleans_up_with_or_without_privilege() {
+            let root = std::env::temp_dir().join(format!("skillmate-probe-test-{}", generate_id()));
+            let result = probe_at(&root, |source, link| {
+                std::os::windows::fs::symlink_dir(source, link)?;
+                assert!(fs::symlink_metadata(link)?.file_type().is_symlink());
+                assert_eq!(fs::canonicalize(link)?, fs::canonicalize(source)?);
+                // Unlinking must leave the target untouched.
+                fs::remove_dir(link)?;
+                assert!(source.is_dir());
+                std::os::windows::fs::symlink_dir(source, link)
+            });
+            if let Err(error) = result {
+                assert_eq!(
+                    error.raw_os_error(),
+                    Some(1314),
+                    "unexpected probe failure: {error}"
+                );
+                eprintln!("Directory symlink privilege unavailable (1314); verified failure and cleanup. Successful OS link creation requires Developer Mode or symlink privilege.");
+            }
+            assert!(!root.exists());
+        }
+    }
 }
 
 pub(crate) fn find_existing_alternate_target(
@@ -551,6 +763,81 @@ fn table_exists(db: &Connection, table: &str) -> Result<bool, String> {
 #[cfg(all(test, windows))]
 mod windows_tests {
     use super::*;
+
+    #[test]
+    fn directory_symlink_deployment_preview_blocks_failure_and_allows_success_without_writes() {
+        use crate::skill_install::preview_selected_local_install_source;
+        use directory_symlink_capability::use_test_capability;
+
+        let root = std::env::temp_dir().join(format!("skillmate-preview-test-{}", generate_id()));
+        let source = root.join("source/writer");
+        let library = root.join("library");
+        let deployment = root.join("project/.agents/skills");
+        fs::create_dir_all(&source).unwrap();
+        let content = "---\nname: writer\ndescription: Writing\n---\n";
+        fs::write(source.join("SKILL.md"), content).unwrap();
+        for available in [false, true] {
+            let _capability = use_test_capability(available);
+            for replace in [false, true] {
+                let preview = preview_selected_local_install_source(
+                    &source.to_string_lossy(),
+                    &library,
+                    None,
+                );
+                assert!(preview.can_apply, "{}", preview.message);
+                let preview =
+                    add_deployment_to_preview(preview, &deployment, "Codex", "project", replace);
+                assert_eq!(preview.can_apply, available);
+                assert_eq!(preview.can_install, available);
+                assert_eq!(
+                    preview
+                        .conflicts
+                        .iter()
+                        .any(|conflict| { conflict.reason == "directory_symlink_unavailable" }),
+                    !available
+                );
+                assert!(preview.target_actions.iter().any(|action| {
+                    action.action == if replace { "replace" } else { "symlink" }
+                }));
+                assert_eq!(
+                    fs::read_to_string(source.join("SKILL.md")).unwrap(),
+                    content
+                );
+                assert!(!library.exists());
+                assert!(!deployment.exists());
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn directory_symlink_apply_still_uses_real_creation_despite_positive_preflight() {
+        let _capability = directory_symlink_capability::use_test_capability(true);
+        let root = std::env::temp_dir().join(format!("skillmate-apply-test-{}", generate_id()));
+        let source = root.join("source");
+        let target = root.join("link");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("user.txt"), "preserve").unwrap();
+        match deploy_library_skill(&source, &target) {
+            Ok(mode) => {
+                assert_eq!(mode, "symlink");
+                assert!(fs::symlink_metadata(&target)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink());
+                fs::remove_dir(&target).unwrap();
+            }
+            Err(error) => {
+                assert!(error.contains("1314"), "unexpected creation error: {error}");
+                assert!(fs::symlink_metadata(&target).is_err());
+            }
+        }
+        assert_eq!(
+            fs::read_to_string(source.join("user.txt")).unwrap(),
+            "preserve"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn deployment_lookup_returns_every_windows_path_spelling() {

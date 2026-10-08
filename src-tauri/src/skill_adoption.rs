@@ -6,7 +6,9 @@ use crate::skill_install::{
     seal_install_preview, InstallPreview, InstallResult, PreviewAction,
 };
 use crate::skill_install_source::parse_git_install_spec;
-use crate::skill_library::library_root;
+use crate::skill_library::{
+    block_directory_symlink_preview, directory_symlink_available, library_root,
+};
 use crate::skill_origin::{infer_origin_meta, load_origin_meta, save_origin_meta, SkillOriginMeta};
 use crate::skill_reconcile::ReconcileTransaction;
 use crate::{
@@ -26,6 +28,12 @@ pub fn preview_adopt_skill(
     let source_path = expand_path(path.trim());
     let policy = load_install_policy(db);
     let mut preview = match adoption_context(&source_path, assistant_name, project_path) {
+        Ok(_) if !directory_symlink_available() => {
+            // Check before library_root(), which can create the library directory.
+            let mut preview = adoption_error("", &source_path);
+            block_directory_symlink_preview(&mut preview, &source_path);
+            preview
+        }
         Ok(_) => match library_root() {
             Ok(library) => preview_selected_local_install_source(path.trim(), &library, None),
             Err(error) => adoption_error(error, &source_path),
@@ -295,6 +303,80 @@ pub fn preview_adopt_skill_fallback(path: &str, message: impl Into<String>) -> I
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[cfg(windows)]
+    #[test]
+    fn directory_symlink_adoption_preview_blocks_failure_and_allows_success_without_content_changes(
+    ) {
+        use crate::skill_library::{
+            directory_symlink_capability::use_test_capability, use_test_library_root,
+        };
+
+        for available in [false, true] {
+            let root = temp_dir("capability-preview");
+            let project = root.join("project");
+            let source = project.join(".agents/skills/writer");
+            let library = root.join("library");
+            fs::create_dir_all(&source).unwrap();
+            let content = "---\nname: writer\ndescription: Writing\n---\n";
+            fs::write(source.join("SKILL.md"), content).unwrap();
+            let sidecar = source.parent().unwrap().join(".skillmate-state.json");
+            fs::write(&sidecar, "preserve existing sidecar").unwrap();
+            let db = Connection::open_in_memory().unwrap();
+            db.execute_batch(
+                "CREATE TABLE install_policy (
+                id INTEGER PRIMARY KEY, mode TEXT, block_risky_content INTEGER,
+                trusted_git_hosts_json TEXT, trusted_local_roots_json TEXT
+            );",
+            )
+            .unwrap();
+            let changes = db.total_changes();
+            let _library = use_test_library_root(library.clone());
+            let _capability = use_test_capability(available);
+            let preview = preview_adopt_skill(
+                &db,
+                &source.to_string_lossy(),
+                "Codex",
+                Some(&project.to_string_lossy()),
+            );
+            assert_eq!(preview.can_apply, available, "{}", preview.message);
+            assert_eq!(preview.can_install, available);
+            assert_eq!(
+                preview
+                    .conflicts
+                    .iter()
+                    .any(|conflict| { conflict.reason == "directory_symlink_unavailable" }),
+                !available
+            );
+            assert_eq!(
+                preview
+                    .target_actions
+                    .iter()
+                    .any(|action| action.action == "replace"),
+                available
+            );
+            assert!(!preview.plan_token.is_empty());
+            assert_eq!(
+                fs::read_to_string(source.join("SKILL.md")).unwrap(),
+                content
+            );
+            assert!(!fs::symlink_metadata(&source)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(
+                fs::read_to_string(sidecar).unwrap(),
+                "preserve existing sidecar"
+            );
+            assert_eq!(db.total_changes(), changes);
+            if available {
+                assert_eq!(fs::read_dir(&library).unwrap().count(), 0);
+            } else {
+                assert!(!library.exists());
+            }
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
 
     fn temp_dir(label: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(

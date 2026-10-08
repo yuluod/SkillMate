@@ -77,7 +77,7 @@ The library owns content, provenance, and update state. Agent directories only d
 
 SkillMate scans every discovery directory declared for a platform. Project inspection merges project-level and global content, applies project-first precedence, and shows both the effective Skills and the number shadowed by a same-named project Skill.
 
-Creating managed directory links on Windows requires Developer Mode.
+Creating managed directory links on Windows requires Developer Mode or symbolic-link creation privileges for the SkillMate process. Enable and adoption previews probe directory symlink support in an isolated temporary directory; if unavailable, `directory_symlink_unavailable` blocks the operation without changing existing Skill content. Successful checks are cached for 30 seconds and failures for 2 seconds. After fixing permissions, wait briefly and preview again; if it still fails, check access to the system temporary directory. The probe does not validate the actual deployment directory's filesystem or permissions: applying still creates the real link and rolls back on failure. Adding a Skill to the library alone does not require this privilege.
 
 ## Source, manager, and update responsibility
 
