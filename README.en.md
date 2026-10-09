@@ -75,7 +75,7 @@ The library owns content, provenance, and update state. Agent directories only d
 | OpenCode | `~/.config/opencode/skills` | — | `.opencode/skills` |
 | GitHub Copilot | `~/.copilot/skills` | — | `.github/skills` |
 
-SkillMate scans every discovery directory declared for a platform. Project inspection merges project-level and global content, applies project-first precedence, and shows both the effective Skills and the number shadowed by a same-named project Skill.
+SkillMate scans every discovery directory declared for a platform. Project inspection merges project-level and global content, applies project-first precedence, and shows inferred visible Skills and the number shadowed by a same-named project Skill. This is inferred from directory conventions; it does not verify what an Agent has loaded at runtime.
 
 Creating managed directory links on Windows requires Developer Mode or symbolic-link creation privileges for the SkillMate process. Enable and adoption previews probe directory symlink support in an isolated temporary directory; if unavailable, `directory_symlink_unavailable` blocks the operation without changing existing Skill content. Successful checks are cached for 30 seconds and failures for 2 seconds. After fixing permissions, wait briefly and preview again; if it still fails, check access to the system temporary directory. The probe does not validate the actual deployment directory's filesystem or permissions: applying still creates the real link and rolls back on failure. Adding a Skill to the library alone does not require this privilege.
 
@@ -96,6 +96,8 @@ Discovering a directory does not make SkillMate its owner. Only content added to
 ## Features
 
 ### Inventory and project inspection
+
+Choose a project folder from Overview, Deployments, or Scenarios. Successful inspections enter the recent project list; pin frequently used projects for quick access. Records stay on this device, and removing a record never deletes project files. Enabling a Skill or scenario prefills the selected project, while agents and global/project scope remain selectable before confirmation.
 
 - Scan global Skill directories for every supported platform.
 - Inspect a project path and calculate the Skills visible to each platform.
@@ -193,7 +195,11 @@ These rules prevent existing enablement links from breaking and ensure that addi
 - `legacy_npm` and `legacy_pip` identify historical sources and direct users to the original updater.
 - External content remains visible but is maintained by its installer or the user.
 
-Safety policy is evaluated again before an update. If content or policy changes after a preview, the old plan token becomes invalid.
+Choose **Preview update** to review installed and upstream commits, registered deployment locations, and added, removed, or modified files with their before/after content. Connected library links receive the update; independent project copies are unaffected. Unregistered external links are not listed. Repair or disable disconnected managed locations before previewing again.
+
+The diff lists up to 200 files and displays UTF-8 text up to 8 KiB per file, with a 64 KiB text budget per side. Binary, large, and over-budget content is marked as omitted; plan validation still uses full content fingerprints. Scanning stops with an error above 10,000 files, 256 MiB of content, or 32 directory levels.
+
+Safety policy is evaluated again before an update. Changes to local content, upstream commits, deployment relationships, or policy invalidate the preview token. Existing transaction recovery covers library files, provenance, and related deployment state together, attempting to restore them together on failure.
 
 ### Application updates
 
@@ -203,7 +209,8 @@ SkillMate checks, verifies, and installs application updates through GitHub Rele
 
 - **Tags**: tag and filter Skills; create, rename, recolor, and delete tags.
 - **Scenarios**: save groups of Skills for writing, development, review, or other tasks, inspect missing entries, and reuse the group.
-- **Bulk enablement**: select library Skills and choose platforms and global or project scope together. No scenario is required; scenario-filtered results use the same action. Other Skills are not automatically disabled.
+- **Scenario enablement**: **View collection** filters the inventory; **Enable scenario** opens a batch preview. Every entry must exist in the library; add missing Skills or explicitly adopt external content first.
+- **Bulk enablement**: select library Skills or enable a saved scenario, choose agents and global/project scope, then confirm the write plan. This adds missing deployments without disabling other Skills. Each target runs its own transaction; partial failures report completed and failed items.
 - **Import / export**: export tags, scenarios, and the managed Skill inventory, with a change preview before import.
 - **Git backup**: snapshot explicitly managed content into a local Git repository and optionally push it to a remote.
 - **SkillMate manifest**: use `skillmate.toml` to reconcile a target state through `install`, `keep`, and `remove` actions.
