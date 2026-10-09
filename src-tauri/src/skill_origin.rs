@@ -8,7 +8,7 @@ use crate::managed_installation::{is_explicitly_managed, refresh_managed_install
 use crate::managed_state::{is_managed_by_state, refresh_managed_skill_fingerprint};
 use crate::skill_install::{
     has_git_snapshot_spec, installable_content_fingerprint, probe_git_snapshot,
-    probe_git_snapshots, sync_git_snapshot_skill_checked, GitInstallOutcome, GitSnapshotProbe,
+    probe_git_snapshots, sync_git_snapshot_skill_at_preview, GitInstallOutcome, GitSnapshotProbe,
     GitSnapshotProbeRequest,
 };
 use crate::skill_install_source::{sanitize_git_locator, sanitize_git_remote_url, GitInstallSpec};
@@ -908,7 +908,11 @@ pub fn save_installed_local_meta(
     )
 }
 
-pub fn update_skill_from_upstream(db: &Connection, path: &Path) -> Result<String, String> {
+pub fn update_skill_from_upstream(
+    db: &Connection,
+    path: &Path,
+    expected: &GitSnapshotProbe,
+) -> Result<String, String> {
     let mut sync_info = probe_skill_state(db, path, true)?;
     if sync_info.meta.sync_state == "current" {
         return Ok("已是最新".to_string());
@@ -935,10 +939,16 @@ pub fn update_skill_from_upstream(db: &Connection, path: &Path) -> Result<String
         &sync_info.meta.origin_locator,
         &sync_info.meta.resolved_locator,
     ) {
-        let mut transaction = ReconcileTransaction::prepare_managed(
+        crate::managed_installation::verify_managed_content_unchanged(db, path)?;
+        let related_paths = crate::skill_library::deployment_targets_for_library(db, path)?
+            .into_iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
+        let mut transaction = ReconcileTransaction::prepare_managed_with_related_paths(
             db,
             std::slice::from_ref(&path.to_path_buf()),
             std::slice::from_ref(&path.to_path_buf()),
+            &related_paths,
         )?;
         let policy = load_install_policy(db)?;
         let policy_source = if sync_info.meta.origin_locator.trim().is_empty() {
@@ -946,11 +956,12 @@ pub fn update_skill_from_upstream(db: &Connection, path: &Path) -> Result<String
         } else {
             sync_info.meta.origin_locator.as_str()
         };
-        let outcome = match sync_git_snapshot_skill_checked(
+        let outcome = match sync_git_snapshot_skill_at_preview(
             &sync_info.meta.origin_locator,
             &sync_info.meta.resolved_locator,
             &sync_info.meta.tracking_ref,
             path,
+            Some(expected),
             |structure| {
                 let decision = evaluate_install_policy(
                     &policy,
@@ -986,7 +997,9 @@ pub fn update_skill_from_upstream(db: &Connection, path: &Path) -> Result<String
         sync_info.meta.lag_count = 0;
         sync_info.meta.last_probe_at = Some(now);
         sync_info.meta.last_sync_at = Some(now);
-        if let Err(error) = persist_managed_update(db, path, &sync_info.meta) {
+        if let Err(error) = persist_managed_update(db, path, &sync_info.meta)
+            .and_then(|()| crate::skill_library::refresh_deployment_origins(db, path))
+        {
             return match transaction.rollback() {
                 Ok(()) => Err(error),
                 Err(rollback_error) => Err(format!("{}；文件回滚失败: {}", error, rollback_error)),

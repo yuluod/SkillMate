@@ -145,14 +145,14 @@ describe("useUpdateFlow apply and lifecycle", () => {
     const { result, loadData, rerender } = setup();
     loadData.mockReturnValueOnce(refresh.promise);
     let run;
-    act(() => { run = result.current.updateSkill(a.path); result.current.updateSkill(a.path); });
+    act(() => { run = result.current.updateSkill(a.path, "preview-token"); result.current.updateSkill(a.path, "preview-token"); });
     rerender({ updatable: [b] });
     await act(async () => { apply.resolve("done"); await apply.promise; });
     act(() => { result.current.updateSkill(a.path); result.current.checkUpdate(a.path); });
     expect(result.current.getSyncInfo(a)).toMatchObject({ updating: true, checking: true });
     await act(async () => { probe.resolve(current); await probe.promise; });
     act(() => { result.current.updateSkill(a.path); });
-    expect(api.applyOne).toHaveBeenCalledTimes(1);
+    expect(api.applyOne).toHaveBeenCalledExactlyOnceWith(a.path, "preview-token");
     expect(api.checkOne).toHaveBeenCalledTimes(1);
     expect(loadData).toHaveBeenCalledExactlyOnceWith({ resetUpdates: false });
     await act(async () => { refresh.resolve(); await run; });

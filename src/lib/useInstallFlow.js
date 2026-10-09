@@ -61,6 +61,7 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
   const [preferredSkillId, setPreferredSkillId] = useState("");
   const [selectedSkillPaths, setSelectedSkillPaths] = useState([]);
   const planExecutorRef = useRef(null);
+  const applyingRef = useRef(false);
   if (!planExecutorRef.current) {
     planExecutorRef.current = createSingleFlightPlanExecutor(invokeSkillMateCommand);
   }
@@ -428,6 +429,7 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
   }, [enablePaths, installAssistants, operationAssistant, operationMode, pkg, preferredSkillId, projectPath, selectedSkillPaths, showToast, src, t, workflow]);
 
   const install = useCallback(async () => {
+    if (applyingRef.current) return;
     if (!pkg) { showToast(t("install.toast.enterPackage"), "error"); return; }
     if (workflow === "enable" && installAssistants.length === 0) { showToast(t("install.toast.chooseAssistant"), "error"); return; }
     if (operationMode === "symlink" && !projectPath.trim()) { showToast(t("install.toast.enterProject"), "error"); return; }
@@ -447,6 +449,7 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
       showToast(t("install.toast.missingPlan"), "warn");
       return;
     }
+    applyingRef.current = true;
     setLoading(true);
     try {
       const plans = installPreviewToken.plans || [{ assistantName: operationAssistant, planToken: installPreviewToken.planToken }];
@@ -503,6 +506,7 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
     } catch (e) {
       showToast(t("install.toast.failed", { message: String(e) }), "error");
     } finally {
+      applyingRef.current = false;
       setLoading(false);
     }
   }, [installAssistants.length, installPreviewCurrent, installPreviewToken, installStructurePreview, language, loadData, operationAssistant, operationMode, pkg, preferredSkillId, projectPath, selectedSkillPaths, setInstallOpen, setLoading, showToast, src, t, workflow]);

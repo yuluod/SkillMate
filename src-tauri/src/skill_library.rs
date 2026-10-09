@@ -730,7 +730,7 @@ pub fn refresh_deployment_origins(db: &Connection, library_path: &Path) -> Resul
     Ok(())
 }
 
-fn deployment_targets_for_library(
+pub(crate) fn deployment_targets_for_library(
     db: &Connection,
     library_path: &Path,
 ) -> Result<Vec<String>, String> {

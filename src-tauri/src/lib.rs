@@ -34,6 +34,7 @@ mod skill_trash;
 mod skillmate_manifest;
 #[cfg(desktop)]
 mod tray;
+mod update_preview;
 
 use app_core::{
     assistant_root_by_name, expand_path, managed_skill_roots, now_ms, project_skill_root_by_name,
@@ -83,9 +84,9 @@ use skill_install_source::{
 use skill_inventory::{collect_known_skill_paths, scan_all_assistants};
 use skill_library::{
     add_deployment_to_preview, copy_origin_to_deployment, deploy_library_skill,
-    is_library_skill_path, library_root, library_skill_id, refresh_deployment_origins,
-    register_deployment, register_library_skill, remove_deployment, resolve_library_path,
-    reuse_library_preview, scan_unassigned_library_skills,
+    is_library_skill_path, library_root, library_skill_id, register_deployment,
+    register_library_skill, remove_deployment, resolve_library_path, reuse_library_preview,
+    scan_unassigned_library_skills,
 };
 use skill_orchestration::{
     apply_manifest_with_plan, apply_profile_with_plan, build_current_manifest,
@@ -95,7 +96,6 @@ use skill_orchestration::{
 use skill_origin::{
     save_installed_git_meta as save_git_origin_meta,
     save_installed_local_meta as save_local_origin_meta, sync_info_json,
-    update_skill_from_upstream,
 };
 use skill_package::PackageDetection;
 use skill_profile::{read_skill_profiles, SkillSetProfilePreview, SkillSetProfileStore};
@@ -1618,7 +1618,15 @@ fn failed_sync_info(message: &str) -> serde_json::Value {
 }
 
 #[tauri::command]
-async fn update_from_upstream(path: String) -> Result<String, String> {
+async fn preview_skill_update(path: String) -> Result<update_preview::UpdatePreview, String> {
+    run_blocking_task(move || {
+        run_exclusive_operation(|db| update_preview::preview_update(db, &expand_path(path.trim())))
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn update_from_upstream(path: String, plan_token: Option<String>) -> Result<String, String> {
     run_blocking_task(move || {
         run_exclusive_operation(|db| {
             let p = expand_path(path.trim());
@@ -1629,10 +1637,7 @@ async fn update_from_upstream(path: String) -> Result<String, String> {
             if !is_explicitly_managed(db, &library_path)? {
                 return Err("只允许更新 SkillMate 管理的 Git 快照".to_string());
             }
-            verify_managed_content_unchanged(db, &library_path)?;
-            let result = update_skill_from_upstream(db, &library_path)?;
-            refresh_deployment_origins(db, &library_path)?;
-            Ok(result)
+            update_preview::apply_update(db, &p, plan_token.as_deref())
         })
     })
     .await?
@@ -1827,6 +1832,7 @@ pub fn run() {
             check_update,
             check_updates,
             update_from_upstream,
+            preview_skill_update,
             search_market,
             preview_sync_skill_copies,
             sync_skill_copies,
@@ -1854,6 +1860,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    mod update_preview_tests;
     use super::*;
     use crate::app_core::generate_id;
     use crate::library_manifest::{LibraryExport, LibrarySkillRecord};

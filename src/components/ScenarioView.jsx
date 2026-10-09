@@ -3,6 +3,7 @@ import Icon from "./Icon.jsx";
 import { AiAvatar } from "./InventoryViews.jsx";
 import { useI18n } from "../lib/i18n.jsx";
 import { SurfaceHeader, SurfaceSectionHeader } from "./SurfaceHeader.jsx";
+import { buildSkillCardView } from "../lib/skillmate.mjs";
 
 function formatHomePath(path) {
   return path
@@ -17,7 +18,7 @@ function skillPlatforms(skill, unknownLabel) {
   return [{ name: skill.ai || unknownLabel, icon: skill.aiIcon || "" }];
 }
 
-export default function ScenarioView({ scenarios, skills, flow }) {
+export default function ScenarioView({ scenarios, skills, flow, onEnable, projectPath = "" }) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
   const filteredSkills = useMemo(() => {
@@ -54,6 +55,7 @@ export default function ScenarioView({ scenarios, skills, flow }) {
   return (
     <div className="scenario-view view-shell">
       <SurfaceHeader title={t("nav.scenarios")} description={t("scenarios.subtitle")} meta={scenarios.length} />
+      <p className="empty-hint">{t("scenarios.enableHint")}{projectPath && ` ${t("workspace.current", { path: projectPath })}`}</p>
       <section className="scenario-editor-card">
         <header className="scenario-editor-head">
           <span className="scenario-editor-icon"><Icon name="scenarios" size={20} /></span>
@@ -134,13 +136,17 @@ export default function ScenarioView({ scenarios, skills, flow }) {
         <div className="scenario-empty"><Icon name="scenarios" size={22} /><div><strong>{t("scenarios.empty")}</strong><p>{t("scenarios.emptyHint")}</p></div></div>
       ) : (
         <div className="scenario-list">
-          {scenarios.map((scenario) => (
+          {scenarios.map((scenario) => {
+            const details = flow.details[scenario.id] || [];
+            const canEnable = details.length > 0 && details.every(item => item.exists && buildSkillCardView(item.skill, t).canEnable);
+            return (
             <div className="scenario-card" key={scenario.id}>
               <div className="scenario-icon"><Icon name="scenarios" size={24} /></div>
               <div className="scenario-info">
                 <h3>{scenario.name}</h3>
                 {scenario.description && <p>{scenario.description}</p>}
                 <span>{t("scenarios.skillCount", { count: scenario.skill_ids.length })} · {scenario.created_at}</span>
+                {onEnable && !canEnable && <p className="empty-hint">{t("scenarios.enableRequirement")}</p>}
                 {flow.expandedId === scenario.id && (
                   <div className="scenario-detail">
                     {flow.details[scenario.id]?.map((item) => (
@@ -157,13 +163,20 @@ export default function ScenarioView({ scenarios, skills, flow }) {
               </div>
               <div className="card-actions">
                 <button className="btn btn-secondary btn-sm" onClick={() => flow.setExpandedId(flow.expandedId === scenario.id ? "" : scenario.id)}><Icon name="preview" size={14} />{t(flow.expandedId === scenario.id ? "scenarios.collapse" : "scenarios.expand")}</button>
-                <button className="btn btn-primary btn-sm" onClick={() => flow.apply(scenario)}><Icon name="play" size={14} />{t("scenarios.apply")}</button>
+                <button className="btn btn-secondary btn-sm" onClick={() => flow.apply(scenario)}><Icon name="search" size={14} />{t("scenarios.filter")}</button>
+                {onEnable && <button className="btn btn-primary btn-sm"
+                  disabled={!canEnable}
+                  title={t("scenarios.enableRequirement")}
+                  onClick={() => onEnable(details.map(item => item.skill))}>
+                  <Icon name="play" size={14} />{t("scenarios.enable")}
+                </button>}
                 <button className="btn btn-secondary btn-sm" onClick={() => flow.loadIntoEditor(scenario)}><Icon name="edit" size={14} />{t("scenarios.load")}</button>
                 <button className="btn btn-secondary btn-sm" onClick={() => flow.copyPaths(scenario.skill_ids)}><Icon name="copy" size={14} />{t("scenarios.copyPaths")}</button>
                 <button className="btn btn-ghost btn-sm danger" onClick={() => flow.remove(scenario.id)} title={t("scenarios.remove", { name: scenario.name })} aria-label={t("scenarios.remove", { name: scenario.name })}><Icon name="trash" size={16} /></button>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

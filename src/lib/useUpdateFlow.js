@@ -95,19 +95,21 @@ export function useUpdateFlow({ updatable, showToast, loadData }) {
     finally { finish(operation, [path]); }
   };
 
-  const updateSkill = async path => {
-    if (active.current.has(path)) return;
+  const updateSkill = async (path, planToken) => {
+    if (active.current.has(path)) return false;
     const operation = begin([path], true);
     try {
-      const result = await skillmateApi.updates.applyOne(path);
-      if (!isCurrent(operation)) return;
+      const result = await skillmateApi.updates.applyOne(path, planToken);
+      if (!isCurrent(operation)) return false;
       showToast(language === "en" ? t("updates.toast.updated") : String(result || t("updates.toast.updated")), "success");
       await probe(operation, path);
       if (!isCurrent(operation)) return;
       await loadData({ resetUpdates: false });
+      return true;
     } catch (error) {
       if (!isCurrent(operation)) return;
       showToast(t("updates.toast.updateFailed", { message: toUserErrorMessage(error, t("error.safeRetry")) }), "error");
+      return false;
     } finally { finish(operation, [path]); }
   };
 

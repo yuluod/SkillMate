@@ -122,7 +122,8 @@ export const skillmateApi = Object.freeze({
   updates: Object.freeze({
     checkAll: (paths) => invoke("check_updates", { paths }),
     checkOne: (path) => invoke("check_update", { path, force: true }),
-    applyOne: (path) => invoke("update_from_upstream", { path }),
+    preview: (path) => invoke("preview_skill_update", { path }),
+    applyOne: (path, planToken) => invoke("update_from_upstream", { path, planToken }),
   }),
   policy: Object.freeze({
     get: () => invoke("get_install_policy"),

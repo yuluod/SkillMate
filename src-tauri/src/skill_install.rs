@@ -1033,11 +1033,30 @@ fn create_dir_symlink(source: &Path, target: &Path) -> Result<(), String> {
     std::os::windows::fs::symlink_dir(source, target).map_err(|e| e.to_string())
 }
 
+#[cfg(test)]
 pub fn sync_git_snapshot_skill_checked(
     origin_locator: &str,
     resolved_locator: &str,
     tracking_ref: &str,
     target_path: &Path,
+    validate: impl Fn(&SkillStructureInfo) -> Result<(), String>,
+) -> Result<GitInstallOutcome, String> {
+    sync_git_snapshot_skill_at_preview(
+        origin_locator,
+        resolved_locator,
+        tracking_ref,
+        target_path,
+        None,
+        validate,
+    )
+}
+
+pub fn sync_git_snapshot_skill_at_preview(
+    origin_locator: &str,
+    resolved_locator: &str,
+    tracking_ref: &str,
+    target_path: &Path,
+    expected: Option<&GitSnapshotProbe>,
     validate: impl Fn(&SkillStructureInfo) -> Result<(), String>,
 ) -> Result<GitInstallOutcome, String> {
     let mut spec = parse_git_install_spec(origin_locator).or_else(|_| {
@@ -1052,6 +1071,16 @@ pub fn sync_git_snapshot_skill_checked(
     }
     ensure_git_available()?;
     with_temp_git_source(&spec, |source_path, repo_path| {
+        if let Some(expected) = expected {
+            verify_resolved_ref(
+                Some(&expected.latest_ref),
+                &git_output(repo_path, &["rev-parse", "HEAD"])?,
+            )?;
+            verify_source_digest(
+                Some(&expected.source_digest),
+                &installable_content_fingerprint(source_path)?,
+            )?;
+        }
         if target_path.exists() || fs::symlink_metadata(target_path).is_ok() {
             return Err("更新目标尚未由受管事务暂存，已拒绝覆盖".to_string());
         }
@@ -1081,6 +1110,19 @@ pub fn probe_git_snapshot(
             latest_ref: git_output(repo_path, &["rev-parse", "HEAD"])?,
             source_digest: installable_content_fingerprint(source_path)?,
         })
+    })
+}
+
+pub(crate) fn with_git_snapshot<T>(
+    origin: &str,
+    resolved: &str,
+    tracking: &str,
+    inspect: impl FnOnce(&Path, &str) -> Result<T, String>,
+) -> Result<T, String> {
+    let spec = git_snapshot_spec(origin, resolved, tracking)?;
+    ensure_git_available()?;
+    with_temp_git_source(&spec, |source, repo| {
+        inspect(source, &git_output(repo, &["rev-parse", "HEAD"])?)
     })
 }
 

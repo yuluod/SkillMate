@@ -140,6 +140,27 @@ impl ReconcileTransaction<'static> {
 }
 
 impl<'db> ReconcileTransaction<'db> {
+    // Related paths participate in metadata/sidecar recovery without moving their content.
+    pub fn prepare_managed_with_related_paths(
+        db: &'db Connection,
+        removals: &[PathBuf],
+        install_targets: &[PathBuf],
+        related_paths: &[PathBuf],
+    ) -> Result<Self, String> {
+        let mut metadata_paths = removals.to_vec();
+        metadata_paths.extend_from_slice(install_targets);
+        metadata_paths.extend_from_slice(related_paths);
+        let checkpoint = ManagedMetadataCheckpoint::capture(db, &metadata_paths)?;
+        prepare_transaction(
+            removals,
+            install_targets,
+            Some(checkpoint),
+            Vec::new(),
+            Some(db),
+            &journal_directory(),
+        )
+    }
+
     pub fn prepare_managed(
         db: &'db Connection,
         removals: &[PathBuf],

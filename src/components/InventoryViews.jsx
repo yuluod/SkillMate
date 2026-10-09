@@ -228,7 +228,7 @@ export function SkillsView({
   );
 }
 
-export function AssistantsView({ assistants, installedCount, onManageSkills, onAdopt, onMaterialize, projectRevision = 0 }) {
+export function AssistantsView({ assistants, installedCount, onManageSkills, onAdopt, onMaterialize, projectRevision = 0, workspace }) {
   const { t } = useI18n();
   const [expandedAssistant, setExpandedAssistant] = React.useState(null);
   return (
@@ -239,7 +239,7 @@ export function AssistantsView({ assistants, installedCount, onManageSkills, onA
         meta={t("assistants.configuredCount", { installed: installedCount, total: assistants.length })}
         actions={onManageSkills && <button className="btn btn-primary btn-sm" onClick={onManageSkills}><Icon name="skills" size={14} />{t("assistants.manage")}</button>}
       />
-      <ProjectInspectionPanel onAdopt={onAdopt} onMaterialize={onMaterialize} revision={projectRevision} />
+      <ProjectInspectionPanel onAdopt={onAdopt} onMaterialize={onMaterialize} revision={projectRevision} workspace={workspace} />
       <div className="registry assistant-registry" role="table" aria-label={t("nav.assistants")}>
         <div className="registry-colhead" role="row">
           <span role="columnheader">{t("assistants.platform")}</span>
@@ -345,24 +345,32 @@ export function AssistantsView({ assistants, installedCount, onManageSkills, onA
   );
 }
 
-function ProjectInspectionPanel({ onAdopt, onMaterialize, revision }) {
+function ProjectInspectionPanel({ onAdopt, onMaterialize, revision, workspace }) {
   const { t } = useI18n();
   const [projectPath, setProjectPath] = React.useState("");
   const [inspection, setInspection] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   const [expanded, setExpanded] = React.useState("");
-  const inspectionRef = React.useRef(null);
-  inspectionRef.current = inspection;
+  const [request, setRequest] = React.useState(0);
+  const selectedPath = React.useRef("");
+  const rememberRef = React.useRef(workspace?.remember);
+  rememberRef.current = workspace?.remember;
 
   React.useEffect(() => {
-    const project = inspectionRef.current?.project_path;
+    const project = workspace?.path || selectedPath.current;
     if (!project) return;
     let cancelled = false;
     setBusy(true);
     setError("");
+    setInspection(null);
+    setProjectPath(project);
     skillmateApi.inventory.inspectProject(project).then((result) => {
-      if (!cancelled) setInspection(result);
+      if (!cancelled) {
+        setInspection(result);
+        setExpanded("");
+        rememberRef.current?.(result.project_path);
+      }
     }).catch((reason) => {
       if (!cancelled) {
         setInspection(null);
@@ -372,21 +380,12 @@ function ProjectInspectionPanel({ onAdopt, onMaterialize, revision }) {
       if (!cancelled) setBusy(false);
     });
     return () => { cancelled = true; };
-  }, [revision]);
+  }, [revision, request, workspace?.path, workspace?.request]);
 
-  async function inspect() {
+  function inspect() {
     if (!projectPath.trim()) return;
-    setBusy(true);
-    setError("");
-    try {
-      setInspection(await skillmateApi.inventory.inspectProject(projectPath.trim()));
-      setExpanded("");
-    } catch (reason) {
-      setInspection(null);
-      setError(String(reason));
-    } finally {
-      setBusy(false);
-    }
+    if (workspace) workspace.select(projectPath);
+    else { selectedPath.current = projectPath.trim(); setRequest(value => value + 1); }
   }
 
   return (
@@ -394,12 +393,15 @@ function ProjectInspectionPanel({ onAdopt, onMaterialize, revision }) {
       <div className="project-inspector-head">
         <div><h3 id="project-inspector-title">{t("projectInspection.title")}</h3><p>{t("projectInspection.hint")}</p></div>
         <div className="project-inspector-input">
-          <label className="visually-hidden" htmlFor="project-inspection-path">{t("projectInspection.path")}</label>
-          <input id="project-inspection-path" value={projectPath} onChange={(event) => setProjectPath(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void inspect(); }} placeholder={t("projectInspection.placeholder")} />
-          <button className="btn btn-primary btn-sm" onClick={inspect} disabled={busy || !projectPath.trim()}><Icon name="search" size={14} />{t(busy ? "projectInspection.inspecting" : "projectInspection.inspect")}</button>
+          {!workspace && <>
+            <label className="visually-hidden" htmlFor="project-inspection-path">{t("projectInspection.path")}</label>
+            <input id="project-inspection-path" value={projectPath} onChange={(event) => setProjectPath(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void inspect(); }} placeholder={t("projectInspection.placeholder")} />
+          </>}
+          <button className="btn btn-primary btn-sm" onClick={inspect} disabled={busy || !projectPath.trim()}><Icon name="search" size={14} />{t(busy ? "projectInspection.inspecting" : workspace ? "common.refresh" : "projectInspection.inspect")}</button>
         </div>
       </div>
       {error && <div className="install-compact error" role="alert"><strong>{t("projectInspection.failed")}</strong><span>{error}</span></div>}
+      <p className="empty-hint">{t("projectInspection.inferred")}</p>
       {inspection && (
         <div className="project-agent-results">
           {inspection.assistants.map((assistant) => {
@@ -487,7 +489,7 @@ function lagText(info, t) {
 
 function updateButtonText(info, t) {
   if (info.updating) return t(info.originKind === "git" ? "updates.updating" : "updates.syncing");
-  return t(info.originKind === "git" ? "updates.updateNow" : "updates.syncNow");
+  return t("updatePreview.action");
 }
 
 export function UpdatesView({ skills, orderedSkills, stats, updateState, getSyncInfo, checkAll, checkOne, updateOne }) {

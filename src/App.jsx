@@ -33,6 +33,9 @@ import { useLibrarySettingsFlow } from "./lib/useLibrarySettingsFlow.js";
 import { useScenarioFlow } from "./lib/useScenarioFlow.js";
 import { useSearchFlow } from "./lib/useSearchFlow.js";
 import { useUpdateFlow } from "./lib/useUpdateFlow.js";
+import { useProjectWorkspace } from "./lib/useProjectWorkspace.js";
+import ProjectWorkspaceBar from "./components/ProjectWorkspaceBar.jsx";
+import UpdatePreviewModal from "./components/UpdatePreviewModal.jsx";
 import { createResettableTimer } from "./lib/toastTimer.mjs";
 import { toUserErrorMessage } from "./lib/errorMessage.mjs";
 import { skillmateApi } from "./lib/skillmateApi.js";
@@ -225,6 +228,8 @@ function App() {
   const [driftGroup, setDriftGroup] = useState(null);
   const [adoptionCandidate, setAdoptionCandidate] = useState(null);
   const [projectInspectionRevision, setProjectInspectionRevision] = useState(0);
+  const projectWorkspace = useProjectWorkspace();
+  const [updatePreviewPath, setUpdatePreviewPath] = useState("");
   const {
     input: searchInput,
     query: search,
@@ -768,6 +773,8 @@ function App() {
   function enableLibrarySkill(skill) {
     const skillsToEnable = Array.isArray(skill) ? skill : [skill];
     installFlow.source.prepare(skillsToEnable.map((item) => item.symlink_source || item.path), "", "local", "enable");
+    installFlow.target.setMode(projectWorkspace.path ? "symlink" : "copy");
+    installFlow.target.setProjectPath(projectWorkspace.path);
     setInstallOpen(true);
   }
 
@@ -839,6 +846,7 @@ function App() {
         </nav>
 
         <main className={`content ${view === "settings" ? "content-settings" : ""}`} ref={contentRef}>
+          {["dashboard", "ai", "scenarios"].includes(view) && <ProjectWorkspaceBar workspace={projectWorkspace} onOpen={() => setView("ai")} />}
           {loadError && (
             <div className="load-error-banner" role="alert">
               <div className="load-error-copy">
@@ -911,11 +919,11 @@ function App() {
           )}
 
           {view === "ai" && (
-            <AssistantsView assistants={data.assistants} installedCount={statAI} onManageSkills={() => setView("skills")} onAdopt={setAdoptionCandidate} onMaterialize={setAdoptionCandidate} projectRevision={projectInspectionRevision} />
+            <AssistantsView assistants={data.assistants} installedCount={statAI} onManageSkills={() => setView("skills")} onAdopt={setAdoptionCandidate} onMaterialize={setAdoptionCandidate} projectRevision={projectInspectionRevision} workspace={projectWorkspace} />
           )}
 
           {view === "scenarios" && (
-            <ScenarioView scenarios={data.scenarios} skills={scenarioSkills} flow={scenarioFlow} />
+            <ScenarioView scenarios={data.scenarios} skills={scenarioSkills} flow={scenarioFlow} onEnable={enableLibrarySkill} projectPath={projectWorkspace.path} />
           )}
 
           {view === "updates" && (
@@ -927,7 +935,7 @@ function App() {
               getSyncInfo={getSyncInfo}
               checkAll={checkAllUpdates}
               checkOne={checkUpdate}
-              updateOne={updateSkill}
+              updateOne={setUpdatePreviewPath}
             />
           )}
 
@@ -1074,6 +1082,7 @@ function App() {
       {trashReceipt && <div className="undo-bar" role="status"><span>{t("trash.done", { name: trashReceipt.name })}</span><button className="btn btn-secondary btn-sm" onClick={undoTrash}><Icon name="undo" size={14} />{t("trash.undo")}</button></div>}
 
       {driftGroup && <DriftSyncModal group={driftGroup} onClose={() => setDriftGroup(null)} onComplete={completeDrift} />}
+      {updatePreviewPath && <UpdatePreviewModal path={updatePreviewPath} onClose={() => setUpdatePreviewPath("")} onConfirm={updateSkill} />}
 
       {adoptionCandidate && <AdoptionModal candidate={adoptionCandidate} onClose={() => setAdoptionCandidate(null)} onComplete={completeAdoption} />}
 
