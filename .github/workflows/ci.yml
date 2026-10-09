@@ -42,8 +42,22 @@ jobs:
         run: ./actionlint
 
   frontend:
-    name: Frontend
-    runs-on: ubuntu-22.04
+    name: Frontend ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-22.04
+            shell: bash
+          - name: Windows
+            os: windows-latest
+            shell: cmd
+    defaults:
+      run:
+        # 与发布任务一致，Windows 避开 pnpm 的 PowerShell shim。
+        shell: ${{ matrix.shell }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -63,6 +77,15 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Verify Windows Tauri CLI
+        if: runner.os == 'Windows'
+        run: |
+          if not exist node_modules\.bin\tauri.cmd (
+            echo ::error::Tauri CLI is missing after pnpm install
+            exit /b 1
+          )
+          call pnpm.cmd tauri --version || exit /b 1
 
       - name: Test
         run: pnpm frontend:test

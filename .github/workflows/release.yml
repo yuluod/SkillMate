@@ -266,9 +266,6 @@ jobs:
       - name: Build and upload macOS artifacts
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         env:
-          # CI 在上一步已 frozen-lockfile 安装；tauri-action 派生的 pnpm 在
-          # run 前校验会误判（pnpm 12 Windows 无法读取状态），仅开发期需要。
-          PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: "false"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -312,14 +309,19 @@ jobs:
           workspaces: "src-tauri -> target"
 
       - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
+        # pnpm 12 的 PowerShell shim 会静默退出；显式使用 CMD 入口。
+        shell: cmd
+        run: |
+          call pnpm.cmd install --frozen-lockfile || exit /b 1
+          if not exist node_modules\.bin\tauri.cmd (
+            echo ::error::Tauri CLI is missing after pnpm install
+            exit /b 1
+          )
+          call pnpm.cmd tauri --version || exit /b 1
 
       - name: Build and upload Windows artifacts
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         env:
-          # CI 在上一步已 frozen-lockfile 安装；tauri-action 派生的 pnpm 在
-          # run 前校验会误判（pnpm 12 Windows 无法读取状态），仅开发期需要。
-          PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: "false"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -380,9 +382,6 @@ jobs:
       - name: Build and upload Linux artifacts
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         env:
-          # CI 在上一步已 frozen-lockfile 安装；tauri-action 派生的 pnpm 在
-          # run 前校验会误判（pnpm 12 Windows 无法读取状态），仅开发期需要。
-          PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: "false"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}

@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+### 修复
+
+- Windows 发布构建改用 CMD 调用 pnpm，避免 PowerShell 启动脚本静默退出导致依赖未安装；恢复依赖前置校验，并在普通 CI 中增加 Windows 前端测试、构建与 Tauri CLI 检查。
+
 ## [0.0.16] - 2026-10-08
 
 ### 新增
