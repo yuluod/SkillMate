@@ -160,7 +160,7 @@ External physical directories found during scanning remain read-only by default.
 4. Replaces the original physical directory with a managed link to the master copy.
 5. Migrates provenance and update state.
 
-Nested Skills from Git repositories retain their path relative to the repository root, so later updates do not accidentally target the whole repository. If any step fails, SkillMate attempts to restore the original directory and registration data.
+Nested Skills from Git repositories retain their path relative to the repository root, so later updates do not accidentally target the whole repository. Saved scenarios referencing the original path are migrated to the library original. If any step fails, SkillMate attempts to restore the original directory, scenario references, and registration data.
 
 ### Make an independent project copy (optional)
 
@@ -199,7 +199,7 @@ Choose **Preview update** to review installed and upstream commits, registered d
 
 The diff lists up to 200 files and displays UTF-8 text up to 8 KiB per file, with a 64 KiB text budget per side. Binary, large, and over-budget content is marked as omitted; plan validation still uses full content fingerprints. Scanning stops with an error above 10,000 files, 256 MiB of content, or 32 directory levels.
 
-Safety policy is evaluated again before an update. Changes to local content, upstream commits, deployment relationships, or policy invalidate the preview token. Existing transaction recovery covers library files, provenance, and related deployment state together, attempting to restore them together on failure.
+Safety policy is evaluated again before an update. Changes to local content, upstream commits, deployment relationships, or policy invalidate the preview token. Applying first downloads and validates one snapshot while the existing library original and deployment links remain readable, then replaces content through local file operations. Existing transaction recovery covers library files, provenance, and related deployment state together, attempting to restore them together on failure.
 
 ### Application updates
 
@@ -210,7 +210,7 @@ SkillMate checks, verifies, and installs application updates through GitHub Rele
 - **Tags**: tag and filter Skills; create, rename, recolor, and delete tags.
 - **Scenarios**: save groups of Skills for writing, development, review, or other tasks, inspect missing entries, and reuse the group.
 - **Scenario enablement**: **View collection** filters the inventory; **Enable scenario** opens a batch preview. Every entry must exist in the library; add missing Skills or explicitly adopt external content first.
-- **Bulk enablement**: select library Skills or enable a saved scenario, choose agents and global/project scope, then confirm the write plan. This adds missing deployments without disabling other Skills. Each target runs its own transaction; partial failures report completed and failed items.
+- **Bulk enablement**: select library Skills or enable a saved scenario, choose agents and global/project scope, then confirm the write plan. Existing managed links to the same library original are retained, and missing deployments are added without disabling other Skills. Each target runs its own transaction; partial failures report completed and failed items and can be retried after a new preview.
 - **Import / export**: export tags, scenarios, and the managed Skill inventory, with a change preview before import.
 - **Git backup**: snapshot explicitly managed content into a local Git repository and optionally push it to a remote.
 - **SkillMate manifest**: use `skillmate.toml` to reconcile a target state through `install`, `keep`, and `remove` actions.
