@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub const STATE_FILE_NAME: &str = ".skillmate-state.json";
 pub const LIBRARY_OWNER_NAME: &str = "SkillMate";
-const STATE_SCHEMA_VERSION: u32 = 2;
+const STATE_SCHEMA_VERSION: u32 = 3;
 const MAX_FINGERPRINT_FILES: usize = 10_000;
 const MAX_FINGERPRINT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_FINGERPRINT_DEPTH: usize = 32;
@@ -104,7 +104,7 @@ pub fn read_managed_state(root: &Path) -> Result<SkillMateState, String> {
     let normalized = validate_and_normalize_state(root, &mut state)?;
     let migrated = state.version < STATE_SCHEMA_VERSION;
     if migrated {
-        migrate_state_fingerprints(&mut state);
+        migrate_state_fingerprints(&mut state)?;
         state.version = STATE_SCHEMA_VERSION;
     }
     if normalized || migrated {
@@ -269,13 +269,18 @@ fn normalize_managed_entry_path(root: &Path, target_path: &Path) -> Result<PathB
 pub fn content_fingerprint(path: &Path) -> Result<String, String> {
     let mut hash = StableHash::new();
     let mut budget = FingerprintBudget::default();
-    collect_fingerprint(path, path, 0, &mut budget, &mut |bytes| hash.update(bytes))?;
-    Ok(format!("sha256:{}", hash.finish()))
+    collect_fingerprint(path, path, 0, &mut budget, true, &mut |bytes| {
+        hash.update(bytes)
+    })?;
+    Ok(format!("sha256:v2:{}", hash.finish()))
 }
 
 pub fn fingerprint_matches(path: &Path, expected: &str) -> Result<bool, String> {
-    if expected.starts_with("sha256:") {
+    if expected.starts_with("sha256:v2:") {
         return Ok(content_fingerprint(path)? == expected);
+    }
+    if expected.starts_with("sha256:") {
+        return Ok(legacy_sha256_content_fingerprint(path)? == expected);
     }
     if expected.starts_with("fnv1a64:") {
         return Ok(legacy_content_fingerprint(path)? == expected);
@@ -294,6 +299,7 @@ fn collect_fingerprint<F>(
     root: &Path,
     depth: usize,
     budget: &mut FingerprintBudget,
+    framed: bool,
     update: &mut F,
 ) -> Result<(), String>
 where
@@ -307,11 +313,23 @@ where
     }
     let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
     let relative = path.strip_prefix(root).unwrap_or(path);
-    update(relative.to_string_lossy().as_bytes());
+    if framed {
+        let bytes = relative.as_os_str().as_encoded_bytes();
+        update(&(bytes.len() as u64).to_le_bytes());
+        update(bytes);
+    } else {
+        update(relative.to_string_lossy().as_bytes());
+    }
     if metadata.file_type().is_symlink() {
-        update(b"symlink");
+        update(if framed { b"L" } else { b"symlink" });
         let target = fs::read_link(path).map_err(|error| error.to_string())?;
-        update(target.to_string_lossy().as_bytes());
+        if framed {
+            let bytes = target.as_os_str().as_encoded_bytes();
+            update(&(bytes.len() as u64).to_le_bytes());
+            update(bytes);
+        } else {
+            update(target.to_string_lossy().as_bytes());
+        }
         return Ok(());
     }
     if metadata.is_file() {
@@ -324,36 +342,56 @@ where
                 MAX_FINGERPRINT_BYTES / 1024 / 1024
             ));
         }
-        update(b"file");
+        update(if framed { b"F" } else { b"file" });
         let mut file = fs::File::open(path).map_err(|error| error.to_string())?;
         let mut buffer = [0u8; 8192];
+        let mut contents = StableHash::new();
         loop {
             let count = file.read(&mut buffer).map_err(|error| error.to_string())?;
             if count == 0 {
                 break;
             }
-            update(&buffer[..count]);
+            if framed {
+                contents.update(&buffer[..count]);
+            } else {
+                update(&buffer[..count]);
+            }
+        }
+        if framed {
+            // 文件内容先取固定长度摘要，防止与下一条路径或类型标记拼接歧义。
+            update(contents.finish().as_bytes());
         }
         return Ok(());
     }
     if metadata.is_dir() {
-        update(b"directory");
+        update(if framed { b"D" } else { b"directory" });
         let mut entries = fs::read_dir(path)
             .map_err(|error| error.to_string())?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())?;
         entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
-            collect_fingerprint(&entry.path(), root, depth + 1, budget, update)?;
+            collect_fingerprint(&entry.path(), root, depth + 1, budget, framed, update)?;
         }
+    } else if framed {
+        return Err(format!("不支持的内容指纹文件类型: {}", path.display()));
     }
     Ok(())
+}
+
+fn legacy_sha256_content_fingerprint(path: &Path) -> Result<String, String> {
+    let mut hash = StableHash::new();
+    let mut budget = FingerprintBudget::default();
+    collect_fingerprint(path, path, 0, &mut budget, false, &mut |bytes| {
+        hash.update(bytes)
+    })?;
+    Ok(format!("sha256:{}", hash.finish()))
 }
 
 fn legacy_content_fingerprint(path: &Path) -> Result<String, String> {
     let mut hash = 0xcbf29ce484222325u64;
     let mut budget = FingerprintBudget::default();
-    collect_fingerprint(path, path, 0, &mut budget, &mut |bytes| {
+    collect_fingerprint(path, path, 0, &mut budget, false, &mut |bytes| {
         update_legacy_hash(&mut hash, bytes)
     })?;
     Ok(format!("fnv1a64:{:016x}", hash))
@@ -366,21 +404,32 @@ fn update_legacy_hash(hash: &mut u64, bytes: &[u8]) {
     }
 }
 
-fn migrate_state_fingerprints(state: &mut SkillMateState) {
+fn migrate_state_fingerprints(state: &mut SkillMateState) -> Result<(), String> {
     for entry in &mut state.managed_skills {
-        if !entry.last_seen_hash.starts_with("fnv1a64:") {
+        if entry.last_seen_hash.starts_with("sha256:v2:")
+            || !(entry.last_seen_hash.starts_with("sha256:")
+                || entry.last_seen_hash.starts_with("fnv1a64:"))
+        {
             continue;
         }
         let path = Path::new(&entry.path);
-        if !path.exists() && fs::symlink_metadata(path).is_err() {
-            continue;
+        match fs::symlink_metadata(path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("无法读取待迁移 Skill {}: {error}", path.display())),
         }
-        if legacy_content_fingerprint(path).as_deref() == Ok(entry.last_seen_hash.as_str()) {
-            if let Ok(hash) = content_fingerprint(path) {
-                entry.last_seen_hash = hash;
+        if fingerprint_matches(path, &entry.last_seen_hash)
+            .map_err(|error| format!("核验旧内容指纹失败 {}: {error}", path.display()))?
+        {
+            let hash = content_fingerprint(path)?;
+            // 迁移前后都核验旧基线，不把已经修改的当前内容登记为安装状态。
+            if !fingerprint_matches(path, &entry.last_seen_hash)? {
+                return Err(format!("内容指纹迁移期间 Skill 已变化: {}", path.display()));
             }
+            entry.last_seen_hash = hash;
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -440,6 +489,43 @@ mod tests {
             migrated.managed_skills[0].last_seen_hash,
             content_fingerprint(&skill).unwrap()
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn migrates_old_sha256_only_when_the_saved_baseline_matches() {
+        let root = test_dir("sha256-migration");
+        let unchanged = root.join("unchanged");
+        let edited = root.join("edited");
+        for path in [&unchanged, &edited] {
+            fs::create_dir_all(path).unwrap();
+            fs::write(path.join("SKILL.md"), "original").unwrap();
+        }
+        let edited_baseline = legacy_sha256_content_fingerprint(&edited).unwrap();
+        let state = SkillMateState {
+            version: 2,
+            managed_skills: [&unchanged, &edited]
+                .into_iter()
+                .map(|path| ManagedSkillState {
+                    assistant: "Codex".into(),
+                    path: path.to_string_lossy().into_owned(),
+                    origin: "local:/tmp/writer".into(),
+                    installed_at: "2026-01-01T00:00:00Z".into(),
+                    last_seen_hash: legacy_sha256_content_fingerprint(path).unwrap(),
+                })
+                .collect(),
+        };
+        write_managed_state(&root, &state).unwrap();
+        fs::write(edited.join("SKILL.md"), "manual edit").unwrap();
+
+        let migrated = read_managed_state(&root).unwrap();
+        assert_eq!(
+            migrated.managed_skills[0].last_seen_hash,
+            content_fingerprint(&unchanged).unwrap()
+        );
+        assert_eq!(migrated.managed_skills[1].last_seen_hash, edited_baseline);
+        assert!(!fingerprint_matches(&edited, &edited_baseline).unwrap());
+        assert_eq!(read_managed_state(&root).unwrap(), migrated);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -523,6 +609,21 @@ mod tests {
 
         assert_eq!(first, second);
         assert_ne!(first, changed);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn content_fingerprint_distinguishes_merged_and_split_files() {
+        let root = test_dir("fingerprint-boundaries");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("a"), "XbfileY").unwrap();
+        let merged = content_fingerprint(&root).unwrap();
+
+        fs::write(root.join("a"), "X").unwrap();
+        fs::write(root.join("b"), "Y").unwrap();
+        let split = content_fingerprint(&root).unwrap();
+
+        assert_ne!(merged, split);
         let _ = fs::remove_dir_all(root);
     }
 

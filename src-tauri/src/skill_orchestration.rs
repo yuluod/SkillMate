@@ -5,7 +5,7 @@ use crate::managed_installation::{
     list_managed_installations, record_managed_path, record_managed_root,
     refresh_managed_installation, verify_managed_content_unchanged,
 };
-use crate::managed_state::{content_fingerprint, managed_state_origin};
+use crate::managed_state::{content_fingerprint, fingerprint_matches, managed_state_origin};
 use crate::operation_plan::{operation_plan_token, verify_operation_plan};
 use crate::skill_install::{
     install_git_package_at_ref, install_local_package_at_digest, preview_install_source,
@@ -328,6 +328,7 @@ fn build_manifest_library_preview(
         preview = reuse_library_preview(preview);
     }
     preview = add_deployment_to_preview(
+        db,
         preview,
         deployment_root,
         &skill.assistant,
@@ -353,7 +354,7 @@ fn library_skill_matches_manifest(
         return Ok(false);
     }
     match skill.content_hash.as_deref() {
-        Some(expected) => Ok(content_fingerprint(library_path)? == expected),
+        Some(expected) => fingerprint_matches(library_path, expected),
         None => Ok(true),
     }
 }
@@ -738,7 +739,7 @@ fn manifest_target_matches(
             .map(|deployment| deployment.library_path.as_path())
             .unwrap_or(target_path);
         let content_matches = match skill.content_hash.as_deref() {
-            Some(expected) => content_fingerprint(content_path)? == expected,
+            Some(expected) => fingerprint_matches(content_path, expected)?,
             None => true,
         };
         return Ok(metadata_matches && content_matches);

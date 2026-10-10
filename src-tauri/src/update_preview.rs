@@ -15,7 +15,7 @@ use std::fs;
 use std::io::Read;
 use std::path::Path;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateImpact {
     path: String,
@@ -60,20 +60,29 @@ pub fn apply_update(
     if token.is_none_or(|value| value.trim().is_empty()) {
         return Err("操作计划缺失，请重新预览".into());
     }
-    let preview = preview_update(db, requested)?;
-    crate::operation_plan::verify_operation_plan(&preview.plan_token, token)?;
-    if !preview.can_apply {
-        return Err("当前更新计划不可执行，请重新检查来源和策略".into());
-    }
-    let path = Path::new(&preview.library_path);
-    let expected = crate::skill_install::GitSnapshotProbe {
-        latest_ref: preview.latest_ref,
-        source_digest: preview.source_digest,
-    };
-    crate::skill_origin::update_skill_from_upstream(db, path, &expected)
+    with_update_preview(db, requested, |preview, source| {
+        crate::operation_plan::verify_operation_plan(&preview.plan_token, token)?;
+        if !preview.can_apply {
+            return Err("当前更新计划不可执行，请重新检查来源和策略".into());
+        }
+        let path = Path::new(&preview.library_path);
+        let expected = crate::skill_install::GitSnapshotProbe {
+            latest_ref: preview.latest_ref,
+            source_digest: preview.source_digest,
+        };
+        crate::skill_origin::update_skill_from_prepared_snapshot(db, path, source, &expected)
+    })
 }
 
 pub fn preview_update(db: &Connection, requested: &Path) -> Result<UpdatePreview, String> {
+    with_update_preview(db, requested, |preview, _| Ok(preview))
+}
+
+fn with_update_preview<T>(
+    db: &Connection,
+    requested: &Path,
+    action: impl FnOnce(UpdatePreview, &Path) -> Result<T, String>,
+) -> Result<T, String> {
     let path = resolve_library_path(db, requested)?;
     if !is_explicitly_managed(db, &path)? {
         return Err("只允许预览 SkillMate 管理的更新".into());
@@ -84,9 +93,98 @@ pub fn preview_update(db: &Connection, requested: &Path) -> Result<UpdatePreview
         return Err("当前来源不支持更新预览".into());
     }
     let baseline = content_fingerprint(&path)?;
-    let policy = load_install_policy(db)?;
+    with_git_snapshot(
+        &meta.origin_locator,
+        &meta.resolved_locator,
+        &meta.tracking_ref,
+        |source, latest| {
+            if load_origin_meta(db, &path.to_string_lossy())?.as_ref() != Some(&meta) {
+                return Err("来源状态在下载期间发生变化，请重新预览".into());
+            }
+            // 下载可能耗时较长，使用完成后的策略和真实连接状态生成计划。
+            let policy = load_install_policy(db)?;
+            let impacts = collect_update_impacts(db, &path)?;
+            let structure = inspect_skill_for_inventory(source).structure;
+            let decision = evaluate_install_policy(
+                &policy,
+                InstallPolicyInput {
+                    source_kind: "git",
+                    source: if meta.origin_locator.trim().is_empty() {
+                        &meta.resolved_locator
+                    } else {
+                        &meta.origin_locator
+                    },
+                    structure_status: &structure.structure_status,
+                    warnings: &structure.structure_warnings,
+                },
+            );
+            let (files, omitted_files) = compare_files(&path, source)?;
+            let source_digest = installable_content_fingerprint(source)?;
+            let blocked_reason = if !decision.allowed {
+                Some("policy")
+            } else if structure.structure_status != "complete" {
+                Some("structure")
+            } else if impacts.iter().any(|impact| !impact.connected) {
+                Some("deployments")
+            } else if files.is_empty() && omitted_files == 0 && meta.installed_ref == latest {
+                Some("unchanged")
+            } else {
+                None
+            };
+            // 计划绑定完整内容、策略和启用关系，不能只依赖有界的展示差异。
+            let plan_token = operation_plan_token(
+                "update",
+                &(
+                    &path,
+                    &meta.origin_locator,
+                    &meta.resolved_locator,
+                    &meta.tracking_ref,
+                    &meta.installed_ref,
+                    latest,
+                    &baseline,
+                    &source_digest,
+                    &policy,
+                    &impacts,
+                ),
+            )?;
+            if content_fingerprint(&path)? != baseline {
+                return Err("预览期间本地内容发生变化，请重新预览".into());
+            }
+            if load_origin_meta(db, &path.to_string_lossy())?.as_ref() != Some(&meta)
+                || load_install_policy(db)? != policy
+                || collect_update_impacts(db, &path)? != impacts
+            {
+                return Err("预览期间来源、策略或启用关系发生变化，请重新预览".into());
+            }
+            action(
+                UpdatePreview {
+                    library_path: path.to_string_lossy().into_owned(),
+                    installed_ref: meta.installed_ref.clone(),
+                    latest_ref: latest.into(),
+                    source_digest,
+                    can_apply: blocked_reason.is_none(),
+                    blocked_reason: blocked_reason.map(str::to_owned),
+                    warnings: structure
+                        .structure_warnings
+                        .into_iter()
+                        .chain(decision.findings.into_iter().map(|finding| finding.code))
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .collect(),
+                    impacts,
+                    files,
+                    omitted_files,
+                    plan_token,
+                },
+                source,
+            )
+        },
+    )
+}
+
+fn collect_update_impacts(db: &Connection, path: &Path) -> Result<Vec<UpdateImpact>, String> {
     let mut impacts = Vec::new();
-    for target in deployment_targets_for_library(db, &path)? {
+    for target in deployment_targets_for_library(db, path)? {
         let target_path = Path::new(&target);
         let registered = find_managed_installation(db, target_path)?;
         let link_target = fs::read_link(target_path)
@@ -110,74 +208,7 @@ pub fn preview_update(db: &Connection, requested: &Path) -> Result<UpdatePreview
         });
     }
     impacts.sort_by(|a, b| a.path.cmp(&b.path));
-    with_git_snapshot(
-        &meta.origin_locator,
-        &meta.resolved_locator,
-        &meta.tracking_ref,
-        |source, latest| {
-            let structure = inspect_skill_for_inventory(source).structure;
-            let decision = evaluate_install_policy(
-                &policy,
-                InstallPolicyInput {
-                    source_kind: "git",
-                    source: &meta.origin_locator,
-                    structure_status: &structure.structure_status,
-                    warnings: &structure.structure_warnings,
-                },
-            );
-            let (files, omitted_files) = compare_files(&path, source)?;
-            let source_digest = installable_content_fingerprint(source)?;
-            let blocked_reason = if !decision.allowed {
-                Some("policy")
-            } else if structure.structure_status != "complete" {
-                Some("structure")
-            } else if impacts.iter().any(|impact| !impact.connected) {
-                Some("deployments")
-            } else if files.is_empty() && omitted_files == 0 && meta.installed_ref == latest {
-                Some("unchanged")
-            } else {
-                None
-            };
-            // Include complete fingerprints, policy and deployment identities, not only the bounded display diff.
-            let plan_token = operation_plan_token(
-                "update",
-                &(
-                    &path,
-                    &meta.origin_locator,
-                    &meta.resolved_locator,
-                    &meta.tracking_ref,
-                    &meta.installed_ref,
-                    latest,
-                    &baseline,
-                    &source_digest,
-                    &policy,
-                    &impacts,
-                ),
-            )?;
-            if content_fingerprint(&path)? != baseline {
-                return Err("预览期间本地内容发生变化，请重新预览".into());
-            }
-            Ok(UpdatePreview {
-                library_path: path.to_string_lossy().into_owned(),
-                installed_ref: meta.installed_ref.clone(),
-                latest_ref: latest.into(),
-                source_digest,
-                can_apply: blocked_reason.is_none(),
-                blocked_reason: blocked_reason.map(str::to_owned),
-                warnings: structure
-                    .structure_warnings
-                    .into_iter()
-                    .chain(decision.findings.into_iter().map(|finding| finding.code))
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .collect(),
-                impacts,
-                files,
-                omitted_files,
-                plan_token,
-            })
-        },
-    )
+    Ok(impacts)
 }
 
 struct FileSnapshot {

@@ -2,7 +2,8 @@ use crate::app_core::{assistant_definitions, is_managed_skill_path, managed_skil
 use crate::database::{create_db_connection, data_directory, open_db_connection};
 use crate::managed_installation::{
     backfill_managed_roots, find_managed_installation, list_managed_roots,
-    prune_missing_managed_installations, record_managed_root, register_managed_root,
+    migrate_managed_installation_fingerprints, prune_missing_managed_installations,
+    record_managed_root, register_managed_root,
 };
 use crate::skill_library::{copy_origin_to_deployment, resolve_library_path};
 use crate::skill_origin::{
@@ -82,7 +83,11 @@ where
     run_exclusive_operation_with(
         acquire_operation_lock,
         open_db_connection,
-        recover_pending_transactions,
+        |db| {
+            let recovered = recover_pending_transactions(db)?;
+            migrate_managed_installation_fingerprints(db)?;
+            Ok(recovered)
+        },
         operation,
     )
 }
@@ -207,8 +212,11 @@ pub(crate) fn initialize_managed_database() -> Result<(Connection, StartupMainte
         .iter()
         .flat_map(|assistant| assistant.global_discovery_roots())
         .collect::<Vec<_>>();
-    let report =
-        run_startup_maintenance_with(&db, &global_roots, || recover_pending_transactions(&db))?;
+    let report = run_startup_maintenance_with(&db, &global_roots, || {
+        let recovered = recover_pending_transactions(&db)?;
+        migrate_managed_installation_fingerprints(&db)?;
+        Ok(recovered)
+    })?;
     Ok((db, report))
 }
 

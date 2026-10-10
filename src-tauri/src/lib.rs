@@ -39,9 +39,7 @@ mod update_preview;
 use app_core::{
     assistant_root_by_name, expand_path, managed_skill_roots, now_ms, project_skill_root_by_name,
 };
-use database::{
-    database_initialization_error, open_db_connection, remember_database_initialization_error,
-};
+use database::{database_initialization_error, remember_database_initialization_error};
 use git_backup::GitBackup;
 use install_policy::{
     evaluate_install_policy, load_install_policy, policy_failure_decision, save_install_policy,
@@ -637,24 +635,27 @@ async fn preview_install_skill(
     let task_preferred_skill_id = preferred_skill_id.clone();
     match run_blocking_task(move || {
         let mode = task_install_mode.unwrap_or_else(|| "copy".to_string());
-        let policy = open_db_connection().and_then(|db| load_install_policy(&db));
-        build_install_request_preview(
-            InstallPreviewRequest {
-                package: &task_package,
-                source: &task_source,
-                assistant_name: &task_assistant_name,
-                mode: &mode,
-                project_path: task_project_path.as_deref(),
-                selected_skill_paths: task_selected_skill_paths.as_deref(),
-                preferred_skill_id: task_preferred_skill_id.as_deref(),
-            },
-            policy.as_ref().map_err(Clone::clone),
-        )
+        run_exclusive_operation(|db| {
+            let policy = load_install_policy(db);
+            Ok(build_install_request_preview(
+                db,
+                InstallPreviewRequest {
+                    package: &task_package,
+                    source: &task_source,
+                    assistant_name: &task_assistant_name,
+                    mode: &mode,
+                    project_path: task_project_path.as_deref(),
+                    selected_skill_paths: task_selected_skill_paths.as_deref(),
+                    preferred_skill_id: task_preferred_skill_id.as_deref(),
+                },
+                policy.as_ref().map_err(Clone::clone),
+            ))
+        })
     })
     .await
     {
-        Ok(preview) => preview,
-        Err(error) => {
+        Ok(Ok(preview)) => preview,
+        Ok(Err(error)) | Err(error) => {
             let mode = install_mode.unwrap_or_else(|| "copy".to_string());
             finalize_install_request_preview(
                 install_preview_error(
@@ -684,6 +685,7 @@ struct InstallPreviewRequest<'a> {
 }
 
 fn build_install_request_preview(
+    db: &Connection,
     request: InstallPreviewRequest<'_>,
     policy: Result<&InstallPolicyConfig, String>,
 ) -> InstallPreview {
@@ -785,7 +787,7 @@ fn build_install_request_preview(
         } else {
             "global"
         };
-        add_deployment_to_preview(preview, deployment_root, assistant_name, scope, false)
+        add_deployment_to_preview(db, preview, deployment_root, assistant_name, scope, false)
     } else {
         library_only_preview(preview)
     };
@@ -962,6 +964,7 @@ fn install_skill_exclusive(db: &Connection, request: InstallSkillRequest) -> Ins
             Ok(prepared) => {
                 let preview = if let Some(deployment_root) = deployment_root.as_deref() {
                     add_deployment_to_preview(
+                        db,
                         prepared.preview(&library_root, &skill_name),
                         deployment_root,
                         &assistant_name,
@@ -1013,6 +1016,7 @@ fn install_skill_exclusive(db: &Connection, request: InstallSkillRequest) -> Ins
         (
             None,
             build_install_request_preview(
+                db,
                 InstallPreviewRequest {
                     package: &package,
                     source: &source,
@@ -1109,13 +1113,20 @@ fn install_skill_exclusive(db: &Connection, request: InstallSkillRequest) -> Ins
     let library_paths = current_preview
         .target_actions
         .iter()
-        .filter(|action| matches!(action.action.as_str(), "copy" | "keep"))
+        .filter(|action| {
+            matches!(action.action.as_str(), "copy" | "keep")
+                && Path::new(&action.target).parent() == Some(library_root.as_path())
+        })
         .map(|action| PathBuf::from(&action.target))
         .collect::<Vec<_>>();
     let deployment_paths = current_preview
         .target_actions
         .iter()
-        .filter(|action| action.action == "symlink")
+        .filter(|action| {
+            action.action == "symlink"
+                || (action.action == "keep"
+                    && deployment_root.as_deref() == Path::new(&action.target).parent())
+        })
         .map(|action| PathBuf::from(&action.target))
         .collect::<Vec<_>>();
     if (!library_only && library_paths.len() != deployment_paths.len())
@@ -1189,7 +1200,9 @@ pub(crate) fn finalize_library_install_registration(
 ) -> Result<(), String> {
     let mut skill_ids = Vec::with_capacity(library_paths.len());
     for library_path in library_paths {
-        record_managed_path(db, library_root, library_path, "library", None)?;
+        if !reuse_existing_library {
+            record_managed_path(db, library_root, library_path, "library", None)?;
+        }
         let skill_id = if reuse_existing_library {
             library_skill_id(db, library_path)?
         } else {
@@ -1227,6 +1240,15 @@ pub(crate) fn finalize_library_install_registration(
     for ((library_path, skill_id), deployment_path) in
         library_paths.iter().zip(skill_ids).zip(deployment_paths)
     {
+        if skill_library::connected_managed_deployment(
+            db,
+            library_path,
+            deployment_path,
+            assistant_name,
+            scope,
+        )? {
+            continue;
+        }
         let deploy_mode = deploy_library_skill(library_path, deployment_path)?;
         managed_state::mark_managed_skill(
             deployment_root,
@@ -1860,6 +1882,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    mod scenario_workflow_tests;
     mod update_preview_tests;
     use super::*;
     use crate::app_core::generate_id;
@@ -2552,6 +2575,7 @@ mod tests {
         let source_value = source.to_string_lossy().to_string();
 
         let add_preview = build_install_request_preview(
+            &db,
             InstallPreviewRequest {
                 package: &source_value,
                 source: "local",
@@ -2603,6 +2627,7 @@ mod tests {
         let library_value = library_path.to_string_lossy().to_string();
         let project_value = project.to_string_lossy().to_string();
         let enable_preview = build_install_request_preview(
+            &db,
             InstallPreviewRequest {
                 package: &library_value,
                 source: "local",
@@ -2685,6 +2710,7 @@ mod tests {
         let policy = InstallPolicyConfig::default();
         let source_value = source.to_string_lossy().to_string();
         let unselected_preview = build_install_request_preview(
+            &db,
             InstallPreviewRequest {
                 package: &source_value,
                 source: "local",
@@ -2701,6 +2727,7 @@ mod tests {
         assert_eq!(unselected_preview.available_skills.len(), 2);
         let selected = vec!["writer".to_string()];
         let preview = build_install_request_preview(
+            &db,
             InstallPreviewRequest {
                 package: &source_value,
                 source: "local",

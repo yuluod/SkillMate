@@ -132,6 +132,30 @@ struct TempGitSource {
     source_path: PathBuf,
 }
 
+#[cfg(test)]
+thread_local! {
+    static GIT_PREPARATION_OBSERVER: std::cell::RefCell<Option<Box<dyn FnMut()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn observe_git_preparations<T>(
+    observer: impl FnMut() + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct ObserverGuard;
+    impl Drop for ObserverGuard {
+        fn drop(&mut self) {
+            GIT_PREPARATION_OBSERVER.with(|observer| observer.borrow_mut().take());
+        }
+    }
+    GIT_PREPARATION_OBSERVER.with(|slot| {
+        assert!(slot.borrow().is_none());
+        *slot.borrow_mut() = Some(Box::new(observer));
+    });
+    let _guard = ObserverGuard;
+    action()
+}
+
 impl TempGitSource {
     fn prepare(spec: &GitInstallSpec) -> Result<Self, String> {
         let temp_root =
@@ -143,6 +167,12 @@ impl TempGitSource {
             source_path: PathBuf::new(),
         };
         fs::create_dir_all(&checkout.temp_root).map_err(|error| error.to_string())?;
+        #[cfg(test)]
+        GIT_PREPARATION_OBSERVER.with(|observer| {
+            if let Some(observer) = observer.borrow_mut().as_mut() {
+                observer();
+            }
+        });
         clone_git_install_spec(spec, &checkout.repo_path)?;
         checkout.source_path =
             resolve_git_source_path(&checkout.repo_path, spec.subdir.as_deref())?;
@@ -477,20 +507,24 @@ fn package_content_fingerprint(
     package: &PackageDetection,
 ) -> Result<String, String> {
     let mut hash = StableHash::new();
+    hash.update(b"skillmate-install-fingerprint-v2");
     let mut budget = InstallBudget::default();
     let mut skills = package.detected_skills.iter().collect::<Vec<_>>();
     skills.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    hash.update(&(skills.len() as u64).to_le_bytes());
     if skills.is_empty() {
-        return Ok(format!("sha256:{}", hash.finish()));
+        return Ok(format!("sha256:v2:{}", hash.finish()));
     }
     let source = SkillPackageSource::open(source_root)?;
     for skill in skills {
+        hash.update(b"S");
+        hash.update(&(skill.relative_path.len() as u64).to_le_bytes());
         hash.update(skill.relative_path.as_bytes());
-        hash.update(&[0]);
         let skill_path = source.resolve_detected_skill(skill)?;
         fingerprint_installable_tree(&skill_path, &skill_path, 0, &mut budget, &mut hash)?;
+        hash.update(b"E");
     }
-    Ok(format!("sha256:{}", hash.finish()))
+    Ok(format!("sha256:v2:{}", hash.finish()))
 }
 
 pub fn installable_content_fingerprint(source_path: &Path) -> Result<String, String> {
@@ -584,10 +618,17 @@ fn fingerprint_installable_tree(
             continue;
         }
         let relative = entry_path.strip_prefix(root).unwrap_or(&entry_path);
-        hash.update(relative.to_string_lossy().as_bytes());
-        hash.update(&[0]);
+        if !metadata.is_dir() && !metadata.is_file() {
+            return Err(format!(
+                "不支持的安装来源文件类型: {}",
+                entry_path.display()
+            ));
+        }
+        hash.update(if metadata.is_dir() { b"D" } else { b"F" });
+        let path_bytes = relative.as_os_str().as_encoded_bytes();
+        hash.update(&(path_bytes.len() as u64).to_le_bytes());
+        hash.update(path_bytes);
         if metadata.is_dir() {
-            hash.update(b"directory");
             fingerprint_installable_tree(&entry_path, root, depth + 1, budget, hash)?;
         } else if metadata.is_file() {
             budget.files += 1;
@@ -599,16 +640,18 @@ fn fingerprint_installable_tree(
                     MAX_INSTALL_BYTES / 1024 / 1024
                 ));
             }
-            hash.update(b"file");
             let mut file = fs::File::open(&entry_path).map_err(|error| error.to_string())?;
             let mut buffer = [0u8; 8192];
+            let mut contents = StableHash::new();
             loop {
                 let count = file.read(&mut buffer).map_err(|error| error.to_string())?;
                 if count == 0 {
                     break;
                 }
-                hash.update(&buffer[..count]);
+                contents.update(&buffer[..count]);
             }
+            // 固定长度的内容摘要不会与后续文件路径形成相同编码。
+            hash.update(contents.finish().as_bytes());
         }
     }
     Ok(())
@@ -806,7 +849,7 @@ pub fn install_selected_local_package_at_digest(
     )
 }
 
-fn install_detected_local_package_at_digest(
+pub(crate) fn install_detected_local_package_at_digest(
     source_path: &Path,
     target_root: &Path,
     fallback_name: &str,
@@ -1051,6 +1094,7 @@ pub fn sync_git_snapshot_skill_checked(
     )
 }
 
+#[cfg(test)]
 pub fn sync_git_snapshot_skill_at_preview(
     origin_locator: &str,
     resolved_locator: &str,
@@ -1081,20 +1125,44 @@ pub fn sync_git_snapshot_skill_at_preview(
                 &installable_content_fingerprint(source_path)?,
             )?;
         }
-        if target_path.exists() || fs::symlink_metadata(target_path).is_ok() {
-            return Err("更新目标尚未由受管事务暂存，已拒绝覆盖".to_string());
-        }
-        copy_dir_recursive(source_path, target_path)?;
-        let structure = inspect_skill_for_inventory(target_path).structure;
-        if structure.structure_status != "complete" {
-            return Err("上游版本不再符合 Agent Skills 规范，已拒绝更新".to_string());
-        }
-        validate(&structure)?;
-        let installed_ref = git_output(repo_path, &["rev-parse", "HEAD"]).unwrap_or_default();
-        Ok(GitInstallOutcome {
-            structure,
-            installed_ref,
-        })
+        let prepared = GitSnapshotProbe {
+            latest_ref: git_output(repo_path, &["rev-parse", "HEAD"])?,
+            source_digest: installable_content_fingerprint(source_path)?,
+        };
+        sync_prepared_git_snapshot_skill(source_path, target_path, &prepared, validate)
+    })
+}
+
+pub(crate) fn sync_prepared_git_snapshot_skill(
+    source_path: &Path,
+    target_path: &Path,
+    expected: &GitSnapshotProbe,
+    validate: impl Fn(&SkillStructureInfo) -> Result<(), String>,
+) -> Result<GitInstallOutcome, String> {
+    verify_source_digest(
+        Some(&expected.source_digest),
+        &installable_content_fingerprint(source_path)?,
+    )?;
+    if target_path.exists() || fs::symlink_metadata(target_path).is_ok() {
+        return Err("更新目标尚未由受管事务暂存，已拒绝覆盖".to_string());
+    }
+    copy_dir_recursive(source_path, target_path)?;
+    let structure = inspect_skill_for_inventory(target_path).structure;
+    if structure.structure_status != "complete" {
+        return Err("上游版本不再符合 Agent Skills 规范，已拒绝更新".to_string());
+    }
+    validate(&structure)?;
+    verify_source_digest(
+        Some(&expected.source_digest),
+        &installable_content_fingerprint(target_path)?,
+    )?;
+    verify_source_digest(
+        Some(&expected.source_digest),
+        &installable_content_fingerprint(source_path)?,
+    )?;
+    Ok(GitInstallOutcome {
+        structure,
+        installed_ref: expected.latest_ref.clone(),
     })
 }
 
@@ -1844,6 +1912,27 @@ mod tests {
 
     fn test_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("skillmate-install-test-{}-{}", name, generate_id()))
+    }
+
+    #[test]
+    fn installable_fingerprint_distinguishes_merged_and_split_files() {
+        let root = test_dir("fingerprint-boundaries");
+        let skill = root.join("writer");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: writer\ndescription: Writing\n---\n",
+        )
+        .unwrap();
+        fs::write(skill.join("a"), b"Xb\0fileY").unwrap();
+        let merged = installable_content_fingerprint(&skill).unwrap();
+
+        fs::write(skill.join("a"), "X").unwrap();
+        fs::write(skill.join("b"), "Y").unwrap();
+        let split = installable_content_fingerprint(&skill).unwrap();
+
+        assert_ne!(merged, split);
+        let _ = fs::remove_dir_all(root);
     }
 
     fn complete_detected_skill(relative_path: &str) -> DetectedSkill {

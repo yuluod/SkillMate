@@ -2,7 +2,7 @@ use crate::app_core::{assistant_definitions, generate_id};
 use crate::database::{database_path_key, PathColumn};
 use crate::library_config::configured_library_root;
 use crate::managed_installation::{
-    prune_missing_managed_installations, refresh_managed_installation,
+    find_managed_installation, prune_missing_managed_installations, refresh_managed_installation,
 };
 use crate::managed_state::content_fingerprint;
 use crate::managed_state::refresh_managed_skill_fingerprint;
@@ -81,6 +81,7 @@ pub fn reuse_library_preview(mut preview: InstallPreview) -> InstallPreview {
 }
 
 pub fn add_deployment_to_preview(
+    db: &Connection,
     mut preview: InstallPreview,
     deployment_root: &Path,
     assistant_name: &str,
@@ -133,6 +134,33 @@ pub fn add_deployment_to_preview(
                 reason: "替换现有受管启用位置".to_string(),
             });
         } else if target.exists() || fs::symlink_metadata(&target).is_ok() {
+            match connected_managed_deployment(db, &source, &target, assistant_name, scope) {
+                Ok(true) => {
+                    deployment_actions.push(PreviewAction {
+                        action: "keep".to_string(),
+                        source: source.to_string_lossy().to_string(),
+                        target: target.to_string_lossy().to_string(),
+                        reason: "保留已连接到同一主副本的受管启用位置".to_string(),
+                    });
+                    continue;
+                }
+                Err(error) => {
+                    preview.can_install = false;
+                    preview.can_apply = false;
+                    preview.conflicts.push(PreviewConflict {
+                        target: target.to_string_lossy().to_string(),
+                        reason: "managed_state_unavailable".to_string(),
+                    });
+                    deployment_actions.push(PreviewAction {
+                        action: "skip".to_string(),
+                        source: source.to_string_lossy().to_string(),
+                        target: target.to_string_lossy().to_string(),
+                        reason: error,
+                    });
+                    continue;
+                }
+                Ok(false) => {}
+            }
             preview.can_install = false;
             preview.can_apply = false;
             preview.conflicts.push(PreviewConflict {
@@ -181,6 +209,46 @@ pub fn add_deployment_to_preview(
         );
     }
     preview
+}
+
+pub(crate) fn connected_managed_deployment(
+    db: &Connection,
+    source: &Path,
+    target: &Path,
+    assistant: &str,
+    scope: &str,
+) -> Result<bool, String> {
+    let Some(deployment) = find_deployment(db, target)? else {
+        return Ok(false);
+    };
+    let Some(installation) = find_managed_installation(db, target)? else {
+        return Ok(false);
+    };
+    let Some(root) = target.parent() else {
+        return Ok(false);
+    };
+    let Some(state) = crate::managed_state::managed_state_entry(root, target)? else {
+        return Ok(false);
+    };
+    if installation.skill.assistant != assistant
+        || installation.skill.scope.as_deref() != Some(scope)
+        || state.assistant != assistant
+        || !fs::symlink_metadata(target)
+            .map_err(|error| error.to_string())?
+            .file_type()
+            .is_symlink()
+    {
+        return Ok(false);
+    }
+    let source = source.canonicalize().map_err(|error| error.to_string())?;
+    Ok(
+        target.canonicalize().map_err(|error| error.to_string())? == source
+            && deployment
+                .library_path
+                .canonicalize()
+                .map_err(|error| error.to_string())?
+                == source,
+    )
 }
 
 pub(crate) fn directory_symlink_available() -> bool {
@@ -785,8 +853,15 @@ mod windows_tests {
                     None,
                 );
                 assert!(preview.can_apply, "{}", preview.message);
-                let preview =
-                    add_deployment_to_preview(preview, &deployment, "Codex", "project", replace);
+                let db = Connection::open_in_memory().unwrap();
+                let preview = add_deployment_to_preview(
+                    &db,
+                    preview,
+                    &deployment,
+                    "Codex",
+                    "project",
+                    replace,
+                );
                 assert_eq!(preview.can_apply, available);
                 assert_eq!(preview.can_install, available);
                 assert_eq!(

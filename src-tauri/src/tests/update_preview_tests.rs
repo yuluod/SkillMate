@@ -57,6 +57,7 @@ fn fixture(
     let source = repo.to_string_lossy().to_string();
     let policy = InstallPolicyConfig::default();
     let preview = build_install_request_preview(
+        &db,
         InstallPreviewRequest {
             package: &source,
             source: "git",
@@ -216,5 +217,150 @@ fn update_preview_rolls_back_files_database_and_sidecar_when_registration_fails(
     db.execute_batch("DROP TRIGGER fail_library_refresh")
         .unwrap();
     apply_update(&db, &path, Some(&preview.plan_token)).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn update_prepares_git_once_while_existing_deployment_remains_readable() {
+    let (db, root, repo, path, _guard) = fixture("update-connected-during-download");
+    let Some(target) = enable_project(&db, &root, &repo, &path) else {
+        fs::remove_dir_all(root).unwrap();
+        return;
+    };
+    let original = fs::read(target.join("SKILL.md")).unwrap();
+    commit(&repo, "changed");
+    let preview = preview_update(&db, &path).unwrap();
+    let count = std::rc::Rc::new(std::cell::Cell::new(0));
+    let observed_count = count.clone();
+    let observed_target = target.clone();
+    skill_install::observe_git_preparations(
+        move || {
+            observed_count.set(observed_count.get() + 1);
+            assert_eq!(
+                fs::read(observed_target.join("SKILL.md")).unwrap(),
+                original
+            );
+        },
+        || apply_update(&db, &path, Some(&preview.plan_token)).unwrap(),
+    );
+    assert_eq!(count.get(), 1);
+    assert!(fs::read_to_string(target.join("SKILL.md"))
+        .unwrap()
+        .contains("changed"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+fn enable_project(db: &Connection, root: &Path, repo: &Path, path: &Path) -> Option<PathBuf> {
+    let project = root.join("project");
+    let target = project.join(".agents/skills/writer");
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    if !app_core::create_test_directory_symlink_or_skip(path, &target) {
+        return None;
+    }
+    app_core::remove_path(&target).unwrap();
+    finalize_library_install_registration(
+        db,
+        &repo.to_string_lossy(),
+        "git",
+        "Codex",
+        "project",
+        Some(&project.to_string_lossy()),
+        path.parent().unwrap(),
+        target.parent(),
+        std::slice::from_ref(&path.to_path_buf()),
+        std::slice::from_ref(&target),
+        "",
+        true,
+    )
+    .unwrap();
+    Some(target)
+}
+
+#[test]
+fn update_rejects_deployment_retargeted_during_download() {
+    let (db, root, repo, path, _guard) = fixture("update-retarget-during-download");
+    let Some(target) = enable_project(&db, &root, &repo, &path) else {
+        fs::remove_dir_all(root).unwrap();
+        return;
+    };
+    let original = fs::read(path.join("SKILL.md")).unwrap();
+    commit(&repo, "changed");
+    let preview = preview_update(&db, &path).unwrap();
+    let changes = db.total_changes();
+    let external = root.join("external");
+    fs::create_dir_all(&external).unwrap();
+    fs::write(external.join("SKILL.md"), "external content").unwrap();
+    let observed_target = target.clone();
+    let observed_external = external.clone();
+    let error = skill_install::observe_git_preparations(
+        move || {
+            app_core::remove_path(&observed_target).unwrap();
+            skill_library::deploy_library_skill(&observed_external, &observed_target).unwrap();
+        },
+        || apply_update(&db, &path, Some(&preview.plan_token)),
+    )
+    .unwrap_err();
+    assert!(error.contains("计划已过期"), "{error}");
+    assert_eq!(fs::read(path.join("SKILL.md")).unwrap(), original);
+    assert_eq!(db.total_changes(), changes);
+    assert_eq!(
+        fs::read_to_string(target.join("SKILL.md")).unwrap(),
+        "external content"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn update_download_failure_keeps_existing_files_and_metadata() {
+    let (db, root, repo, path, _guard) = fixture("update-download-failure");
+    commit(&repo, "changed");
+    let preview = preview_update(&db, &path).unwrap();
+    let content = fs::read(path.join("SKILL.md")).unwrap();
+    let state_path = path.parent().unwrap().join(managed_state::STATE_FILE_NAME);
+    let sidecar = fs::read(&state_path).unwrap();
+    let changes = db.total_changes();
+    fs::remove_dir_all(&repo).unwrap();
+    assert!(apply_update(&db, &path, Some(&preview.plan_token)).is_err());
+    assert_eq!(fs::read(path.join("SKILL.md")).unwrap(), content);
+    assert_eq!(fs::read(state_path).unwrap(), sidecar);
+    assert_eq!(db.total_changes(), changes);
+    verify_managed_content_unchanged(&db, &path).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn prepared_update_rejects_tampering_and_reuses_downloaded_snapshot() {
+    let (db, root, repo, path, _guard) = fixture("update-prepared-snapshot");
+    commit(&repo, "changed");
+    let original = fs::read(path.join("SKILL.md")).unwrap();
+    let meta = skill_origin::load_origin_meta(&db, &path.to_string_lossy())
+        .unwrap()
+        .unwrap();
+    skill_install::with_git_snapshot(
+        &meta.origin_locator,
+        &meta.resolved_locator,
+        &meta.tracking_ref,
+        |source, latest| {
+            let expected = skill_install::GitSnapshotProbe {
+                latest_ref: latest.into(),
+                source_digest: skill_install::installable_content_fingerprint(source)?,
+            };
+            let prepared_content = fs::read(source.join("SKILL.md")).unwrap();
+            fs::write(source.join("SKILL.md"), "tampered").unwrap();
+            assert!(skill_origin::update_skill_from_prepared_snapshot(
+                &db, &path, source, &expected
+            )
+            .is_err());
+            assert_eq!(fs::read(path.join("SKILL.md")).unwrap(), original);
+            fs::write(source.join("SKILL.md"), prepared_content).unwrap();
+            fs::remove_dir_all(&repo).unwrap();
+            skill_origin::update_skill_from_prepared_snapshot(&db, &path, source, &expected)?;
+            assert!(fs::read_to_string(path.join("SKILL.md"))
+                .unwrap()
+                .contains("changed"));
+            Ok(())
+        },
+    )
+    .unwrap();
     fs::remove_dir_all(root).unwrap();
 }

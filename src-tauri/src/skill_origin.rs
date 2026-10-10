@@ -8,7 +8,7 @@ use crate::managed_installation::{is_explicitly_managed, refresh_managed_install
 use crate::managed_state::{is_managed_by_state, refresh_managed_skill_fingerprint};
 use crate::skill_install::{
     has_git_snapshot_spec, installable_content_fingerprint, probe_git_snapshot,
-    probe_git_snapshots, sync_git_snapshot_skill_at_preview, GitInstallOutcome, GitSnapshotProbe,
+    probe_git_snapshots, sync_prepared_git_snapshot_skill, GitInstallOutcome, GitSnapshotProbe,
     GitSnapshotProbeRequest,
 };
 use crate::skill_install_source::{sanitize_git_locator, sanitize_git_remote_url, GitInstallSpec};
@@ -317,6 +317,7 @@ fn infer_origin_meta_with_cache(
     meta
 }
 
+#[cfg(test)]
 pub fn can_sync(meta: &SkillOriginMeta, path: &Path) -> bool {
     if !meta.managed_by_app {
         return false;
@@ -658,14 +659,6 @@ fn probe_local_meta(path: &Path, meta: &mut SkillOriginMeta) {
     meta.last_probe_at = Some(now_ms());
 }
 
-pub fn probe_skill_state(
-    db: &Connection,
-    path: &Path,
-    force: bool,
-) -> Result<SkillSyncInfo, String> {
-    persist_prepared_skill_probe(db, prepare_skill_probe(db, path, force)?)
-}
-
 pub(crate) fn prepare_skill_probe(
     db: &Connection,
     path: &Path,
@@ -908,38 +901,71 @@ pub fn save_installed_local_meta(
     )
 }
 
+#[cfg(test)]
 pub fn update_skill_from_upstream(
     db: &Connection,
     path: &Path,
     expected: &GitSnapshotProbe,
 ) -> Result<String, String> {
-    let mut sync_info = probe_skill_state(db, path, true)?;
-    if sync_info.meta.sync_state == "current" {
-        return Ok("已是最新".to_string());
-    }
-    if matches!(
-        sync_info.meta.sync_state.as_str(),
-        "ahead_local" | "diverged"
-    ) {
-        return Err(sync_info.meta.sync_message.clone());
-    }
-    if !can_sync(&sync_info.meta, path) {
-        return Err(if sync_info.meta.sync_message.is_empty() {
-            "当前状态不允许自动更新".to_string()
-        } else {
-            sync_info.meta.sync_message.clone()
-        });
-    }
+    let meta = load_origin_meta(db, &path.to_string_lossy())?.ok_or("缺少更新来源信息")?;
+    crate::skill_install::with_git_snapshot(
+        &meta.origin_locator,
+        &meta.resolved_locator,
+        &meta.tracking_ref,
+        |source, latest| {
+            if latest != expected.latest_ref {
+                return Err("上游提交在预览后发生变化，请重新预览".into());
+            }
+            update_skill_from_prepared_snapshot(db, path, source, expected)
+        },
+    )
+}
 
-    if sync_info.meta.origin_kind != "git" {
+pub(crate) fn update_skill_from_prepared_snapshot(
+    db: &Connection,
+    path: &Path,
+    source: &Path,
+    expected: &GitSnapshotProbe,
+) -> Result<String, String> {
+    if !is_explicitly_managed(db, path)? {
+        return Err("只允许更新 SkillMate 管理的 Git 快照".into());
+    }
+    let mut meta = load_origin_meta(db, &path.to_string_lossy())?.ok_or("缺少更新来源信息")?;
+    if meta.origin_kind != "git" {
         return Err("当前来源暂不支持一键更新".to_string());
     }
 
-    if has_git_snapshot_spec(
-        &sync_info.meta.origin_locator,
-        &sync_info.meta.resolved_locator,
-    ) {
+    if has_git_snapshot_spec(&meta.origin_locator, &meta.resolved_locator) {
         crate::managed_installation::verify_managed_content_unchanged(db, path)?;
+        if installable_content_fingerprint(source)? != expected.source_digest {
+            return Err("安装来源在预览后发生变化，请重新检查结构".into());
+        }
+        let policy = load_install_policy(db)?;
+        let policy_source = if meta.origin_locator.trim().is_empty() {
+            meta.resolved_locator.as_str()
+        } else {
+            meta.origin_locator.as_str()
+        };
+        let validate = |structure: &crate::skill_structure::SkillStructureInfo| {
+            if structure.structure_status != "complete" {
+                return Err("上游版本不再符合 Agent Skills 规范，已拒绝更新".to_string());
+            }
+            let decision = evaluate_install_policy(
+                &policy,
+                InstallPolicyInput {
+                    source_kind: "git",
+                    source: policy_source,
+                    structure_status: &structure.structure_status,
+                    warnings: &structure.structure_warnings,
+                },
+            );
+            if decision.allowed {
+                Ok(())
+            } else {
+                Err(decision.message)
+            }
+        };
+        validate(&crate::skill_structure::inspect_skill_for_inventory(source).structure)?;
         let related_paths = crate::skill_library::deployment_targets_for_library(db, path)?
             .into_iter()
             .map(PathBuf::from)
@@ -950,35 +976,7 @@ pub fn update_skill_from_upstream(
             std::slice::from_ref(&path.to_path_buf()),
             &related_paths,
         )?;
-        let policy = load_install_policy(db)?;
-        let policy_source = if sync_info.meta.origin_locator.trim().is_empty() {
-            sync_info.meta.resolved_locator.as_str()
-        } else {
-            sync_info.meta.origin_locator.as_str()
-        };
-        let outcome = match sync_git_snapshot_skill_at_preview(
-            &sync_info.meta.origin_locator,
-            &sync_info.meta.resolved_locator,
-            &sync_info.meta.tracking_ref,
-            path,
-            Some(expected),
-            |structure| {
-                let decision = evaluate_install_policy(
-                    &policy,
-                    InstallPolicyInput {
-                        source_kind: "git",
-                        source: policy_source,
-                        structure_status: &structure.structure_status,
-                        warnings: &structure.structure_warnings,
-                    },
-                );
-                if decision.allowed {
-                    Ok(())
-                } else {
-                    Err(decision.message)
-                }
-            },
-        ) {
+        let outcome = match sync_prepared_git_snapshot_skill(source, path, expected, validate) {
             Ok(outcome) => outcome,
             Err(error) => {
                 return match transaction.rollback() {
@@ -990,14 +988,14 @@ pub fn update_skill_from_upstream(
             }
         };
         let now = now_ms();
-        sync_info.meta.installed_ref = outcome.installed_ref.clone();
-        sync_info.meta.latest_ref = outcome.installed_ref.clone();
-        sync_info.meta.sync_state = "current".to_string();
-        sync_info.meta.sync_message = "Git 快照更新成功".to_string();
-        sync_info.meta.lag_count = 0;
-        sync_info.meta.last_probe_at = Some(now);
-        sync_info.meta.last_sync_at = Some(now);
-        if let Err(error) = persist_managed_update(db, path, &sync_info.meta)
+        meta.installed_ref = outcome.installed_ref.clone();
+        meta.latest_ref = outcome.installed_ref.clone();
+        meta.sync_state = "current".to_string();
+        meta.sync_message = "Git 快照更新成功".to_string();
+        meta.lag_count = 0;
+        meta.last_probe_at = Some(now);
+        meta.last_sync_at = Some(now);
+        if let Err(error) = persist_managed_update(db, path, &meta)
             .and_then(|()| crate::skill_library::refresh_deployment_origins(db, path))
         {
             return match transaction.rollback() {

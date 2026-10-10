@@ -1,7 +1,9 @@
 use crate::app_core::{assistant_definitions, format_size, AssistantDefinition};
 use crate::database::{database_path_key, PathColumn};
 use crate::managed_installation::{list_managed_installations, ManagedInstallation};
-use crate::managed_state::{content_fingerprint, managed_state_entry, STATE_FILE_NAME};
+use crate::managed_state::{
+    content_fingerprint, fingerprint_matches, managed_state_entry, STATE_FILE_NAME,
+};
 use crate::skill_library::{find_deployment, resolve_library_path};
 use crate::skill_origin::{build_sync_info_with_cache, OriginInferenceCache};
 use crate::skill_structure::{detect_skill_entry, inspect_skill_for_inventory, SkillEntryKind};
@@ -51,6 +53,14 @@ impl FingerprintCache {
                 content_fingerprint(path)
             })
             .clone()
+    }
+
+    fn matches(&mut self, path: &Path, expected: &str) -> Result<bool, String> {
+        if expected.starts_with("sha256:v2:") {
+            self.get(path).map(|fingerprint| fingerprint == expected)
+        } else {
+            fingerprint_matches(path, expected)
+        }
     }
 }
 
@@ -377,14 +387,14 @@ fn build_skill_with_fingerprints(
     }
     let deployment_changed = state_entry.as_ref().is_some_and(|entry| {
         fingerprints
-            .get(ep)
-            .map(|fingerprint| fingerprint != entry.last_seen_hash)
+            .matches(ep, &entry.last_seen_hash)
+            .map(|matches| !matches)
             .unwrap_or(true)
     });
     let library_content_changed = content_state_entry.as_ref().is_some_and(|entry| {
         fingerprints
-            .get(content_path)
-            .map(|fingerprint| fingerprint != entry.last_seen_hash)
+            .matches(content_path, &entry.last_seen_hash)
+            .map(|matches| !matches)
             .unwrap_or(true)
     });
     if deployment_changed || library_content_changed {

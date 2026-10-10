@@ -110,11 +110,20 @@ struct ManagedRootCheckpoint {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct ScenarioReferenceCheckpoint {
+    id: String,
+    skill_ids: Option<String>,
+    skill_ids_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManagedMetadataCheckpoint {
     paths: Vec<PathMetadataCheckpoint>,
     roots: Vec<(PathBuf, ManagedStateCheckpoint)>,
     #[serde(default)]
     managed_roots: Vec<ManagedRootCheckpoint>,
+    #[serde(default)]
+    scenario_references: Vec<ScenarioReferenceCheckpoint>,
 }
 
 impl ManagedMetadataCheckpoint {
@@ -144,7 +153,17 @@ impl ManagedMetadataCheckpoint {
             paths,
             roots,
             managed_roots,
+            scenario_references: Vec::new(),
         })
+    }
+
+    pub(crate) fn capture_with_scenario_references(
+        db: &Connection,
+        paths: &[PathBuf],
+    ) -> Result<Self, String> {
+        let mut checkpoint = Self::capture(db, paths)?;
+        checkpoint.scenario_references = capture_scenario_references(db, paths)?;
+        Ok(checkpoint)
     }
 
     pub fn restore(&self, db: &Connection) -> Result<(), String> {
@@ -169,6 +188,18 @@ impl ManagedMetadataCheckpoint {
         for checkpoint in &self.managed_roots {
             restore_managed_root(&transaction, checkpoint)?;
         }
+        for checkpoint in &self.scenario_references {
+            transaction
+                .execute(
+                    "UPDATE scenarios SET skill_ids = ?, skill_ids_json = ? WHERE id = ?",
+                    params![
+                        checkpoint.skill_ids,
+                        checkpoint.skill_ids_json,
+                        checkpoint.id
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+        }
         transaction.commit().map_err(|error| error.to_string())?;
 
         let mut errors = Vec::new();
@@ -190,6 +221,51 @@ impl ManagedMetadataCheckpoint {
             .map(|(root, _)| root.join(crate::managed_state::STATE_FILE_NAME))
             .collect()
     }
+}
+
+fn capture_scenario_references(
+    db: &Connection,
+    paths: &[PathBuf],
+) -> Result<Vec<ScenarioReferenceCheckpoint>, String> {
+    if !table_exists(db, "scenarios")? {
+        return Ok(Vec::new());
+    }
+    let mut statement = db
+        .prepare("SELECT id, skill_ids, skill_ids_json FROM scenarios ORDER BY id")
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(ScenarioReferenceCheckpoint {
+                id: row.get(0)?,
+                skill_ids: row.get(1)?,
+                skill_ids_json: row.get(2)?,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    let mut checkpoints = Vec::new();
+    for row in rows {
+        let row = row.map_err(|error| error.to_string())?;
+        let mut references: Vec<String> = serde_json::from_str(&row.skill_ids_json)
+            .map_err(|error| format!("场景 {} 的 skill_ids_json 损坏: {}", row.id, error))?;
+        if references.is_empty() {
+            references =
+                crate::database::parse_legacy_list(row.skill_ids.as_deref().unwrap_or_default());
+        }
+        if references.iter().any(|reference| {
+            paths.iter().any(|path| {
+                if cfg!(windows) {
+                    reference
+                        .replace('/', "\\")
+                        .eq_ignore_ascii_case(&path.to_string_lossy().replace('/', "\\"))
+                } else {
+                    Path::new(reference) == path
+                }
+            })
+        }) {
+            checkpoints.push(row);
+        }
+    }
+    Ok(checkpoints)
 }
 
 fn capture_managed_root(db: &Connection, path: PathBuf) -> Result<ManagedRootCheckpoint, String> {
@@ -712,6 +788,114 @@ pub fn verify_managed_content_unchanged(db: &Connection, path: &Path) -> Result<
     Ok(())
 }
 
+pub(crate) fn migrate_managed_installation_fingerprints(db: &Connection) -> Result<usize, String> {
+    let transaction = db
+        .unchecked_transaction()
+        .map_err(|error| error.to_string())?;
+    let candidates = {
+        let mut statement = transaction
+            .prepare(
+                "SELECT skill_path, content_hash FROM managed_installations
+                 WHERE (content_hash LIKE 'sha256:%' AND content_hash NOT LIKE 'sha256:v2:%')
+                    OR content_hash LIKE 'fnv1a64:%'",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?
+    };
+    let has_library = table_exists(&transaction, "library_skills")?;
+    let mut migrated = 0;
+    for (stored_path, old_hash) in candidates {
+        let path = Path::new(&stored_path);
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("读取旧受管内容失败 {}: {error}", path.display())),
+        }
+        let state_entry = path
+            .parent()
+            .map(|root| managed_state_entry(root, path))
+            .transpose()?
+            .flatten();
+        let library_key = if has_library {
+            Some(database_path_key(
+                &transaction,
+                PathColumn::LibrarySkill,
+                path,
+            )?)
+        } else {
+            None
+        };
+        let library_hash: Option<String> = match &library_key {
+            Some(key) => transaction
+                .query_row(
+                    "SELECT content_hash FROM library_skills WHERE library_path = ?",
+                    [key],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|error| error.to_string())?,
+            None => None,
+        };
+        let mut baselines = vec![old_hash.as_str()];
+        if let Some(entry) = &state_entry {
+            baselines.push(&entry.last_seen_hash);
+        }
+        if let Some(hash) = &library_hash {
+            baselines.push(hash);
+        }
+        let matches_all = || -> Result<bool, String> {
+            for baseline in &baselines {
+                if !fingerprint_matches(path, baseline)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        };
+        if !matches_all()? {
+            continue;
+        }
+        let new_hash = content_fingerprint(path)?;
+        if !matches_all()? || content_fingerprint(path)? != new_hash {
+            return Err(format!(
+                "迁移数据库指纹期间 Skill 已变化: {}",
+                path.display()
+            ));
+        }
+        // 只替换实际核验过的旧基线，保留安装时间和仅数据库登记的管理身份。
+        let updated = transaction
+            .execute(
+                "UPDATE managed_installations SET content_hash = ?
+                 WHERE skill_path = ? AND content_hash = ?",
+                params![new_hash, stored_path, old_hash],
+            )
+            .map_err(|error| format!("迁移受管内容指纹失败: {error}"))?;
+        if updated != 1 {
+            return Err("迁移期间受管安装记录已变化".into());
+        }
+        if library_hash.as_deref() == Some(old_hash.as_str()) {
+            let updated = transaction
+                .execute(
+                    "UPDATE library_skills SET content_hash = ?
+                     WHERE library_path = ? AND content_hash = ?",
+                    params![new_hash, library_key, old_hash],
+                )
+                .map_err(|error| format!("迁移统一库内容指纹失败: {error}"))?;
+            if updated != 1 {
+                return Err("迁移期间统一库记录已变化".into());
+            }
+        }
+        migrated += 1;
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(migrated)
+}
+
 pub fn record_managed_root(
     db: &Connection,
     root: &Path,
@@ -1092,12 +1276,206 @@ mod tests {
         db
     }
 
+    fn legacy_registry_fixture(db: &Connection, root: &Path, name: &str) -> (PathBuf, String) {
+        let path = root.join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("a"), "X").unwrap();
+        std::fs::write(path.join("b"), "Y").unwrap();
+        let mut hash = crate::operation_plan::StableHash::new();
+        hash.update(b"directoryafileXbfileY");
+        let old_hash = format!("sha256:{}", hash.finish());
+        db.execute(
+            "INSERT INTO managed_installations VALUES (?, 'Codex', '/source', 'local', ?,
+             'project', 'copy', '/project', NULL, NULL, NULL, ?, 'installed')",
+            params![path.to_string_lossy(), name, old_hash],
+        )
+        .unwrap();
+        (path, old_hash)
+    }
+
+    #[test]
+    fn database_only_fingerprint_migration_is_idempotent_and_protects_file_boundaries() {
+        let db = database();
+        let root = std::env::temp_dir().join(format!(
+            "skillmate-registry-migration-{}",
+            crate::app_core::generate_id()
+        ));
+        let (path, old_hash) = legacy_registry_fixture(&db, &root, "writer");
+        assert!(fingerprint_matches(&path, &old_hash).unwrap());
+        assert_eq!(migrate_managed_installation_fingerprints(&db).unwrap(), 1);
+        let installation = find_managed_installation(&db, &path).unwrap().unwrap();
+        assert_eq!(
+            installation.skill.content_hash,
+            Some(content_fingerprint(&path).unwrap())
+        );
+        assert!(!root.join(crate::managed_state::STATE_FILE_NAME).exists());
+        assert_eq!(migrate_managed_installation_fingerprints(&db).unwrap(), 0);
+        verify_managed_content_unchanged(&db, &path).unwrap();
+
+        std::fs::write(path.join("a"), "XbfileY").unwrap();
+        std::fs::remove_file(path.join("b")).unwrap();
+        assert!(fingerprint_matches(&path, &old_hash).unwrap());
+        assert!(verify_managed_content_unchanged(&db, &path).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn database_fingerprint_migration_preserves_drifted_and_missing_baselines() {
+        let db = database();
+        let root = std::env::temp_dir().join(format!(
+            "skillmate-registry-drift-migration-{}",
+            crate::app_core::generate_id()
+        ));
+        let (edited, edited_hash) = legacy_registry_fixture(&db, &root, "edited");
+        let (missing, missing_hash) = legacy_registry_fixture(&db, &root, "missing");
+        std::fs::write(edited.join("a"), "manual edit").unwrap();
+        std::fs::remove_dir_all(&missing).unwrap();
+        assert_eq!(migrate_managed_installation_fingerprints(&db).unwrap(), 0);
+        for (path, hash) in [(&edited, edited_hash), (&missing, missing_hash)] {
+            assert_eq!(
+                find_managed_installation(&db, path)
+                    .unwrap()
+                    .unwrap()
+                    .skill
+                    .content_hash,
+                Some(hash)
+            );
+        }
+        assert!(verify_managed_content_unchanged(&db, &edited).is_err());
+        assert!(!root.join(crate::managed_state::STATE_FILE_NAME).exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn database_fingerprint_migration_requires_matching_sidecar() {
+        let db = database();
+        let root = std::env::temp_dir().join(format!(
+            "skillmate-registry-sidecar-migration-{}",
+            crate::app_core::generate_id()
+        ));
+        let (path, old_hash) = legacy_registry_fixture(&db, &root, "writer");
+        std::fs::write(path.join("a"), "sidecar baseline").unwrap();
+        mark_managed_skill(&root, "Codex", &path, "local:/source").unwrap();
+        std::fs::write(path.join("a"), "X").unwrap();
+        assert_eq!(migrate_managed_installation_fingerprints(&db).unwrap(), 0);
+        assert_eq!(
+            find_managed_installation(&db, &path)
+                .unwrap()
+                .unwrap()
+                .skill
+                .content_hash,
+            Some(old_hash)
+        );
+        assert!(verify_managed_content_unchanged(&db, &path).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn database_fingerprint_migration_rolls_back_when_library_write_fails() {
+        let db = database();
+        db.execute_batch(
+            "CREATE TABLE library_skills (
+                library_path TEXT PRIMARY KEY, content_hash TEXT NOT NULL, updated_at TEXT NOT NULL
+             );
+             CREATE TRIGGER fail_migration BEFORE UPDATE ON library_skills
+             BEGIN SELECT RAISE(FAIL, 'injected migration failure'); END;",
+        )
+        .unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "skillmate-registry-rollback-migration-{}",
+            crate::app_core::generate_id()
+        ));
+        let (path, old_hash) = legacy_registry_fixture(&db, &root, "writer");
+        db.execute(
+            "INSERT INTO library_skills VALUES (?, ?, 'untouched')",
+            params![path.to_string_lossy(), old_hash],
+        )
+        .unwrap();
+        assert!(migrate_managed_installation_fingerprints(&db)
+            .unwrap_err()
+            .contains("injected migration failure"));
+        assert_eq!(
+            find_managed_installation(&db, &path)
+                .unwrap()
+                .unwrap()
+                .skill
+                .content_hash,
+            Some(old_hash.clone())
+        );
+        db.execute_batch("DROP TRIGGER fail_migration").unwrap();
+        assert_eq!(migrate_managed_installation_fingerprints(&db).unwrap(), 1);
+        let row: (String, String) = db
+            .query_row(
+                "SELECT content_hash, updated_at FROM library_skills",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (content_fingerprint(&path).unwrap(), "untouched".into())
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn metadata_checkpoint_accepts_journal_without_managed_roots() {
         let checkpoint: ManagedMetadataCheckpoint =
             serde_json::from_str(r#"{"paths":[],"roots":[]}"#).unwrap();
 
         assert!(checkpoint.managed_roots.is_empty());
+        assert!(checkpoint.scenario_references.is_empty());
+    }
+
+    #[test]
+    fn serialized_metadata_checkpoint_restores_only_related_scenario_references() {
+        let db = database();
+        db.execute_batch(
+            "CREATE TABLE scenarios (id TEXT PRIMARY KEY, skill_ids TEXT, skill_ids_json TEXT NOT NULL);
+             INSERT INTO scenarios VALUES ('related', '/project/writer', '[]');
+             INSERT INTO scenarios VALUES ('unrelated', '', '[\"/other/reviewer\"]');",
+        ).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "skillmate-scenario-checkpoint-{}",
+            crate::app_core::generate_id(),
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("writer");
+        let original = serde_json::to_string(&[source.to_string_lossy()]).unwrap();
+        db.execute(
+            "UPDATE scenarios SET skill_ids_json = ? WHERE id = 'related'",
+            [&original],
+        )
+        .unwrap();
+        let checkpoint = ManagedMetadataCheckpoint::capture_with_scenario_references(
+            &db,
+            std::slice::from_ref(&source),
+        )
+        .unwrap();
+        let checkpoint: ManagedMetadataCheckpoint =
+            serde_json::from_str(&serde_json::to_string(&checkpoint).unwrap()).unwrap();
+        db.execute_batch(
+            "UPDATE scenarios SET skill_ids = '', skill_ids_json = '[\"/library/writer\"]' WHERE id = 'related';
+             UPDATE scenarios SET skill_ids_json = '[\"/other/changed\"]' WHERE id = 'unrelated';",
+        ).unwrap();
+        checkpoint.restore(&db).unwrap();
+        let related: (String, String) = db
+            .query_row(
+                "SELECT skill_ids, skill_ids_json FROM scenarios WHERE id = 'related'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(related, ("/project/writer".into(), original));
+        let unrelated: String = db
+            .query_row(
+                "SELECT skill_ids_json FROM scenarios WHERE id = 'unrelated'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(unrelated, "[\"/other/changed\"]");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

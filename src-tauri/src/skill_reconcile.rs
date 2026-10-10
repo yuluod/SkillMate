@@ -169,6 +169,25 @@ impl<'db> ReconcileTransaction<'db> {
         Self::prepare_managed_in(db, removals, install_targets, &journal_directory())
     }
 
+    pub(crate) fn prepare_managed_with_scenario_references(
+        db: &'db Connection,
+        removals: &[PathBuf],
+        install_targets: &[PathBuf],
+    ) -> Result<Self, String> {
+        let mut metadata_paths = removals.to_vec();
+        metadata_paths.extend_from_slice(install_targets);
+        let checkpoint =
+            ManagedMetadataCheckpoint::capture_with_scenario_references(db, &metadata_paths)?;
+        prepare_transaction(
+            removals,
+            install_targets,
+            Some(checkpoint),
+            Vec::new(),
+            Some(db),
+            &journal_directory(),
+        )
+    }
+
     pub fn prepare_managed_with_files(
         db: &'db Connection,
         removals: &[PathBuf],

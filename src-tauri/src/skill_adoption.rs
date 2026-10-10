@@ -2,7 +2,7 @@ use crate::app_core::{assistant_definitions, expand_path, find_git_repo_root};
 use crate::install_policy::{load_install_policy, InstallPolicyConfig};
 use crate::operation_plan::verify_operation_plan;
 use crate::skill_install::{
-    install_selected_local_package_at_digest, preview_selected_local_install_source,
+    install_detected_local_package_at_digest, preview_selected_local_install_source,
     seal_install_preview, InstallPreview, InstallResult, PreviewAction,
 };
 use crate::skill_install_source::parse_git_install_spec;
@@ -99,7 +99,7 @@ pub fn adopt_skill(
         return install_result(false, format!("无法创建 SkillMate 库: {error}"), "", None);
     }
 
-    let mut transaction = match ReconcileTransaction::prepare_managed(
+    let mut transaction = match ReconcileTransaction::prepare_managed_with_scenario_references(
         db,
         std::slice::from_ref(&source_path),
         &[library_path.clone(), source_path.clone()],
@@ -121,13 +121,13 @@ pub fn adopt_skill(
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default();
-    let structure = match install_selected_local_package_at_digest(
+    let structure = match install_detected_local_package_at_digest(
         &staged_source,
         &library,
         fallback_name,
         "SkillMate",
         Some(&preview.source_digest),
-        None,
+        preview.package_detection.clone(),
     ) {
         Ok(structure) => structure,
         Err(error) => return rollback_install_result(&mut transaction, "接管失败", error),
@@ -158,6 +158,9 @@ pub fn adopt_skill(
     if let Err(error) = registration {
         return rollback_install_result(&mut transaction, "记录接管状态失败", error);
     }
+    if let Err(error) = migrate_scenario_references(db, &source_path, &library_path) {
+        return rollback_install_result(&mut transaction, "迁移场景引用失败", error);
+    }
     match transaction.commit() {
         Ok(None) => install_result(
             true,
@@ -173,6 +176,46 @@ pub fn adopt_skill(
         ),
         Err(error) => install_result(false, "提交接管事务失败", error, None),
     }
+}
+
+fn migrate_scenario_references(
+    db: &Connection,
+    source_path: &Path,
+    library_path: &Path,
+) -> Result<(), String> {
+    let library = library_path.to_string_lossy().to_string();
+    for scenario in crate::organization_commands::get_scenarios_from_db(db)? {
+        let mut changed = false;
+        let mut paths = Vec::new();
+        for path in scenario.skill_ids {
+            let matches_source = if cfg!(windows) {
+                path.replace('/', "\\")
+                    .eq_ignore_ascii_case(&source_path.to_string_lossy().replace('/', "\\"))
+            } else {
+                Path::new(&path) == source_path
+            };
+            let path = if matches_source {
+                changed = true;
+                library.clone()
+            } else {
+                path
+            };
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+        if changed {
+            db.execute(
+                "UPDATE scenarios SET skill_ids = '', skill_ids_json = ? WHERE id = ?",
+                rusqlite::params![
+                    serde_json::to_string(&paths).map_err(|error| error.to_string())?,
+                    scenario.id,
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 fn retarget_origin(mut origin: SkillOriginMeta, library_path: &Path) -> SkillOriginMeta {

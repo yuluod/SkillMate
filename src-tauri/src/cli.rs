@@ -260,6 +260,7 @@ fn run_install_command(
     let preview = run_exclusive_operation(|db| {
         let policy = load_install_policy(db);
         Ok(build_install_request_preview(
+            db,
             InstallPreviewRequest {
                 package: &package,
                 source: &source,
