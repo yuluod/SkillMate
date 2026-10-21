@@ -15,7 +15,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  PNPM_VERSION: 12.3.4
+  PNPM_VERSION: 12.14.0
   RUST_VERSION: 1.96.0
 
 jobs:
