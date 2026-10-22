@@ -4,7 +4,7 @@ use crate::managed_installation::{
     verify_managed_content_unchanged, ManagedMetadataCheckpoint,
 };
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 const TRASH_DIRECTORY: &str = ".skillmate-trash";
 const TRASH_OWNER_FILE: &str = ".owner";
 const TRASH_OWNER_VALUE: &str = "SkillMate managed trash v1\n";
+const TRASH_ENTRY_FILE: &str = ".skillmate-trash-entry.json";
 const UNDO_WINDOW_MS: i64 = 120_000;
 
 #[derive(Debug, Clone, Serialize)]
@@ -23,7 +24,8 @@ pub struct TrashReceipt {
     pub expires_at: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct TrashEntry {
     original: PathBuf,
     stash: PathBuf,
@@ -67,35 +69,40 @@ impl SkillTrash {
         fs::create_dir(&token_root).map_err(|error| error.to_string())?;
         let stash = token_root.join(&name);
         let checkpoint = ManagedMetadataCheckpoint::capture(db, &[path.to_path_buf()])?;
-        fs::rename(path, &stash).map_err(|error| {
+        let created_at = now_ms();
+        let entry = TrashEntry {
+            original: path.to_path_buf(),
+            stash,
+            token_root: token_root.clone(),
+            checkpoint,
+            created_at,
+        };
+        // 先原子落盘撤销记录，再移动文件：记录缺失的暂存目录视为
+        // 「移入未完成」，启动清理时只清目录本身，Skill 原位内容不受影响。
+        if let Err(error) = persist_entry(&token_root.join(TRASH_ENTRY_FILE), &entry) {
+            let _ = fs::remove_dir_all(&token_root);
+            return Err(format!("写入撤销记录失败: {error}"));
+        }
+        fs::rename(path, &entry.stash).map_err(|error| {
             let _ = fs::remove_dir_all(&token_root);
             format!("无法移入可撤销暂存区: {error}")
         })?;
         if let Err(error) = cleanup_skill_metadata(db, path) {
-            let restore_file = fs::rename(&stash, path)
-                .map_err(|restore_error| format!("{error}；恢复 Skill 文件失败: {restore_error}"));
-            let restore_metadata = checkpoint.restore(db);
-            let _ = fs::remove_dir_all(&token_root);
-            restore_file?;
-            restore_metadata?;
+            restore_after_failure(
+                db,
+                path,
+                &entry.stash,
+                &entry.token_root,
+                entry.checkpoint.clone(),
+            )?;
             return Err(error);
         }
-        let created_at = now_ms();
-        self.entries.insert(
-            token.clone(),
-            TrashEntry {
-                original: path.to_path_buf(),
-                stash,
-                token_root,
-                checkpoint,
-                created_at,
-            },
-        );
+        self.entries.insert(token.clone(), entry);
         Ok(TrashReceipt {
             token,
             name,
             original_path: path.to_string_lossy().to_string(),
-            expires_at: created_at + 60_000,
+            expires_at: created_at + UNDO_WINDOW_MS,
         })
     }
 
@@ -134,26 +141,89 @@ impl SkillTrash {
     }
 }
 
-pub fn purge_abandoned_trash(db: &Connection) -> Result<usize, String> {
+/// 启动时扫描各受管根目录下的撤销暂存区：撤销窗口内的记录重新加载进内存，
+/// 过期或损坏的记录就地清理。进程崩溃不再把未过期的撤销机会变成永久删除。
+pub fn restore_or_purge_abandoned_trash(db: &Connection) -> Result<(SkillTrash, usize), String> {
+    let mut trash = SkillTrash::default();
+    let mut removed = 0;
     let mut roots = managed_skill_roots();
     roots.extend(list_managed_roots(db)?.into_iter().map(|root| root.path));
     roots.sort();
     roots.dedup();
-    let mut removed = 0;
     for root in roots {
         let trash_root = root.join(TRASH_DIRECTORY);
         if !trash_root.is_dir() || !is_owned_trash_root(&trash_root) {
             continue;
         }
-        fs::remove_dir_all(&trash_root).map_err(|error| {
+        let entries = fs::read_dir(&trash_root).map_err(|error| {
             format!(
-                "清理遗留暂存区 {} 失败: {error}",
+                "读取撤销暂存区 {} 失败: {error}",
                 trash_root.to_string_lossy()
             )
         })?;
-        removed += 1;
+        for entry in entries {
+            let token_root = entry.map_err(|error| error.to_string())?.path();
+            if !token_root.is_dir() {
+                continue;
+            }
+            let token = token_root
+                .file_name()
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let persisted = fs::read_to_string(token_root.join(TRASH_ENTRY_FILE))
+                .ok()
+                .and_then(|text| serde_json::from_str::<TrashEntry>(&text).ok());
+            match persisted {
+                // stash 缺失说明移入未完成（或暂存内容已被外部清走），
+                // Skill 原位未动，只清理暂存目录本身。
+                Some(persisted)
+                    if !token.is_empty()
+                        && !is_expired(&persisted)
+                        && fs::symlink_metadata(&persisted.stash).is_ok() =>
+                {
+                    trash.entries.insert(token, persisted);
+                }
+                _ => {
+                    fs::remove_dir_all(&token_root).map_err(|error| {
+                        format!(
+                            "清理过期撤销暂存区 {} 失败: {error}",
+                            token_root.to_string_lossy()
+                        )
+                    })?;
+                    removed += 1;
+                }
+            }
+        }
+        cleanup_trash_root_if_empty(&trash_root);
     }
-    Ok(removed)
+    Ok((trash, removed))
+}
+
+fn is_expired(entry: &TrashEntry) -> bool {
+    now_ms() - entry.created_at > UNDO_WINDOW_MS
+}
+
+fn persist_entry(entry_file: &Path, entry: &TrashEntry) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(entry).map_err(|error| error.to_string())?;
+    // 撤销记录是崩溃恢复的凭证，本身必须原子落盘，撕裂写会让启动
+    // 清理误删暂存区里的 Skill 正本。
+    app_core::atomic_write(entry_file, text.as_bytes())
+}
+
+fn restore_after_failure(
+    db: &Connection,
+    path: &Path,
+    stash: &Path,
+    token_root: &Path,
+    checkpoint: ManagedMetadataCheckpoint,
+) -> Result<(), String> {
+    let restore_file = fs::rename(stash, path)
+        .map_err(|restore_error| format!("恢复 Skill 文件失败: {restore_error}"));
+    let restore_metadata = checkpoint.restore(db);
+    let _ = fs::remove_dir_all(token_root);
+    restore_file?;
+    restore_metadata?;
+    Ok(())
 }
 
 fn initialize_trash_root(path: &Path) -> Result<(), String> {
@@ -179,19 +249,20 @@ fn remove_entry_files(entry: &TrashEntry) -> Result<(), String> {
     if entry.token_root.exists() {
         fs::remove_dir_all(&entry.token_root).map_err(|error| error.to_string())?;
     }
-    cleanup_empty_trash_root(&entry.token_root);
+    if let Some(trash_root) = entry.token_root.parent() {
+        cleanup_trash_root_if_empty(trash_root);
+    }
     Ok(())
 }
 
 fn cleanup_token_root(token_root: &Path) {
     let _ = fs::remove_dir_all(token_root);
-    cleanup_empty_trash_root(token_root);
+    if let Some(trash_root) = token_root.parent() {
+        cleanup_trash_root_if_empty(trash_root);
+    }
 }
 
-fn cleanup_empty_trash_root(token_root: &Path) {
-    let Some(trash_root) = token_root.parent() else {
-        return;
-    };
+fn cleanup_trash_root_if_empty(trash_root: &Path) {
     let has_entries = fs::read_dir(trash_root)
         .ok()
         .into_iter()
@@ -301,14 +372,84 @@ mod tests {
     }
 
     #[test]
-    fn startup_cleanup_removes_only_owned_abandoned_trash() {
-        let (db, root, skill) = managed_skill("abandoned");
+    fn abandoned_trash_survives_restart_and_restores_within_window() {
+        let (db, root, skill) = managed_skill("restart");
         let mut trash = SkillTrash::default();
-        trash.trash(&db, &skill).unwrap();
+        let receipt = trash.trash(&db, &skill).unwrap();
+        // 模拟进程崩溃：丢弃内存状态后从磁盘恢复撤销记录。
+        let (mut restored, removed) = restore_or_purge_abandoned_trash(&db).unwrap();
+        assert_eq!(removed, 0);
         assert!(root.join(TRASH_DIRECTORY).exists());
 
-        assert_eq!(purge_abandoned_trash(&db).unwrap(), 1);
+        restored.restore(&db, &receipt.token).unwrap();
+        assert_eq!(
+            fs::read_to_string(skill.join("SKILL.md")).unwrap(),
+            "writer"
+        );
+        assert!(is_explicitly_managed(&db, &skill).unwrap());
         assert!(!root.join(TRASH_DIRECTORY).exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn startup_cleanup_removes_only_expired_or_unowned_trash() {
+        let (db, root, skill) = managed_skill("expired");
+        let mut trash = SkillTrash::default();
+        let receipt = trash.trash(&db, &skill).unwrap();
+        let token_root = root.join(TRASH_DIRECTORY).join(&receipt.token);
+        let entry_file = token_root.join(TRASH_ENTRY_FILE);
+        // 把撤销记录改写成已过期，再验证启动清理只删除过期项。
+        let mut entry: TrashEntry =
+            serde_json::from_str(&fs::read_to_string(&entry_file).unwrap()).unwrap();
+        entry.created_at = now_ms() - UNDO_WINDOW_MS - 1_000;
+        fs::write(&entry_file, serde_json::to_string(&entry).unwrap()).unwrap();
+
+        let (restored, removed) = restore_or_purge_abandoned_trash(&db).unwrap();
+        assert_eq!(removed, 1);
+        assert!(restored.entries.is_empty());
+        assert!(!root.join(TRASH_DIRECTORY).exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn startup_purges_incomplete_trash_without_touching_original() {
+        let (db, root, skill) = managed_skill("incomplete");
+        // 模拟「撤销记录已落盘、Skill 尚未移入」的崩溃窗口。
+        let trash_root = root.join(TRASH_DIRECTORY);
+        initialize_trash_root(&trash_root).unwrap();
+        let token_root = trash_root.join("partial-token");
+        fs::create_dir(&token_root).unwrap();
+        let entry = TrashEntry {
+            original: skill.clone(),
+            stash: token_root.join("writer"),
+            token_root: token_root.clone(),
+            checkpoint: ManagedMetadataCheckpoint::capture(&db, std::slice::from_ref(&skill))
+                .unwrap(),
+            created_at: now_ms(),
+        };
+        persist_entry(&token_root.join(TRASH_ENTRY_FILE), &entry).unwrap();
+
+        let (restored, removed) = restore_or_purge_abandoned_trash(&db).unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(restored.entries.is_empty());
+        assert!(skill.join("SKILL.md").exists());
+        assert!(is_explicitly_managed(&db, &skill).unwrap());
+        assert!(!root.join(TRASH_DIRECTORY).exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn startup_cleanup_removes_only_owned_abandoned_trash() {
+        let (db, root, _skill) = managed_skill("unowned");
+        let trash_root = root.join(TRASH_DIRECTORY);
+        fs::create_dir_all(trash_root.join("stray")).unwrap();
+        fs::write(trash_root.join(TRASH_OWNER_FILE), "not skillmate").unwrap();
+
+        let (restored, removed) = restore_or_purge_abandoned_trash(&db).unwrap();
+        assert_eq!(removed, 0);
+        assert!(restored.entries.is_empty());
+        assert!(trash_root.join("stray").exists());
         let _ = fs::remove_dir_all(root);
     }
 }

@@ -1770,17 +1770,22 @@ fn is_same_path(left: &Path, right: &Path) -> bool {
     }
 }
 
-fn initialize_database_state() -> Option<Connection> {
+fn initialize_database_state() -> (Option<Connection>, skill_trash::SkillTrash) {
     let (db, report) = match initialize_managed_database() {
         Ok(result) => result,
         Err(error) => {
             let message = remember_database_initialization_error(&error);
             eprintln!("{}", message);
-            return None;
+            return (None, skill_trash::SkillTrash::default());
         }
     };
-    if let Err(error) = run_exclusive_operation(skill_trash::purge_abandoned_trash) {
-        eprintln!("清理遗留可撤销暂存区失败: {}", error);
+    let mut restored_trash = skill_trash::SkillTrash::default();
+    if let Err(error) = run_exclusive_operation(|db| {
+        let (trash, removed) = skill_trash::restore_or_purge_abandoned_trash(db)?;
+        restored_trash = trash;
+        Ok(removed)
+    }) {
+        eprintln!("恢复可撤销暂存区失败: {}", error);
     }
     if report.recovered_transactions > 0 {
         eprintln!(
@@ -1791,7 +1796,7 @@ fn initialize_database_state() -> Option<Connection> {
     for warning in report.warnings {
         eprintln!("{}", warning);
     }
-    Some(db)
+    (Some(db), restored_trash)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1805,9 +1810,10 @@ pub fn run() {
             }
         }))
         .setup(|app| {
+            let (db, trash) = initialize_database_state();
             app.manage(AppState {
-                db: initialize_database_state().map(Mutex::new),
-                trash: Mutex::new(skill_trash::SkillTrash::default()),
+                db: db.map(Mutex::new),
+                trash: Mutex::new(trash),
             });
             #[cfg(desktop)]
             tray::setup(app)?;

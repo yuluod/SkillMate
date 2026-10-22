@@ -40,7 +40,7 @@ SkillMate divides the Skill lifecycle into explicit operations:
 - **Adopt**: move an existing physical Skill from an agent directory into the library, then replace its original location with a managed directory link.
 - **Enable**: create a directory link from the library to a platform's global or project directory.
 - **Disable**: remove an enablement link while keeping the master copy in the library.
-- **Delete**: remove a master copy managed by SkillMate. Normal deletion first moves it to SkillMate's own trash and provides a 60-second undo window.
+- **Delete**: remove a master copy managed by SkillMate. Normal deletion first moves it to SkillMate's own trash and provides a 120-second undo window that survives an app restart.
 
 ```text
 Git / local directory / Claude Marketplace
