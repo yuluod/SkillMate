@@ -71,6 +71,15 @@ pub fn preview_sync_skill_copies(
         .file_name()
         .and_then(|value| value.to_str())
         .ok_or_else(|| "基准 Skill 目录名无效".to_string())?;
+    // 指纹计算不豁免任何条目，而复制端跳过以下条目：来源若包含它们，
+    // after_hash 的承诺永远无法达成，必须提前拒绝而不是无限重提同步。
+    for entry in SKIPPED_SYNC_ENTRIES {
+        if fs::symlink_metadata(source.join(entry)).is_ok() {
+            return Err(format!(
+                "基准 Skill 包含同步豁免条目（{entry}），请先清理后再同步"
+            ));
+        }
+    }
     let source_hash = content_fingerprint(&source)?;
     let mut seen = HashSet::new();
     let mut actions = Vec::new();
@@ -189,6 +198,8 @@ fn rollback_error(
     }
 }
 
+// 目标目录由 ReconcileTransaction 先整体暂存再重建，因此复制完成后天然
+// 就是来源的镜像；此处只需跳过同步豁免条目。
 fn copy_skill_tree(source: &Path, target: &Path) -> Result<(), String> {
     fs::create_dir_all(target).map_err(|error| error.to_string())?;
     for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
@@ -328,6 +339,66 @@ mod tests {
             installation.skill.content_hash.as_deref(),
             Some(content_fingerprint(&target).unwrap().as_str())
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preview_rejects_source_with_sync_excluded_entries() {
+        let db = database();
+        let root = temp_dir("git-source");
+        let source_root = root.join("source-root");
+        let source = source_root.join("writer");
+        write_skill(&source, "source version");
+        fs::create_dir_all(source.join(".git")).unwrap();
+        fs::write(source.join(".git/config"), "gitdir").unwrap();
+        mark_managed_skill(&source_root, "Codex", &source, "local:/tmp/source").unwrap();
+        record_managed_root(&db, &source_root, "project", Some("/tmp/source-project")).unwrap();
+
+        let error = preview_sync_skill_copies(&db, &source, &[root.join("target-root/writer")])
+            .unwrap_err();
+        assert!(error.contains("同步豁免条目"), "{error}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sync_rebuilds_target_from_source_and_converges() {
+        let db = database();
+        let root = temp_dir("mirror");
+        let source_root = root.join("source-root");
+        let target_root = root.join("target-root");
+        let source = source_root.join("writer");
+        let target = target_root.join("writer");
+        write_skill(&source, "source version");
+        fs::create_dir_all(target.join("stale-dir")).unwrap();
+        write_skill(&target, "target version");
+        fs::write(target.join("stale-dir/old.md"), "obsolete").unwrap();
+        mark_managed_skill(&source_root, "Codex", &source, "local:/tmp/source").unwrap();
+        mark_managed_skill(&target_root, "Cursor", &target, "local:/tmp/target").unwrap();
+        record_managed_root(&db, &source_root, "project", Some("/tmp/source-project")).unwrap();
+        record_managed_root(&db, &target_root, "project", Some("/tmp/target-project")).unwrap();
+
+        let preview =
+            preview_sync_skill_copies(&db, &source, std::slice::from_ref(&target)).unwrap();
+        assert!(preview.can_apply);
+        apply_sync_skill_copies(
+            &db,
+            &source,
+            std::slice::from_ref(&target),
+            Some(&preview.plan_token),
+        )
+        .unwrap();
+
+        // 事务把目标整体暂存后重建，残留条目随旧目录一起消失。
+        assert!(!target.join("stale-dir").exists());
+        assert_eq!(
+            content_fingerprint(&source).unwrap(),
+            content_fingerprint(&target).unwrap()
+        );
+        // 收敛后再预览不应再提供同步动作，否则会形成永不收敛的循环。
+        let follow_up =
+            preview_sync_skill_copies(&db, &source, std::slice::from_ref(&target)).unwrap();
+        assert!(follow_up.actions.is_empty());
+        assert!(!follow_up.can_apply);
         let _ = fs::remove_dir_all(root);
     }
 
