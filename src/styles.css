@@ -18,6 +18,7 @@
   --text: #ede8db;
   --text2: #b9b4a5;
   --text3: #94917f;
+  --text-on-accent: #ffffff;
   --border: #333949;
   --rule: #454c60;
   --success: #5cba8e;
@@ -47,6 +48,7 @@
   --text: #20263a;
   --text2: #4b5065;
   --text3: #5d5f72;
+  --text-on-accent: #ffffff;
   --border: #cfc9b6;
   --rule: #aaa287;
   --success: #25714c;
@@ -72,6 +74,7 @@
   --text: #f4f7fb;
   --text2: #c4ccda;
   --text3: #98a3b3;
+  --text-on-accent: #ffffff;
   --border: #313b4d;
   --rule: #313b4d;
   --success: #3ecf8e;
@@ -100,6 +103,7 @@
   --text: #101828;
   --text2: #41516a;
   --text3: #556278;
+  --text-on-accent: #ffffff;
   --border: #d5deeb;
   --rule: #d5deeb;
   --success: #0f9f6e;
@@ -126,6 +130,7 @@
   --text: #f4f4f4;
   --text2: #c9c9c9;
   --text3: #969696;
+  --text-on-accent: #ffffff;
   --border: #d6d6d6;
   --rule: #d6d6d6;
   --success: #63c795;
@@ -154,6 +159,7 @@
   --text: #0a0a0a;
   --text2: #2e2e2e;
   --text3: #585858;
+  --text-on-accent: #ffffff;
   --border: #0a0a0a;
   --rule: #0a0a0a;
   --success: #1c6b45;
@@ -557,12 +563,12 @@ body {
   border-radius: var(--radius);
 }
 
-.btn-danger { background: var(--error); color: white; }
+.btn-danger { background: var(--error); color: var(--text-on-accent); }
 .btn-danger:hover { opacity: 0.9; }
 
 .btn-sm { min-height: 30px; padding: 5px 10px; font-size: 0.8rem; }
 .btn.danger { color: var(--error); }
-.btn.danger:hover { background: rgba(239, 68, 68, 0.1); }
+.btn.danger:hover { background: color-mix(in srgb, var(--error) 10%, transparent); }
 .btn.full { width: 100%; margin-top: 16px; }
 
 /* ============================
@@ -644,7 +650,7 @@ body {
   border: var(--border-w) solid var(--border);
 }
 
-.badge.warn { background: rgba(245, 158, 11, 0.2); color: var(--warn); }
+.badge.warn { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
 
 .sidebar-section {
   padding: 16px 14px;
@@ -893,8 +899,8 @@ body {
 
 .update-pill.warn {
   color: var(--warn);
-  border-color: rgba(245, 158, 11, 0.35);
-  background: rgba(245, 158, 11, 0.12);
+  border-color: color-mix(in srgb, var(--warn) 35%, transparent);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 
 .update-pill.success {
@@ -905,8 +911,8 @@ body {
 
 .update-pill.error {
   color: var(--error);
-  border-color: rgba(239, 68, 68, 0.35);
-  background: rgba(239, 68, 68, 0.1);
+  border-color: color-mix(in srgb, var(--error) 35%, transparent);
+  background: color-mix(in srgb, var(--error) 10%, transparent);
 }
 
 .update-pill.muted {
@@ -1015,20 +1021,20 @@ body {
 
 .structure-badge.success {
   color: var(--success);
-  background: rgba(34, 197, 94, 0.12);
-  border-color: rgba(34, 197, 94, 0.24);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+  border-color: color-mix(in srgb, var(--success) 24%, transparent);
 }
 
 .structure-badge.warn {
   color: var(--warn);
-  background: rgba(245, 158, 11, 0.12);
-  border-color: rgba(245, 158, 11, 0.28);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border-color: color-mix(in srgb, var(--warn) 28%, transparent);
 }
 
 .structure-badge.error {
   color: var(--error);
-  background: rgba(239, 68, 68, 0.1);
-  border-color: rgba(239, 68, 68, 0.24);
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+  border-color: color-mix(in srgb, var(--error) 24%, transparent);
 }
 
 .card-tags {
@@ -1407,7 +1413,7 @@ body {
 .scenario-skill-platforms { overflow: hidden; color: var(--text2); font-size: 0.74rem; text-overflow: ellipsis; white-space: nowrap; }
 .scenario-skill-copy small { overflow: hidden; color: var(--text3); font: 0.72rem var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .scenario-skill-state { min-width: 70px; min-height: 30px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 5px 9px; border-radius: 999px; background: var(--bg3); color: var(--text2); font-size: 0.74rem; font-weight: 650; }
-.scenario-skill-row.selected .scenario-skill-state { background: var(--accent); color: white; }
+.scenario-skill-row.selected .scenario-skill-state { background: var(--accent); color: var(--text-on-accent); }
 .scenario-picker-empty { grid-column: 1 / -1; min-height: 170px; display: grid; place-content: center; justify-items: center; gap: 8px; color: var(--text3); font-size: 0.78rem; }
 
 .scenario-editor-actions {
@@ -1450,7 +1456,7 @@ body {
 .scenario-info span { font-size: 0.75rem; color: var(--text3); }
 .scenario-detail { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
 .scenario-path-row { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; padding: 10px 12px; background: var(--bg3); border: var(--border-w) solid var(--border); border-radius: var(--radius-lg); }
-.scenario-path-row.missing { border-color: rgba(239, 68, 68, 0.35); }
+.scenario-path-row.missing { border-color: color-mix(in srgb, var(--error) 35%, transparent); }
 .scenario-path-row strong { font-size: 0.85rem; color: var(--text); }
 .tag.warn { color: var(--warn); }
 
@@ -1879,9 +1885,9 @@ body {
   border-radius: var(--radius);
 }
 
-.structure-preview.success { border-color: rgba(34, 197, 94, 0.28); }
-.structure-preview.warn { border-color: rgba(245, 158, 11, 0.32); }
-.structure-preview.error { border-color: rgba(239, 68, 68, 0.3); }
+.structure-preview.success { border-color: color-mix(in srgb, var(--success) 28%, transparent); }
+.structure-preview.warn { border-color: color-mix(in srgb, var(--warn) 32%, transparent); }
+.structure-preview.error { border-color: color-mix(in srgb, var(--error) 30%, transparent); }
 
 .structure-preview-head {
   display: flex;
@@ -1917,9 +1923,9 @@ body {
   border-radius: var(--radius);
 }
 
-.install-compact.success { border-color: rgba(34, 197, 94, 0.28); }
-.install-compact.warn { border-color: rgba(245, 158, 11, 0.32); }
-.install-compact.error { border-color: rgba(239, 68, 68, 0.3); }
+.install-compact.success { border-color: color-mix(in srgb, var(--success) 28%, transparent); }
+.install-compact.warn { border-color: color-mix(in srgb, var(--warn) 32%, transparent); }
+.install-compact.error { border-color: color-mix(in srgb, var(--error) 30%, transparent); }
 .install-compact span { font-size: 0.76rem; color: var(--text3); }
 .install-compact strong { font-size: 0.84rem; color: var(--text); line-height: 1.35; }
 .install-compact p { font-size: 0.8rem; color: var(--text2); line-height: 1.4; }
@@ -3019,6 +3025,12 @@ body {
 
 [data-skin="cardbox"] .btn-primary:hover { box-shadow: var(--shadow); }
 [data-skin="cardbox"] .stamp { border-radius: 0; letter-spacing: 0.06em; }
+[data-skin="cardbox"] .update-pill,
+[data-skin="cardbox"] .filter-tag,
+[data-skin="cardbox"] .source-badge,
+[data-skin="cardbox"] .structure-badge,
+[data-skin="cardbox"] .scenario-skill-state,
+[data-skin="cardbox"] .progress-track { border-radius: 0; }
 [data-skin="cardbox"] .header { border-bottom-width: 2px; }
 
 /* 登记册响应式:窄窗口纵向堆叠 */

@@ -9,6 +9,7 @@ import cursorLogo from "../assets/brands/cursor.svg";
 import opencodeLogo from "../assets/brands/opencode.svg";
 import copilotLogo from "../assets/brands/copilot.svg";
 import { useI18n } from "../lib/i18n.jsx";
+import { toUserErrorMessage } from "../lib/errorMessage.mjs";
 import { SurfaceHeader } from "./SurfaceHeader.jsx";
 import { skillmateApi } from "../lib/skillmateApi.js";
 
@@ -32,7 +33,6 @@ export const AiAvatar = React.memo(function AiAvatar({ name, brand, size = 36 })
         height: size,
         minWidth: size,
         minHeight: size,
-        borderRadius: Math.max(8, Math.round(size * 0.24)),
         background: metadata.bg,
       }}
       title={name}
@@ -85,8 +85,15 @@ export function SkillsView({
   onClearSelection = () => {},
 }) {
   const { t } = useI18n();
-  const selectedSkills = (allSkills ?? skills).filter((skill) => selectedSkillPaths.includes(skill.path));
-  const canEnableSelection = selectedSkills.every((skill) => buildSkillCardView(skill, t).canEnable);
+  const selectedSkills = React.useMemo(
+    () => (allSkills ?? skills).filter((skill) => selectedSkillPaths.includes(skill.path)),
+    [allSkills, skills, selectedSkillPaths]
+  );
+  const canEnableSelection = React.useMemo(
+    () => selectedSkills.every((skill) => buildSkillCardView(skill, t).canEnable),
+    [selectedSkills, t]
+  );
+  const skillCards = React.useMemo(() => skills.map((skill) => buildSkillCardView(skill, t)), [skills, t]);
   const allVisibleSelected = skills.length > 0 && skills.every((skill) => selectedSkillPaths.includes(skill.path));
   return (
     <div className="view-shell">
@@ -151,7 +158,7 @@ export function SkillsView({
           </div>
         ) : (
           skills.map((skill, index) => {
-            const card = buildSkillCardView(skill, t);
+            const card = skillCards[index];
             const selected = selectedSkillPaths.includes(skill.path);
             const needsReview = card.structureTone !== "success" || card.hasManagedDrift || card.securityWarningCount > 0;
             return (
@@ -374,7 +381,7 @@ function ProjectInspectionPanel({ onAdopt, onMaterialize, revision, workspace })
     }).catch((reason) => {
       if (!cancelled) {
         setInspection(null);
-        setError(String(reason));
+        setError(toUserErrorMessage(reason, t("error.safeRetry")));
       }
     }).finally(() => {
       if (!cancelled) setBusy(false);
@@ -494,6 +501,10 @@ function updateButtonText(info, t) {
 
 export function UpdatesView({ skills, orderedSkills, stats, updateState, getSyncInfo, checkAll, checkOne, updateOne }) {
   const { t, language } = useI18n();
+  const skillCards = React.useMemo(
+    () => orderedSkills.map((skill) => buildSkillCardView(skill, t)),
+    [orderedSkills, t]
+  );
   return (
     <div className="view-shell">
       <SurfaceHeader
@@ -528,9 +539,9 @@ export function UpdatesView({ skills, orderedSkills, stats, updateState, getSync
             <div className="registry-actions" role="cell" />
           </div>
         ) : (
-          orderedSkills.map(skill => {
+          orderedSkills.map((skill, index) => {
             const info = getSyncInfo(skill);
-            const card = buildSkillCardView(skill, t);
+            const card = skillCards[index];
             return (
               <article className="registry-row" key={skill.path} role="row">
                 <div className="registry-main" role="cell">
