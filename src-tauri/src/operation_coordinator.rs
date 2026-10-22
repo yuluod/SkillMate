@@ -84,8 +84,13 @@ where
         acquire_operation_lock,
         open_db_connection,
         |db| {
-            let recovered = recover_pending_transactions(db)?;
-            migrate_managed_installation_fingerprints(db)?;
+            let recovered = recover_pending_transactions(db)
+                .map_err(|error| format!("恢复未完成事务失败，已阻止本次操作: {error}"))?;
+            let (_, warnings) = migrate_managed_installation_fingerprints(db)
+                .map_err(|error| format!("迁移内容指纹失败，已阻止本次操作: {error}"))?;
+            for warning in warnings {
+                eprintln!("内容指纹迁移: {warning}");
+            }
             Ok(recovered)
         },
         operation,
@@ -106,7 +111,7 @@ where
 {
     let _guard = acquire_lock()?;
     let db = open_db()?;
-    recover(&db).map_err(|error| format!("恢复未完成事务失败，已阻止本次操作: {}", error))?;
+    recover(&db)?;
     operation(&db)
 }
 
@@ -214,7 +219,10 @@ pub(crate) fn initialize_managed_database() -> Result<(Connection, StartupMainte
         .collect::<Vec<_>>();
     let report = run_startup_maintenance_with(&db, &global_roots, || {
         let recovered = recover_pending_transactions(&db)?;
-        migrate_managed_installation_fingerprints(&db)?;
+        let (_, warnings) = migrate_managed_installation_fingerprints(&db)?;
+        for warning in warnings {
+            eprintln!("内容指纹迁移: {warning}");
+        }
         Ok(recovered)
     })?;
     Ok((db, report))
@@ -552,7 +560,7 @@ mod tests {
         let error = run_exclusive_operation_with(
             || Ok(()),
             || Connection::open_in_memory().map_err(|error| error.to_string()),
-            |_| Err("journal 损坏".to_string()),
+            |_| Err("恢复未完成事务失败，已阻止本次操作: journal 损坏".to_string()),
             |_| {
                 operation_ran.set(true);
                 Ok(())

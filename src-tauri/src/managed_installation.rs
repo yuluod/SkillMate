@@ -788,7 +788,9 @@ pub fn verify_managed_content_unchanged(db: &Connection, path: &Path) -> Result<
     Ok(())
 }
 
-pub(crate) fn migrate_managed_installation_fingerprints(db: &Connection) -> Result<usize, String> {
+pub(crate) fn migrate_managed_installation_fingerprints(
+    db: &Connection,
+) -> Result<(usize, Vec<String>), String> {
     let transaction = db
         .unchecked_transaction()
         .map_err(|error| error.to_string())?;
@@ -810,18 +812,33 @@ pub(crate) fn migrate_managed_installation_fingerprints(db: &Connection) -> Resu
     };
     let has_library = table_exists(&transaction, "library_skills")?;
     let mut migrated = 0;
+    let mut warnings = Vec::new();
     for (stored_path, old_hash) in candidates {
         let path = Path::new(&stored_path);
-        match std::fs::symlink_metadata(path) {
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(format!("读取旧受管内容失败 {}: {error}", path.display())),
+        let mut skip = |reason: String| {
+            warnings.push(format!(
+                "已跳过 {} 的内容指纹迁移（保留旧基线，不影响漂移检测；重新安装该 Skill 后可消除）: {}",
+                stored_path, reason
+            ));
+        };
+        if let Err(error) = std::fs::symlink_metadata(path) {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                continue;
+            }
+            skip(format!("读取旧受管内容失败: {error}"));
+            continue;
         }
-        let state_entry = path
+        let state_entry = match path
             .parent()
             .map(|root| managed_state_entry(root, path))
-            .transpose()?
-            .flatten();
+            .transpose()
+        {
+            Ok(entry) => entry.flatten(),
+            Err(error) => {
+                skip(error);
+                continue;
+            }
+        };
         let library_key = if has_library {
             Some(database_path_key(
                 &transaction,
@@ -857,15 +874,36 @@ pub(crate) fn migrate_managed_installation_fingerprints(db: &Connection) -> Resu
             }
             Ok(true)
         };
-        if !matches_all()? {
-            continue;
+        // 单个 Skill 无法迁移（如包含 FIFO 等特殊文件、内容已漂移）时保留旧基线：
+        // 旧算法核验路径仍然有效，跳过只影响升级速度，不扩大阻塞面。
+        match matches_all() {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(error) => {
+                skip(error);
+                continue;
+            }
         }
-        let new_hash = content_fingerprint(path)?;
-        if !matches_all()? || content_fingerprint(path)? != new_hash {
-            return Err(format!(
-                "迁移数据库指纹期间 Skill 已变化: {}",
-                path.display()
-            ));
+        let new_hash = match content_fingerprint(path) {
+            Ok(hash) => hash,
+            Err(error) => {
+                skip(error);
+                continue;
+            }
+        };
+        match matches_all() {
+            Ok(true) => {}
+            Ok(false) | Err(_) => {
+                skip("迁移数据库指纹期间 Skill 已变化".to_string());
+                continue;
+            }
+        }
+        match content_fingerprint(path) {
+            Ok(hash) if hash == new_hash => {}
+            Ok(_) | Err(_) => {
+                skip("迁移数据库指纹期间 Skill 已变化".to_string());
+                continue;
+            }
         }
         // 只替换实际核验过的旧基线，保留安装时间和仅数据库登记的管理身份。
         let updated = transaction
@@ -893,7 +931,7 @@ pub(crate) fn migrate_managed_installation_fingerprints(db: &Connection) -> Resu
         migrated += 1;
     }
     transaction.commit().map_err(|error| error.to_string())?;
-    Ok(migrated)
+    Ok((migrated, warnings))
 }
 
 pub fn record_managed_root(
@@ -1197,7 +1235,26 @@ fn delete_path_metadata(db: &Connection, path: &Path) -> Result<(), String> {
             "DELETE FROM library_skills WHERE library_path = ?",
             params![library_key],
         )
-        .map_err(|error| format!("该 Skill 仍在平台或项目中启用，请先停用后再删除: {error}"))?;
+        .map_err(|error| {
+            // 只有外键约束失败才代表部署仍然存在；其余是真实的数据库错误，
+            // 不能翻译成误导性的「仍在启用」。SQLite 的外键冲突只返回主码
+            // SQLITE_CONSTRAINT（无专用扩展码），故以主码 + SQLite 原生消息共同判定。
+            let is_fk_violation = matches!(
+                &error,
+                rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error {
+                        code: rusqlite::ErrorCode::ConstraintViolation,
+                        ..
+                    },
+                    Some(message),
+                ) if message.contains("FOREIGN KEY")
+            );
+            if is_fk_violation {
+                format!("该 Skill 仍在平台或项目中启用，请先停用后再删除: {error}")
+            } else {
+                error.to_string()
+            }
+        })?;
     }
     let origin_key = database_path_key(db, PathColumn::SkillOrigin, path)?;
     db.execute(
@@ -1302,14 +1359,14 @@ mod tests {
         ));
         let (path, old_hash) = legacy_registry_fixture(&db, &root, "writer");
         assert!(fingerprint_matches(&path, &old_hash).unwrap());
-        assert_eq!(migrate_managed_installation_fingerprints(&db).unwrap(), 1);
+        assert_eq!(migrate_managed_installation_fingerprints(&db).unwrap().0, 1);
         let installation = find_managed_installation(&db, &path).unwrap().unwrap();
         assert_eq!(
             installation.skill.content_hash,
             Some(content_fingerprint(&path).unwrap())
         );
         assert!(!root.join(crate::managed_state::STATE_FILE_NAME).exists());
-        assert_eq!(migrate_managed_installation_fingerprints(&db).unwrap(), 0);
+        assert_eq!(migrate_managed_installation_fingerprints(&db).unwrap().0, 0);
         verify_managed_content_unchanged(&db, &path).unwrap();
 
         std::fs::write(path.join("a"), "XbfileY").unwrap();
@@ -1330,7 +1387,7 @@ mod tests {
         let (missing, missing_hash) = legacy_registry_fixture(&db, &root, "missing");
         std::fs::write(edited.join("a"), "manual edit").unwrap();
         std::fs::remove_dir_all(&missing).unwrap();
-        assert_eq!(migrate_managed_installation_fingerprints(&db).unwrap(), 0);
+        assert_eq!(migrate_managed_installation_fingerprints(&db).unwrap().0, 0);
         for (path, hash) in [(&edited, edited_hash), (&missing, missing_hash)] {
             assert_eq!(
                 find_managed_installation(&db, path)
@@ -1357,7 +1414,7 @@ mod tests {
         std::fs::write(path.join("a"), "sidecar baseline").unwrap();
         mark_managed_skill(&root, "Codex", &path, "local:/source").unwrap();
         std::fs::write(path.join("a"), "X").unwrap();
-        assert_eq!(migrate_managed_installation_fingerprints(&db).unwrap(), 0);
+        assert_eq!(migrate_managed_installation_fingerprints(&db).unwrap().0, 0);
         assert_eq!(
             find_managed_installation(&db, &path)
                 .unwrap()
@@ -1367,6 +1424,54 @@ mod tests {
             Some(old_hash)
         );
         assert!(verify_managed_content_unchanged(&db, &path).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn database_fingerprint_migration_skips_unsupported_file_types_without_blocking() {
+        let db = database();
+        let root = std::env::temp_dir().join(format!(
+            "skillmate-registry-fifo-migration-{}",
+            crate::app_core::generate_id()
+        ));
+        let (path, _old_hash) = legacy_registry_fixture(&db, &root, "writer");
+        #[cfg(unix)]
+        let fifo_ready = {
+            let status = std::process::Command::new("mkfifo")
+                .arg(path.join("pipe"))
+                .status();
+            matches!(status, Ok(status) if status.success())
+        };
+        #[cfg(not(unix))]
+        let fifo_ready = false;
+        if fifo_ready {
+            // legacy 算法对 FIFO 只记录路径字节，这里构造出与当前内容
+            // （含 FIFO）一致的旧基线，让迁移走到 v2 指纹报错的一步。
+            let mut hash = crate::operation_plan::StableHash::new();
+            hash.update(b"directoryafileXbfileYpipe");
+            let legacy_with_fifo = format!("sha256:{}", hash.finish());
+            assert!(crate::managed_state::fingerprint_matches(&path, &legacy_with_fifo).unwrap());
+            db.execute(
+                "UPDATE managed_installations SET content_hash = ? WHERE skill_path = ?",
+                [&legacy_with_fifo, &path.to_string_lossy().to_string()],
+            )
+            .unwrap();
+            // 旧算法能容忍 FIFO 等特殊文件；迁移失败必须降级为跳过，
+            // 不能让升级后的受管目录拦死所有操作。
+            let (migrated, warnings) = migrate_managed_installation_fingerprints(&db).unwrap();
+            assert_eq!(migrated, 0);
+            assert_eq!(warnings.len(), 1);
+            assert_eq!(
+                find_managed_installation(&db, &path)
+                    .unwrap()
+                    .unwrap()
+                    .skill
+                    .content_hash,
+                Some(legacy_with_fifo)
+            );
+            // 旧基线核验路径仍然有效，破坏性操作保护不受影响。
+            verify_managed_content_unchanged(&db, &path).unwrap();
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1403,7 +1508,7 @@ mod tests {
             Some(old_hash.clone())
         );
         db.execute_batch("DROP TRIGGER fail_migration").unwrap();
-        assert_eq!(migrate_managed_installation_fingerprints(&db).unwrap(), 1);
+        assert_eq!(migrate_managed_installation_fingerprints(&db).unwrap().0, 1);
         let row: (String, String) = db
             .query_row(
                 "SELECT content_hash, updated_at FROM library_skills",
@@ -1416,6 +1521,48 @@ mod tests {
             (content_fingerprint(&path).unwrap(), "untouched".into())
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn delete_path_metadata_reports_fk_violation_as_still_enabled() {
+        let db = database();
+        db.execute_batch(
+            "CREATE TABLE library_skills (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, library_path TEXT NOT NULL UNIQUE,
+                source TEXT NOT NULL, source_kind TEXT NOT NULL, resolved_ref TEXT,
+                content_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+             );
+             CREATE TABLE skill_deployments (
+                target_path TEXT PRIMARY KEY, skill_id TEXT NOT NULL,
+                library_path TEXT NOT NULL, assistant TEXT NOT NULL, scope TEXT NOT NULL,
+                project_path TEXT, deploy_mode TEXT NOT NULL, deployed_at TEXT NOT NULL,
+                FOREIGN KEY(skill_id) REFERENCES library_skills(id) ON DELETE RESTRICT
+             );
+             PRAGMA foreign_keys = ON;",
+        )
+        .unwrap();
+        let library = std::env::temp_dir().join(format!(
+            "skillmate-fk-delete-{}",
+            crate::app_core::generate_id()
+        ));
+        let library_key = library.to_string_lossy().to_string();
+        db.execute(
+            "INSERT INTO library_skills VALUES ('skill-1', 'writer', ?, 'local', 'local', NULL,
+             'hash', 'now', 'now')",
+            [&library_key],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO skill_deployments VALUES ('/tmp/deploy/writer', 'skill-1', ?, 'Codex',
+             'global', NULL, 'symlink', 'now')",
+            [&library_key],
+        )
+        .unwrap();
+
+        // 仍有启用时删除主副本：只有外键冲突才提示「仍在启用」。
+        let error = delete_path_metadata(&db, &library).unwrap_err();
+        assert!(error.contains("仍在平台或项目中启用"), "{error}");
+        let _ = std::fs::remove_dir_all(library);
     }
 
     #[test]

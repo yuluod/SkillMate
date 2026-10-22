@@ -413,20 +413,45 @@ fn migrate_state_fingerprints(state: &mut SkillMateState) -> Result<(), String> 
             continue;
         }
         let path = Path::new(&entry.path);
+        // 单条迁移失败（特殊文件、不可读、迁移期间内容变化）保留旧基线并跳过：
+        // 旧算法核验路径仍然有效，不因单条失败让整份状态文件读取失败。
+        let skip = |reason: String| {
+            eprintln!(
+                "已跳过 {} 的受管状态指纹迁移（保留旧基线）: {}",
+                path.display(),
+                reason
+            );
+        };
         match fs::symlink_metadata(path) {
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(format!("无法读取待迁移 Skill {}: {error}", path.display())),
-        }
-        if fingerprint_matches(path, &entry.last_seen_hash)
-            .map_err(|error| format!("核验旧内容指纹失败 {}: {error}", path.display()))?
-        {
-            let hash = content_fingerprint(path)?;
-            // 迁移前后都核验旧基线，不把已经修改的当前内容登记为安装状态。
-            if !fingerprint_matches(path, &entry.last_seen_hash)? {
-                return Err(format!("内容指纹迁移期间 Skill 已变化: {}", path.display()));
+            Err(error) => {
+                skip(format!("无法读取待迁移 Skill: {error}"));
+                continue;
             }
-            entry.last_seen_hash = hash;
+        }
+        let matches_baseline = match fingerprint_matches(path, &entry.last_seen_hash) {
+            Ok(matches) => matches,
+            Err(error) => {
+                skip(format!("核验旧内容指纹失败: {error}"));
+                continue;
+            }
+        };
+        if matches_baseline {
+            let hash = match content_fingerprint(path) {
+                Ok(hash) => hash,
+                Err(error) => {
+                    skip(error);
+                    continue;
+                }
+            };
+            // 迁移前后都核验旧基线，不把已经修改的当前内容登记为安装状态。
+            match fingerprint_matches(path, &entry.last_seen_hash) {
+                Ok(true) => entry.last_seen_hash = hash,
+                Ok(false) | Err(_) => {
+                    skip(format!("内容指纹迁移期间 Skill 已变化: {}", path.display()));
+                }
+            }
         }
     }
     Ok(())
