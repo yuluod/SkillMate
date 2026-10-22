@@ -1268,4 +1268,29 @@ test("英文界面应当本地化结构风险和声明式预览摘要", () => {
     buildProjectTargetPreviewSummary([{ assistant: "Cursor", target_path: "/tmp/.cursor/skills", exists: true, recommended: true }], translateEnglish),
     ["Cursor: /tmp/.cursor/skills · exists · recommended"],
   );
+  assert.equal(
+    buildInstallStructureSummary({
+      structure_status: "partial",
+      structure_warnings: ["missing_skill_md"],
+    }, translateEnglish),
+    "Structure: Needs fixes: SKILL.md is missing",
+  );
+  assert.equal(
+    buildInstallStructureSummary({
+      structure_status: "complete",
+      structure_warnings: [],
+    }, translateEnglish),
+    "Structure: Valid",
+  );
+  assert.deepEqual(
+    buildUniqueSkillInventory([{ name: "", icon: "", skills: [{ path: "/tmp/writer", name: "writer" }] }], translateEnglish)[0].availableIn,
+    [{ name: "Unknown assistant", icon: "" }],
+  );
+  assert.deepEqual(
+    buildSkillMateManifestPreviewSummary({
+      actions: [{ assistant: "Codex", target_name: "writer", message: "Will install 1 Skill" }],
+      conflicts: [],
+    }, translateEnglish).filter((line) => line.startsWith("Codex")),
+    ["Codex: writer · Will install 1 Skill"],
+  );
 });

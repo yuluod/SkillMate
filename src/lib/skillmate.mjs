@@ -557,14 +557,14 @@ export function buildSkillCardView(skill, t) {
   };
 }
 
-export function buildUniqueSkillInventory(assistants) {
+export function buildUniqueSkillInventory(assistants, t) {
   const byPath = new Map();
   for (const assistant of Array.isArray(assistants) ? assistants : []) {
     for (const skill of Array.isArray(assistant?.skills) ? assistant.skills : []) {
       const path = typeof skill?.path === "string" ? skill.path : "";
       const identity = path || `${assistant?.name || "unknown"}:${skill?.id || skill?.name || "unknown"}`;
       const availability = {
-        name: assistant?.name || "未知助手",
+        name: assistant?.name || localized(t, "common.unknownAssistant", "未知助手"),
         icon: assistant?.icon || "",
       };
       const existing = byPath.get(identity);
@@ -611,7 +611,7 @@ export function buildScenarioSkillInventory(skills) {
   return [...byIdentity.values()];
 }
 
-export function buildDriftGroups(assistants) {
+export function buildDriftGroups(assistants, t) {
   const byName = new Map();
   for (const assistant of Array.isArray(assistants) ? assistants : []) {
     for (const skill of Array.isArray(assistant?.skills) ? assistant.skills : []) {
@@ -621,7 +621,7 @@ export function buildDriftGroups(assistants) {
       if (!name || !path || !contentHash) continue;
       const copies = byName.get(name) || new Map();
       const existing = copies.get(path);
-      const availability = { name: assistant?.name || "未知助手", icon: assistant?.icon || "" };
+      const availability = { name: assistant?.name || localized(t, "common.unknownAssistant", "未知助手"), icon: assistant?.icon || "" };
       if (existing) {
         if (!existing.availableIn.some((item) => item.name === availability.name)) {
           existing.availableIn.push(availability);
@@ -658,18 +658,18 @@ export function buildDriftGroups(assistants) {
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
-export function buildDashboardStats(assistants, librarySkills = []) {
+export function buildDashboardStats(assistants, librarySkills = [], t) {
   const skills = buildScenarioSkillInventory([
-    ...buildUniqueSkillInventory(assistants),
+    ...buildUniqueSkillInventory(assistants, t),
     ...(Array.isArray(librarySkills) ? librarySkills : []),
   ]);
-  const driftGroups = buildDriftGroups(assistants);
+  const driftGroups = buildDriftGroups(assistants, t);
   let updates = 0;
   let structureIssues = 0;
   let securityRisks = 0;
   let localChanges = 0;
   for (const skill of skills) {
-    const card = buildSkillCardView(skill);
+    const card = buildSkillCardView(skill, t);
     if (skill?.sync_state === "behind" || skill?.has_update) updates += 1;
     if (skill?.structure_status !== "complete") structureIssues += 1;
     if (card.securityWarningCount > 0) securityRisks += 1;
@@ -728,16 +728,19 @@ export function buildSkillDescription(skill) {
     ?.slice(0, 80) || "";
 }
 
-export function buildInstallStructureSummary(result) {
+export function buildInstallStructureSummary(result, t) {
   if (!result?.structure_status) {
     return "";
   }
-  const label = getStructureStatusLabel(result.structure_status);
+  const label = getStructureStatusLabel(result.structure_status, t);
   const warnings = normalizeSkillStructure(result).warnings;
   if (warnings.length === 0) {
-    return `结构${label}`;
+    return localized(t, "install.structureSummary.base", "结构{value}", { value: label });
   }
-  return `结构${label}：${buildStructureWarningSummary(result)}`;
+  return localized(t, "install.structureSummary.withWarnings", "结构{value}：{warnings}", {
+    value: label,
+    warnings: buildStructureWarningSummary(result, t),
+  });
 }
 
 export function normalizeScenarioSkillPaths({ selectedPaths, manualInput, skills }) {
@@ -870,13 +873,23 @@ export function buildSkillMateManifestPreviewSummary(preview, t) {
     lines.push(localized(t, "summary.manifest.conflicts", "存在 {count} 个冲突", { count: conflicts.length }));
   }
   actions.slice(0, 5).forEach((action) => {
-    lines.push(`${action.assistant}：${action.target_name} · ${action.message}`);
+    lines.push(localized(t, "summary.manifest.actionLine", "{assistant}：{target} · {message}", {
+      assistant: action.assistant,
+      target: action.target_name,
+      message: action.message,
+    }));
   });
   conflicts.slice(0, 5).forEach((conflict) => {
-    lines.push(`${conflict.assistant}：${conflict.reason}`);
+    lines.push(localized(t, "summary.manifest.conflictLine", "{assistant}：{reason}", {
+      assistant: conflict.assistant,
+      reason: conflict.reason,
+    }));
   });
   validationIssues.slice(0, 5).forEach((issue) => {
-    lines.push(`#${issue.index + 1}：${issue.message}`);
+    lines.push(localized(t, "summary.manifest.issueLine", "#{index}：{message}", {
+      index: issue.index + 1,
+      message: issue.message,
+    }));
   });
   return lines.length > 0 ? lines : [localized(t, "summary.manifest.noActions", "manifest 没有可执行动作")];
 }
