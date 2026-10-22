@@ -55,11 +55,16 @@ pub fn generate_id() -> String {
 }
 
 pub fn expand_path(path: &str) -> PathBuf {
-    if path.starts_with('~') {
-        let home = dirs::home_dir().unwrap_or_default();
-        home.join(path.trim_start_matches('~').trim_start_matches('/'))
-    } else {
-        PathBuf::from(path)
+    // 只展开 `~` 与 `~/…`（含 Windows 的 `~\…`）；`~other/x` 这类其他用户的写法
+    // 本就无法解析，按原样保留，避免错误地拼到当前用户家目录下。
+    let rest = match path.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\') => rest,
+        _ => return PathBuf::from(path),
+    };
+    match dirs::home_dir() {
+        Some(home) => home.join(rest.trim_start_matches(['/', '\\'])),
+        // 家目录不可用时保留原始写法，避免拼出随进程工作目录漂移的相对路径。
+        None => PathBuf::from(path),
     }
 }
 
@@ -128,7 +133,8 @@ pub fn atomic_write(path: &Path, content: &[u8]) -> Result<(), String> {
             return Err(error.to_string());
         }
         if had_target {
-            fs::remove_file(&backup).map_err(|error| error.to_string())?;
+            // 写入已成功，清理备份失败不应把整个写入报告为失败。
+            let _ = fs::remove_file(&backup);
         }
     }
     Ok(())

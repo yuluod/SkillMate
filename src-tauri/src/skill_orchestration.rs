@@ -325,7 +325,7 @@ fn build_manifest_library_preview(
     let mut preview = preview_install_source(&effective_source, &skill.source_kind, &library_root);
     let library_path = PathBuf::from(&preview.target_path);
     if library_path.exists() && library_skill_matches_manifest(db, &library_path, skill)? {
-        preview = reuse_library_preview(preview);
+        preview = reuse_library_preview(db, preview);
     }
     preview = add_deployment_to_preview(
         db,

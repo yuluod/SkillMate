@@ -43,12 +43,15 @@ pub struct SkillDeployment {
     pub library_path: PathBuf,
 }
 
-pub fn reuse_library_preview(mut preview: InstallPreview) -> InstallPreview {
+pub fn reuse_library_preview(db: &Connection, mut preview: InstallPreview) -> InstallPreview {
     let mut reused_targets = Vec::new();
     for action in &mut preview.target_actions {
+        // 只有实际登记进统一库的目录才能复用；仅凭路径在库根下会
+        // 预览承诺成功、应用阶段却报「库记录不存在」并回滚。
         if action.action == "skip"
-            && action.reason == "目标目录已存在"
+            && action.reason == crate::skill_install::REASON_TARGET_EXISTS
             && Path::new(&action.target).is_dir()
+            && is_registered_library_path(db, Path::new(&action.target))
         {
             reused_targets.push(action.target.clone());
             action.action = "keep".to_string();
@@ -240,15 +243,20 @@ pub(crate) fn connected_managed_deployment(
     {
         return Ok(false);
     }
-    let source = source.canonicalize().map_err(|error| error.to_string())?;
-    Ok(
-        target.canonicalize().map_err(|error| error.to_string())? == source
-            && deployment
-                .library_path
-                .canonicalize()
-                .map_err(|error| error.to_string())?
-                == source,
-    )
+    let canonical_existing = |path: &Path| -> Result<Option<PathBuf>, String> {
+        match path.canonicalize() {
+            Ok(path) => Ok(Some(path)),
+            // 主副本或链接目标缺失（悬空链接、库副本尚未建立）不是
+            // 「受管状态不可用」，按未连接处理以给出准确的冲突提示。
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.to_string()),
+        }
+    };
+    let Some(source_path) = canonical_existing(source)? else {
+        return Ok(false);
+    };
+    Ok(canonical_existing(target)? == Some(source_path.clone())
+        && canonical_existing(&deployment.library_path)? == Some(source_path))
 }
 
 pub(crate) fn directory_symlink_available() -> bool {
@@ -520,6 +528,33 @@ pub fn is_library_skill_path(path: &Path) -> bool {
     candidate.parent() == Some(root.as_path())
 }
 
+/// 登记判定要容忍路径别名（如 macOS 的 /var 与 /private/var）：
+/// 物化流程里的目标经过 canonicalize，与登记字符串可能不是同一写法。
+fn is_registered_library_path(db: &Connection, path: &Path) -> bool {
+    if library_skill_id(db, path).is_ok() {
+        return true;
+    }
+    let Ok(candidate) = path.canonicalize() else {
+        return false;
+    };
+    let registered = (|| {
+        let mut statement = db.prepare("SELECT library_path FROM library_skills").ok()?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .ok()?
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        Some(rows)
+    })()
+    .unwrap_or_default();
+    registered.iter().any(|row| {
+        Path::new(row)
+            .canonicalize()
+            .map(|canonical| canonical == candidate)
+            .unwrap_or(false)
+    })
+}
+
 pub fn library_skill_id(db: &Connection, path: &Path) -> Result<String, String> {
     let path_key = database_path_key(db, PathColumn::LibrarySkill, path)?;
     db.query_row(
@@ -695,19 +730,6 @@ pub fn find_deployment(
     )
     .optional()
     .map_err(|error| error.to_string())
-}
-
-pub fn remove_deployment(db: &Connection, target_path: &Path) -> Result<(), String> {
-    if !table_exists(db, "skill_deployments")? {
-        return Ok(());
-    }
-    let target_key = database_path_key(db, PathColumn::DeploymentTarget, target_path)?;
-    db.execute(
-        "DELETE FROM skill_deployments WHERE target_path = ?",
-        [target_key],
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(())
 }
 
 pub fn copy_origin_to_deployment(

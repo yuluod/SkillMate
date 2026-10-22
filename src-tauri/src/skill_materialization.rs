@@ -111,11 +111,14 @@ pub fn preview_materialize_skill(
 ) -> Result<InstallPreview, String> {
     let context = materialization_context(db, path, assistant_name, project_path)?;
     let source = context.library.to_string_lossy();
-    let mut preview = reuse_library_preview(preview_selected_local_install_source(
-        &source,
-        context.target.parent().ok_or("Skill 缺少父目录")?,
-        None,
-    ));
+    let mut preview = reuse_library_preview(
+        db,
+        preview_selected_local_install_source(
+            &source,
+            context.target.parent().ok_or("Skill 缺少父目录")?,
+            None,
+        ),
+    );
     if preview.target_actions.len() != 1
         || preview.target_actions[0].target != context.target.to_string_lossy()
     {

@@ -259,12 +259,7 @@ pub fn sanitize_git_remote_url(locator: &str) -> String {
 }
 
 fn expand_user_path(path: &str) -> PathBuf {
-    if path.starts_with('~') {
-        let home = dirs::home_dir().unwrap_or_default();
-        home.join(path.trim_start_matches('~').trim_start_matches('/'))
-    } else {
-        PathBuf::from(path)
-    }
+    crate::app_core::expand_path(path)
 }
 
 fn clean_optional_part(value: &str) -> Option<String> {

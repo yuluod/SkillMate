@@ -83,7 +83,7 @@ use skill_inventory::{collect_known_skill_paths, scan_all_assistants};
 use skill_library::{
     add_deployment_to_preview, copy_origin_to_deployment, deploy_library_skill,
     is_library_skill_path, library_root, library_skill_id, register_deployment,
-    register_library_skill, remove_deployment, resolve_library_path, reuse_library_preview,
+    register_library_skill, resolve_library_path, reuse_library_preview,
     scan_unassigned_library_skills,
 };
 use skill_orchestration::{
@@ -776,7 +776,7 @@ fn build_install_request_preview(
         let preview =
             preview_selected_local_install_source(package, &library_root, selected_skill_paths);
         if source == "local" && is_library_skill_path(&expand_path(package.trim())) {
-            reuse_library_preview(preview)
+            reuse_library_preview(db, preview)
         } else {
             preview
         }
@@ -1377,7 +1377,6 @@ async fn delete_skill(path: String) -> Result<String, String> {
                     )),
                 };
             }
-            remove_deployment(db, &p)?;
             match transaction.commit() {
                 Ok(None) => Ok("已删除".to_string()),
                 Ok(Some(warning)) => Ok(format!("已删除；{}", warning)),
@@ -3718,48 +3717,64 @@ mod tests {
     }
 
     #[test]
-    fn library_reuse_only_accepts_the_existing_library_directory() {
+    fn library_reuse_only_accepts_the_registered_library_directory() {
         let root = test_dir("library-reuse-preview");
         let existing = root.join("writer");
+        let unregistered = root.join("stray");
         let missing = root.join("missing");
         fs::create_dir_all(&existing).unwrap();
+        fs::create_dir_all(&unregistered).unwrap();
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE library_skills (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, library_path TEXT NOT NULL UNIQUE,
+                source TEXT NOT NULL, source_kind TEXT NOT NULL, resolved_ref TEXT,
+                content_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+             );",
+        )
+        .unwrap();
+        let existing_key =
+            database::database_path_key(&db, database::PathColumn::LibrarySkill, &existing)
+                .unwrap();
+        db.execute(
+            "INSERT INTO library_skills VALUES ('skill-1', 'writer', ?, 'local', 'local', NULL,
+             'hash', 'now', 'now')",
+            [&existing_key],
+        )
+        .unwrap();
+        let reason = skill_install::REASON_TARGET_EXISTS;
         let mut preview = install_preview_error(
-            "目标目录已存在",
+            reason,
             "local".to_string(),
             existing.to_string_lossy().to_string(),
         );
-        preview.target_actions = vec![
-            skill_install::PreviewAction {
+        for (source, target) in [
+            (&existing, &existing),
+            (&unregistered, &unregistered),
+            (&missing, &missing),
+        ] {
+            preview.target_actions.push(skill_install::PreviewAction {
                 action: "skip".to_string(),
-                source: existing.to_string_lossy().to_string(),
-                target: existing.to_string_lossy().to_string(),
-                reason: "目标目录已存在".to_string(),
-            },
-            skill_install::PreviewAction {
-                action: "skip".to_string(),
-                source: missing.to_string_lossy().to_string(),
-                target: missing.to_string_lossy().to_string(),
-                reason: "目标目录已存在".to_string(),
-            },
-        ];
-        preview.conflicts = vec![
-            skill_install::PreviewConflict {
-                target: existing.to_string_lossy().to_string(),
+                source: source.to_string_lossy().to_string(),
+                target: target.to_string_lossy().to_string(),
+                reason: reason.to_string(),
+            });
+            preview.conflicts.push(skill_install::PreviewConflict {
+                target: target.to_string_lossy().to_string(),
                 reason: "target_exists".to_string(),
-            },
-            skill_install::PreviewConflict {
-                target: missing.to_string_lossy().to_string(),
-                reason: "target_exists".to_string(),
-            },
-        ];
+            });
+        }
         preview.package_detection.warnings = vec!["target_exists".to_string()];
 
-        let preview = reuse_library_preview(preview);
+        let preview = reuse_library_preview(&db, preview);
 
         assert_eq!(preview.target_actions[0].action, "keep");
+        // 在库根下但未登记的目录不能复用，否则预览承诺成功、应用阶段必然回滚。
         assert_eq!(preview.target_actions[1].action, "skip");
-        assert_eq!(preview.conflicts.len(), 1);
-        assert_eq!(preview.conflicts[0].target, missing.to_string_lossy());
+        assert_eq!(preview.target_actions[2].action, "skip");
+        assert_eq!(preview.conflicts.len(), 2);
+        assert_eq!(preview.conflicts[0].target, unregistered.to_string_lossy());
+        assert_eq!(preview.conflicts[1].target, missing.to_string_lossy());
         assert!(!preview.can_apply);
         assert!(preview
             .package_detection

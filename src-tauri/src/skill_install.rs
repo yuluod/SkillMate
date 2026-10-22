@@ -25,6 +25,10 @@ use std::process::Command;
 use std::process::Output;
 use std::time::Duration;
 
+/// 「目标目录已存在」动作的稳定匹配键：`reuse_library_preview` 依赖它识别
+/// 可复用的库内目录，属于跨模块契约，不要只改这行文案。
+pub(crate) const REASON_TARGET_EXISTS: &str = "目标目录已存在";
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InstallResult {
     pub success: bool,
@@ -705,7 +709,8 @@ fn preview_install_source_with_selection(
         }
     };
     let target_path = target_root.join(&skill_name);
-    let target_exists = target_path.exists();
+    // 与逐项动作判定一致：断链符号链接同样占用目标位置。
+    let target_exists = path_exists_or_symlink(&target_path);
     let source_kind = if is_git_install_source(source) {
         "git"
     } else {
@@ -1392,7 +1397,7 @@ fn build_install_preview_with_source(
                 target: target_string,
                 reason: "Skill 不符合 Agent Skills 规范".to_string(),
             });
-        } else if target.exists() {
+        } else if path_exists_or_symlink(&target) {
             conflicts.push(PreviewConflict {
                 target: target_string.clone(),
                 reason: "target_exists".to_string(),
@@ -1401,7 +1406,7 @@ fn build_install_preview_with_source(
                 action: "skip".to_string(),
                 source: skill.relative_path.clone(),
                 target: target_string,
-                reason: "目标目录已存在".to_string(),
+                reason: REASON_TARGET_EXISTS.to_string(),
             });
         } else {
             actions.push(PreviewAction {
@@ -1579,7 +1584,7 @@ fn build_symlink_install_preview_with_source(
                 action: "skip".to_string(),
                 source: source_string,
                 target: target_string,
-                reason: "目标目录已存在".to_string(),
+                reason: REASON_TARGET_EXISTS.to_string(),
             });
         } else {
             actions.push(PreviewAction {

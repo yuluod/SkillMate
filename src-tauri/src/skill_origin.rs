@@ -319,21 +319,8 @@ fn infer_origin_meta_with_cache(
 
 #[cfg(test)]
 pub fn can_sync(meta: &SkillOriginMeta, path: &Path) -> bool {
-    if !meta.managed_by_app {
-        return false;
-    }
-    match meta.origin_kind.as_str() {
-        "git" => {
-            if meta.sync_state != "behind" {
-                return false;
-            }
-            if find_git_repo_root(path).is_some() {
-                return has_git_upstream(path);
-            }
-            has_git_snapshot_spec(&meta.origin_locator, &meta.resolved_locator)
-        }
-        _ => false,
-    }
+    // 测试口径必须与生产一致：直接委托，避免手工复刻随生产逻辑漂移。
+    can_sync_with_cache(meta, path, &mut OriginInferenceCache::default())
 }
 
 pub fn can_check(meta: &SkillOriginMeta) -> bool {
