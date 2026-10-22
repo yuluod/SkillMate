@@ -1,8 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { buildImportPreviewToken, isImportPreviewCurrent } from "./skillmate.mjs";
 import { createSingleFlightPlanExecutor } from "./plannedAction.mjs";
 import { invokeSkillMateCommand, skillmateApi, skillmateCommands } from "./skillmateApi.js";
 import { useI18n } from "./i18n.jsx";
+import { toUserErrorMessage } from "./errorMessage.mjs";
+
+// 后端结果只在是非空字符串时直接展示，否则回退到本地化文案。
+function resultMessage(result, fallback) {
+  return typeof result === "string" && result.trim() ? result : fallback;
+}
 
 export function useImportExportFlow({ showToast, loadData }) {
   const { t, language } = useI18n();
@@ -35,10 +41,26 @@ export function useImportExportFlow({ showToast, loadData }) {
   if (!planExecutorRef.current) {
     planExecutorRef.current = createSingleFlightPlanExecutor(invokeSkillMateCommand);
   }
+  const mountedRef = useRef(false);
+
+  const loadSkillProfiles = useCallback(async () => {
+    try {
+      const result = await skillmateApi.profiles.get();
+      if (!mountedRef.current) return;
+      setSkillProfiles(result);
+    } catch (e) {
+      if (!mountedRef.current) return;
+      showToast(t("profile.toast.loadFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
+    }
+  }, [showToast, t]);
 
   useEffect(() => {
+    mountedRef.current = true;
     loadSkillProfiles();
-  }, []);
+    return () => {
+      mountedRef.current = false;
+    };
+  }, [loadSkillProfiles]);
 
   const importPreviewCurrent = Boolean(importPreviewToken?.planToken) && isImportPreviewCurrent({
     previewToken: importPreviewToken,
@@ -86,15 +108,6 @@ export function useImportExportFlow({ showToast, loadData }) {
     setSkillMateManifestPreviewToken(null);
   }
 
-  async function loadSkillProfiles() {
-    try {
-      const result = await skillmateApi.profiles.get();
-      setSkillProfiles(result);
-    } catch (e) {
-      showToast(t("profile.toast.loadFailed", { message: String(e) }), "error");
-    }
-  }
-
   async function exportLibraryFile() {
     if (!exportPath.trim()) {
       showToast(t("data.toast.enterExportPath"), "error");
@@ -102,9 +115,9 @@ export function useImportExportFlow({ showToast, loadData }) {
     }
     try {
       const result = await skillmateApi.library.export(exportPath);
-      showToast(language === "en" ? t("data.toast.exported") : String(result || t("data.toast.exported")), "success");
+      showToast(language === "en" ? t("data.toast.exported") : resultMessage(result, t("data.toast.exported")), "success");
     } catch (e) {
-      showToast(t("data.toast.exportFailed", { message: String(e) }), "error");
+      showToast(t("data.toast.exportFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     }
   }
 
@@ -125,7 +138,7 @@ export function useImportExportFlow({ showToast, loadData }) {
     } catch (e) {
       setImportPreview(null);
       setImportPreviewToken(null);
-      showToast(t("data.toast.previewFailed", { message: String(e) }), "error");
+      showToast(t("data.toast.previewFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     } finally {
       setPreviewingImport(false);
     }
@@ -154,16 +167,21 @@ export function useImportExportFlow({ showToast, loadData }) {
       { path: importPath, mode: importMode },
       importPreviewToken.planToken,
     );
-    if (!execution.started) return;
+    if (!execution.started) {
+      if (execution.error) {
+        showToast(t("data.toast.importFailed", { message: toUserErrorMessage(execution.error, t("error.safeRetry")) }), "error");
+      }
+      return;
+    }
     setApplyingImport(true);
     try {
       const result = await execution.promise;
-      showToast(language === "en" ? t("data.toast.imported") : String(result || t("data.toast.imported")), "success");
+      showToast(language === "en" ? t("data.toast.imported") : resultMessage(result, t("data.toast.imported")), "success");
       setImportPreview(null);
       setImportPreviewToken(null);
       await loadData();
     } catch (e) {
-      showToast(t("data.toast.importFailed", { message: String(e) }), "error");
+      showToast(t("data.toast.importFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     } finally {
       setApplyingImport(false);
     }
@@ -176,9 +194,9 @@ export function useImportExportFlow({ showToast, loadData }) {
     }
     try {
       const result = await skillmateApi.manifests.exportSkillMate(skillMateManifestPath);
-      showToast(language === "en" ? t("manifest.toast.exported") : String(result || t("manifest.toast.exported")), "success");
+      showToast(language === "en" ? t("manifest.toast.exported") : resultMessage(result, t("manifest.toast.exported")), "success");
     } catch (e) {
-      showToast(t("manifest.toast.exportFailed", { message: String(e) }), "error");
+      showToast(t("manifest.toast.exportFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     }
   }
 
@@ -192,7 +210,7 @@ export function useImportExportFlow({ showToast, loadData }) {
       updateSkillMateManifestPath(String(path));
       showToast(t("manifest.toast.projectExported", { path: String(path) }), "success");
     } catch (e) {
-      showToast(t("manifest.toast.projectExportFailed", { message: String(e) }), "error");
+      showToast(t("manifest.toast.projectExportFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     }
   }
 
@@ -213,7 +231,7 @@ export function useImportExportFlow({ showToast, loadData }) {
     } catch (e) {
       setSkillMateManifestPreview(null);
       setSkillMateManifestPreviewToken(null);
-      showToast(t("manifest.toast.previewFailed", { message: String(e) }), "error");
+      showToast(t("manifest.toast.previewFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     } finally {
       setPreviewingSkillMateManifest(false);
     }
@@ -242,16 +260,21 @@ export function useImportExportFlow({ showToast, loadData }) {
       { path: skillMateManifestPath },
       skillMateManifestPreviewToken.planToken,
     );
-    if (!execution.started) return;
+    if (!execution.started) {
+      if (execution.error) {
+        showToast(t("manifest.toast.applyFailed", { message: toUserErrorMessage(execution.error, t("error.safeRetry")) }), "error");
+      }
+      return;
+    }
     setApplyingSkillMateManifest(true);
     try {
       const result = await execution.promise;
-      showToast(language === "en" ? t("manifest.toast.applied") : String(result || t("manifest.toast.applied")), "success");
+      showToast(language === "en" ? t("manifest.toast.applied") : resultMessage(result, t("manifest.toast.applied")), "success");
       setSkillMateManifestPreview(null);
       setSkillMateManifestPreviewToken(null);
       await loadData();
     } catch (e) {
-      showToast(t("manifest.toast.applyFailed", { message: String(e) }), "error");
+      showToast(t("manifest.toast.applyFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     } finally {
       setApplyingSkillMateManifest(false);
     }
@@ -270,7 +293,7 @@ export function useImportExportFlow({ showToast, loadData }) {
       setSkillProfilePreview(null);
       showToast(t("profile.toast.saved"), "success");
     } catch (e) {
-      showToast(t("profile.toast.saveFailed", { message: String(e) }), "error");
+      showToast(t("profile.toast.saveFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     }
   }
 
@@ -282,7 +305,7 @@ export function useImportExportFlow({ showToast, loadData }) {
       showToast(t("profile.toast.previewReady"), result.manifest_preview?.can_apply ? "success" : "warn");
     } catch (e) {
       setSkillProfilePreview(null);
-      showToast(t("profile.toast.previewFailed", { message: String(e) }), "error");
+      showToast(t("profile.toast.previewFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     } finally {
       setPreviewingSkillProfile(false);
     }
@@ -303,16 +326,21 @@ export function useImportExportFlow({ showToast, loadData }) {
       { profileId },
       skillProfilePreview.plan_token,
     );
-    if (!execution.started) return;
+    if (!execution.started) {
+      if (execution.error) {
+        showToast(t("profile.toast.applyFailed", { message: toUserErrorMessage(execution.error, t("error.safeRetry")) }), "error");
+      }
+      return;
+    }
     setApplyingSkillProfile(true);
     try {
       const result = await execution.promise;
-      showToast(language === "en" ? t("profile.toast.applied") : String(result || t("profile.toast.applied")), "success");
+      showToast(language === "en" ? t("profile.toast.applied") : resultMessage(result, t("profile.toast.applied")), "success");
       setSkillProfilePreview(null);
       await loadSkillProfiles();
       await loadData();
     } catch (e) {
-      showToast(t("profile.toast.applyFailed", { message: String(e) }), "error");
+      showToast(t("profile.toast.applyFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     } finally {
       setApplyingSkillProfile(false);
     }
@@ -322,12 +350,12 @@ export function useImportExportFlow({ showToast, loadData }) {
     setApplyingSkillProfile(true);
     try {
       const result = await skillmateApi.profiles.rollback();
-      showToast(language === "en" ? t("profile.toast.rolledBack") : String(result || t("profile.toast.rolledBack")), "success");
+      showToast(language === "en" ? t("profile.toast.rolledBack") : resultMessage(result, t("profile.toast.rolledBack")), "success");
       setSkillProfilePreview(null);
       await loadSkillProfiles();
       await loadData();
     } catch (e) {
-      showToast(t("profile.toast.rollbackFailed", { message: String(e) }), "error");
+      showToast(t("profile.toast.rollbackFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     } finally {
       setApplyingSkillProfile(false);
     }
@@ -340,9 +368,9 @@ export function useImportExportFlow({ showToast, loadData }) {
     }
     try {
       const result = await skillmateApi.scenarios.exportManifest(scenarioManifestPath);
-      showToast(language === "en" ? t("scenarioManifest.toast.exported") : String(result || t("scenarioManifest.toast.exported")), "success");
+      showToast(language === "en" ? t("scenarioManifest.toast.exported") : resultMessage(result, t("scenarioManifest.toast.exported")), "success");
     } catch (e) {
-      showToast(t("scenarioManifest.toast.exportFailed", { message: String(e) }), "error");
+      showToast(t("scenarioManifest.toast.exportFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     }
   }
 
@@ -366,7 +394,7 @@ export function useImportExportFlow({ showToast, loadData }) {
     } catch (e) {
       setScenarioManifestPreview(null);
       setScenarioManifestPreviewToken(null);
-      showToast(t("scenarioManifest.toast.previewFailed", { message: String(e) }), "error");
+      showToast(t("scenarioManifest.toast.previewFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     } finally {
       setPreviewingScenarioManifest(false);
     }
@@ -395,16 +423,21 @@ export function useImportExportFlow({ showToast, loadData }) {
       { path: scenarioManifestPath, mode: scenarioManifestMode },
       scenarioManifestPreviewToken.planToken,
     );
-    if (!execution.started) return;
+    if (!execution.started) {
+      if (execution.error) {
+        showToast(t("scenarioManifest.toast.importFailed", { message: toUserErrorMessage(execution.error, t("error.safeRetry")) }), "error");
+      }
+      return;
+    }
     setApplyingScenarioManifest(true);
     try {
       const result = await execution.promise;
-      showToast(language === "en" ? t("scenarioManifest.toast.imported") : String(result || t("scenarioManifest.toast.imported")), "success");
+      showToast(language === "en" ? t("scenarioManifest.toast.imported") : resultMessage(result, t("scenarioManifest.toast.imported")), "success");
       setScenarioManifestPreview(null);
       setScenarioManifestPreviewToken(null);
       await loadData();
     } catch (e) {
-      showToast(t("scenarioManifest.toast.importFailed", { message: String(e) }), "error");
+      showToast(t("scenarioManifest.toast.importFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     } finally {
       setApplyingScenarioManifest(false);
     }

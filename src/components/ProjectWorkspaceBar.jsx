@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useI18n } from "../lib/i18n.jsx";
+import { toUserErrorMessage } from "../lib/errorMessage.mjs";
 
 export default function ProjectWorkspaceBar({ workspace, onOpen }) {
   const { t } = useI18n();
@@ -11,7 +12,7 @@ export default function ProjectWorkspaceBar({ workspace, onOpen }) {
     try {
       const path = await open({ directory: true, multiple: false, title: t("install.projectPickerTitle") });
       if (typeof path === "string") { setDraft(path); select(path); }
-    } catch (reason) { setError(String(reason)); }
+    } catch (reason) { setError(toUserErrorMessage(reason, t("error.safeRetry"))); }
   }
   return <section className="workspace-bar view-shell" aria-label={t("workspace.title")}>
     <div className="workspace-toolbar">

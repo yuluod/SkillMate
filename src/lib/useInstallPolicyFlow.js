@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_INSTALL_POLICY, normalizeInstallPolicy } from "./installPolicy.mjs";
 import { skillmateApi } from "./skillmateApi.js";
 import { useI18n } from "./i18n.jsx";
@@ -11,45 +11,33 @@ export function useInstallPolicyFlow({ showToast }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const mountedRef = useRef(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const result = normalizeInstallPolicy(await skillmateApi.policy.get());
+      if (!mountedRef.current) return;
       setPolicy(result);
       setSavedPolicy(result);
       setError("");
     } catch (e) {
-      setError(toUserErrorMessage(e, t("error.safeRetry")));
-      showToast(t("policy.toast.loadFailed", { message: String(e) }), "error");
+      if (!mountedRef.current) return;
+      const message = toUserErrorMessage(e, t("error.safeRetry"));
+      setError(message);
+      showToast(t("policy.toast.loadFailed", { message }), "error");
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
   }, [showToast, t]);
 
   useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    skillmateApi.policy.get()
-      .then((result) => {
-        if (cancelled) return;
-        const normalized = normalizeInstallPolicy(result);
-        setPolicy(normalized);
-        setSavedPolicy(normalized);
-        setError("");
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        setError(toUserErrorMessage(e, t("error.safeRetry")));
-        showToast(t("policy.toast.loadFailed", { message: String(e) }), "error");
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+    mountedRef.current = true;
+    load();
     return () => {
-      cancelled = true;
+      mountedRef.current = false;
     };
-  }, [showToast, t]);
+  }, [load]);
 
   const dirty = useMemo(
     () => JSON.stringify(policy) !== JSON.stringify(savedPolicy),
@@ -70,8 +58,9 @@ export function useInstallPolicyFlow({ showToast }) {
       setError("");
       showToast(t("policy.toast.saved"), "success");
     } catch (e) {
-      setError(toUserErrorMessage(e, t("error.safeRetry")));
-      showToast(t("policy.toast.saveFailed", { message: String(e) }), "error");
+      const message = toUserErrorMessage(e, t("error.safeRetry"));
+      setError(message);
+      showToast(t("policy.toast.saveFailed", { message }), "error");
     } finally {
       setSaving(false);
     }

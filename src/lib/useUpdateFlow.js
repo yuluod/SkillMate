@@ -100,14 +100,18 @@ export function useUpdateFlow({ updatable, showToast, loadData }) {
     const operation = begin([path], true);
     try {
       const result = await skillmateApi.updates.applyOne(path, planToken);
-      if (!isCurrent(operation)) return false;
-      showToast(language === "en" ? t("updates.toast.updated") : String(result || t("updates.toast.updated")), "success");
+      // Superseded after success: undefined (not false) so the modal ignores instead of retrying.
+      if (!isCurrent(operation)) return undefined;
+      showToast(language === "en"
+        ? t("updates.toast.updated")
+        : (typeof result === "string" && result.trim() ? result : t("updates.toast.updated")), "success");
       await probe(operation, path);
       if (!isCurrent(operation)) return;
       await loadData({ resetUpdates: false });
       return true;
     } catch (error) {
-      if (!isCurrent(operation)) return;
+      // A reset supersedes the operation: undefined tells UpdatePreviewModal to ignore it instead of asking for a retry.
+      if (!isCurrent(operation)) return undefined;
       showToast(t("updates.toast.updateFailed", { message: toUserErrorMessage(error, t("error.safeRetry")) }), "error");
       return false;
     } finally { finish(operation, [path]); }

@@ -242,6 +242,7 @@ function App() {
   const contentRef = useRef(null);
   const toastTimerRef = useRef(null);
   const trashTimerRef = useRef(null);
+  const addTagPendingRef = useRef(false);
   const mountedRef = useRef(false);
   const loadRequestRef = useRef(0);
   if (!toastTimerRef.current) {
@@ -415,7 +416,7 @@ function App() {
   );
 
   const allSkills = useMemo(() => {
-    const deployed = buildUniqueSkillInventory(data.assistants);
+    const deployed = buildUniqueSkillInventory(data.assistants, t);
     const inLibrary = data.librarySkills.map((skill) => ({
       ...skill,
       in_library: true,
@@ -425,11 +426,11 @@ function App() {
     }));
     return [...deployed, ...inLibrary];
   }, [data.assistants, data.librarySkills, t]);
-  const driftGroups = useMemo(() => buildDriftGroups(data.assistants), [data.assistants]);
+  const driftGroups = useMemo(() => buildDriftGroups(data.assistants, t), [data.assistants, t]);
   const scenarioSkills = useMemo(() => buildScenarioSkillInventory(allSkills), [allSkills]);
   const dashboardStats = useMemo(
-    () => buildDashboardStats(data.assistants, data.librarySkills),
-    [data.assistants, data.librarySkills]
+    () => buildDashboardStats(data.assistants, data.librarySkills, t),
+    [data.assistants, data.librarySkills, t]
   );
 
   const scenarioFlow = useScenarioFlow({
@@ -564,14 +565,17 @@ function App() {
 
 
   async function addTag() {
+    if (addTagPendingRef.current) return;
     if (!newTagName.trim()) { showToast(t("tags.enterName"), "error"); return; }
+    addTagPendingRef.current = true;
     try {
       const tag = await skillmateApi.tags.add(newTagName.trim(), newTagColor);
       setTags(prev => [...prev, { ...tag, selected: false }]);
       setNewTagName("");
       setNewTagColor("#58a6ff");
       showToast(t("tags.added"), "success");
-    } catch (e) { showToast(t("tags.addFailed", { message: String(e) }), "error"); }
+    } catch (e) { showToast(t("tags.addFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error"); }
+    finally { addTagPendingRef.current = false; }
   }
 
   async function updateTag(tagId, name, color) {
@@ -582,7 +586,7 @@ function App() {
       setTags((current) => current.map((tag) => tag.id === tagId ? { ...tag, ...updated } : tag));
       showToast(t("tags.tagUpdated"), "success");
     } catch (e) {
-      showToast(t("tags.tagUpdateFailed", { message: String(e) }), "error");
+      showToast(t("tags.tagUpdateFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     }
   }
 
@@ -600,7 +604,7 @@ function App() {
           await loadData({ resetUpdates: false });
           showToast(t("tags.deleted"), "success");
         } catch (e) {
-          showToast(t("tags.deleteFailed", { message: String(e) }), "error");
+          showToast(t("tags.deleteFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
         }
       },
       { confirmLabel: t("tags.delete") },
@@ -668,7 +672,7 @@ function App() {
         skill,
       });
       setPreviewOpen(true);
-    } catch (e) { showToast(t("preview.failed", { message: String(e) }), "error"); }
+    } catch (e) { showToast(t("preview.failed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error"); }
   }
 
   async function remove(path, name, availableIn = []) {
@@ -680,13 +684,17 @@ function App() {
       try {
         const receipt = await skillmateApi.inventory.trashSkill(path);
         setTrashReceipt(receipt);
-        trashTimerRef.current.start(Math.max(0, Number(receipt.expiresAt || receipt.expires_at) - Date.now()), async () => {
-          setTrashReceipt(null);
-          try { await skillmateApi.inventory.purgeTrash(receipt.token); } catch { /* 重启维护会清理遗留暂存区。 */ }
-        });
+        // 过期时间缺失或非法时不调度自动清理（NaN 会让 setTimeout 立即触发），交由重启后的维护兜底。
+        const expiresAt = Number(receipt.expiresAt ?? receipt.expires_at);
+        if (Number.isFinite(expiresAt) && expiresAt > 0) {
+          trashTimerRef.current.start(Math.max(0, expiresAt - Date.now()), async () => {
+            setTrashReceipt(null);
+            try { await skillmateApi.inventory.purgeTrash(receipt.token); } catch { /* 重启维护会清理遗留暂存区。 */ }
+          });
+        }
         showToast(t("trash.done", { name }), "success");
         await loadData();
-      } catch (e) { showToast(t("trash.failed", { message: String(e) }), "error"); }
+      } catch (e) { showToast(t("trash.failed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error"); }
       finally { setLoading(false); }
     }, { confirmLabel: t("trash.action") });
   }
@@ -700,7 +708,7 @@ function App() {
       setTrashReceipt(null);
       await loadData();
     } catch (error) {
-      showToast(t("trash.restoreFailed", { message: String(error) }), "error");
+      showToast(t("trash.restoreFailed", { message: toUserErrorMessage(error, t("error.safeRetry")) }), "error");
     }
   }
 
@@ -709,9 +717,9 @@ function App() {
       setLoading(true);
       try {
         const r = await skillmateApi.inventory.unlinkSkill(path);
-        showToast(String(r), "success");
+        showToast(typeof r === "string" && r.trim() ? r : t("unlink.done"), "success");
         await loadData();
-      } catch (e) { showToast(t("unlink.failed", { message: String(e) }), "error"); }
+      } catch (e) { showToast(t("unlink.failed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error"); }
       finally { setLoading(false); }
     }, { confirmLabel: t("unlink.action"), tone: "primary" });
   }
@@ -752,7 +760,7 @@ function App() {
   }, [appUpdateView.primaryAction, checkAppUpdate, installAppUpdate, restartApp]);
 
   async function openDir(path) {
-    try { await skillmateApi.inventory.openFolder(getDir(path)); } catch (e) { showToast(t("folder.openFailed", { message: String(e) }), "error"); }
+    try { await skillmateApi.inventory.openFolder(getDir(path)); } catch (e) { showToast(t("folder.openFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error"); }
   }
 
   function installMarketSkill(item) {
@@ -779,12 +787,12 @@ function App() {
   }
 
   async function completeDrift(message) {
-    showToast(String(message || t("drift.complete")), "success");
+    showToast(typeof message === "string" && message.trim() ? message : t("drift.complete"), "success");
     await loadData();
   }
 
   async function completeAdoption(message) {
-    showToast(String(message || t("adoption.complete")), "success");
+    showToast(typeof message === "string" && message.trim() ? message : t("adoption.complete"), "success");
     await loadData();
     setProjectInspectionRevision((revision) => revision + 1);
   }

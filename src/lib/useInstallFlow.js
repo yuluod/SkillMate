@@ -12,6 +12,7 @@ import {
   shouldShowProjectLinkOption,
 } from "./skillmate.mjs";
 import { createSingleFlightPlanExecutor } from "./plannedAction.mjs";
+import { toUserErrorMessage } from "./errorMessage.mjs";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { invokeSkillMateCommand, skillmateApi, skillmateCommands } from "./skillmateApi.js";
 import { useI18n } from "./i18n.jsx";
@@ -354,7 +355,7 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
       });
       if (typeof selected === "string") setProjectPath(selected);
     } catch (error) {
-      showToast(t("install.toast.projectPickerFailed", { message: String(error) }), "error");
+      showToast(t("install.toast.projectPickerFailed", { message: toUserErrorMessage(error, t("error.safeRetry")) }), "error");
     }
   }, [showToast, t]);
 
@@ -422,7 +423,7 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
         selectedSkillPaths,
         preferredSkillId,
       }), planToken: "" });
-      showToast(t("install.toast.previewFailed", { message: String(e) }), "error");
+      showToast(t("install.toast.previewFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     } finally {
       setPreviewingInstall(false);
     }
@@ -469,16 +470,26 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
           },
           plan.planToken,
         );
-        if (!execution.started) return;
-        const result = await execution.promise.catch((error) => ({ success: false, message: String(error) }));
+        if (!execution.started) {
+          // 计划令牌缺失属于可上报的失败；single-flight 冲突（error 为空）保持静默。
+          if (execution.error) {
+            results.push({
+              packageValue: plan.packageValue,
+              assistantName: plan.assistantName,
+              result: { success: false, message: t("common.planMissing") },
+            });
+          }
+          continue;
+        }
+        const result = await execution.promise.catch((error) => ({ success: false, message: toUserErrorMessage(error, t("common.planMissing")) }));
         results.push({ packageValue: plan.packageValue, assistantName: plan.assistantName, result });
       }
       const failed = results.filter(({ result }) => !result.success);
       if (failed.length === 0) {
-        const structureSummary = buildInstallStructureSummary(results[0]?.result);
+        const structureSummary = buildInstallStructureSummary(results[0]?.result, t);
         const successKey = workflow === "add" ? "install.toast.added" : "install.toast.enabled";
         const successWithKey = workflow === "add" ? "install.toast.addedWith" : "install.toast.enabledWith";
-        showToast(structureSummary && language !== "en" ? t(successWithKey, { summary: structureSummary }) : t(successKey), "success");
+        showToast(structureSummary ? t(successWithKey, { summary: structureSummary }) : t(successKey), "success");
         setInstallOpen(false);
         setSourceInput((current) => ({ ...current, package: "", manual: false }));
         setInstallDetection(null);
@@ -504,7 +515,7 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
         }), "error");
       }
     } catch (e) {
-      showToast(t("install.toast.failed", { message: String(e) }), "error");
+      showToast(t("install.toast.failed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     } finally {
       applyingRef.current = false;
       setLoading(false);

@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import { buildGitBackupState } from "./skillmate.mjs";
 import { skillmateApi } from "./skillmateApi.js";
 import { useI18n } from "./i18n.jsx";
+import { toUserErrorMessage } from "./errorMessage.mjs";
 
 function toDraft(config) {
   return {
@@ -52,7 +53,7 @@ export function useGitBackupFlow({ saved, showToast, loadData }) {
       showToast(t("backup.toast.saved"), "success");
       await loadData();
     } catch (e) {
-      showToast(t("backup.toast.saveFailed", { message: String(e) }), "error");
+      showToast(t("backup.toast.saveFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     } finally {
       setSaving(false);
     }
@@ -74,7 +75,7 @@ export function useGitBackupFlow({ saved, showToast, loadData }) {
       showToast(language === "en" ? t("backup.toast.synced") : String(result || t("backup.toast.synced")), "success");
       await loadData();
     } catch (e) {
-      showToast(t("backup.toast.syncFailed", { message: String(e) }), "error");
+      showToast(t("backup.toast.syncFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     } finally {
       setSyncing(false);
     }

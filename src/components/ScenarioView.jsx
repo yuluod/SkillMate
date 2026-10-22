@@ -126,7 +126,7 @@ export default function ScenarioView({ scenarios, skills, flow, onEnable, projec
           <span>{t("scenarios.selectedCount", { count: selectedCount })}</span>
           <div className="card-actions">
             <button className="btn btn-secondary btn-sm" onClick={flow.editor.clear}>{t("scenarios.clear")}</button>
-            <button className="btn btn-primary btn-sm" onClick={flow.editor.create}><Icon name="plus" size={14} />{t("scenarios.save")}</button>
+            <button className="btn btn-primary btn-sm" disabled={flow.editor.creating} onClick={flow.editor.create}><Icon name="plus" size={14} />{t("scenarios.save")}</button>
           </div>
         </footer>
       </section>

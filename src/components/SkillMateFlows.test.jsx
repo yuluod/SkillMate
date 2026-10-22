@@ -126,7 +126,6 @@ describe("Dashboard 数据加载", () => {
     expect(result.git).toEqual({ enabled: true, repo_path: "/tmp/backup" });
     expect(result.diagnostics).toEqual([{
       section: "tags",
-      label: "标签",
       message: "Error: 标签数据库不可用",
     }]);
   });

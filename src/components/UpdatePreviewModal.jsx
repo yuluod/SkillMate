@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import ModalShell from "./ModalShell.jsx";
 import { useI18n } from "../lib/i18n.jsx";
+import { toUserErrorMessage } from "../lib/errorMessage.mjs";
 import { skillmateApi } from "../lib/skillmateApi.js";
 
 export default function UpdatePreviewModal({ path, onClose, onConfirm }) {
@@ -16,7 +17,7 @@ export default function UpdatePreviewModal({ path, onClose, onConfirm }) {
     setChecking(true); setPreview(null); setError("");
     skillmateApi.updates.preview(path).then(value => {
       if (!cancelled) setPreview(value);
-    }).catch(reason => { if (!cancelled) setError(String(reason)); })
+    }).catch(reason => { if (!cancelled) setError(toUserErrorMessage(reason, t("error.safeRetry"))); })
       .finally(() => { if (!cancelled) setChecking(false); });
     return () => { cancelled = true; };
   }, [path, revision]);
@@ -24,10 +25,12 @@ export default function UpdatePreviewModal({ path, onClose, onConfirm }) {
     if (submitting.current || !preview?.canApply || !preview.planToken) return;
     submitting.current = true; setApplying(true);
     try {
+      // onConfirm contract: true = applied, false = failed, undefined = superseded (ignore, no retry prompt).
       const success = await onConfirm(path, preview.planToken);
+      if (success === undefined) return;
       if (success) onClose();
       else { setPreview(null); setError(t("updatePreview.retry")); }
-    } catch (reason) { setPreview(null); setError(String(reason)); }
+    } catch (reason) { setPreview(null); setError(toUserErrorMessage(reason, t("error.safeRetry"))); }
     finally { submitting.current = false; setApplying(false); }
   }
   return <ModalShell title={t("updatePreview.title")} icon="preview" className="update-preview-modal" onClose={() => { if (!submitting.current) onClose(); }}>

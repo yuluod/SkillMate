@@ -6,6 +6,7 @@ import {
 } from "./skillmate.mjs";
 import { skillmateApi } from "./skillmateApi.js";
 import { useI18n } from "./i18n.jsx";
+import { toUserErrorMessage } from "./errorMessage.mjs";
 
 export function useScenarioFlow({ scenarios, allSkills, selectableSkills, showToast, loadData, setView }) {
   const { t, language } = useI18n();
@@ -15,6 +16,7 @@ export function useScenarioFlow({ scenarios, allSkills, selectableSkills, showTo
   const [manualInput, setManualInput] = useState("");
   const [expandedId, setExpandedId] = useState("");
   const [activeId, setActiveId] = useState("");
+  const [creating, setCreating] = useState(false);
 
   const active = useMemo(
     () => scenarios.find((scenario) => scenario.id === activeId) || null,
@@ -53,6 +55,8 @@ export function useScenarioFlow({ scenarios, allSkills, selectableSkills, showTo
   }, [setView, showToast, t]);
 
   const create = useCallback(async () => {
+    if (creating) return;
+    setCreating(true);
     const skillIds = normalizeScenarioSkillPaths({
       selectedPaths,
       manualInput,
@@ -69,9 +73,11 @@ export function useScenarioFlow({ scenarios, allSkills, selectableSkills, showTo
       await loadData();
       setView("scenarios");
     } catch (e) {
-      showToast(t("scenario.toast.createFailed", { message: String(e) }), "error");
+      showToast(t("scenario.toast.createFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
+    } finally {
+      setCreating(false);
     }
-  }, [clearEditor, description, language, loadData, manualInput, name, selectableSkills, selectedPaths, setView, showToast, t]);
+  }, [clearEditor, creating, description, language, loadData, manualInput, name, selectableSkills, selectedPaths, setView, showToast, t]);
 
   const remove = useCallback(async (id) => {
     try {
@@ -80,7 +86,7 @@ export function useScenarioFlow({ scenarios, allSkills, selectableSkills, showTo
       showToast(t("scenario.toast.deleted"), "success");
       await loadData();
     } catch (e) {
-      showToast(t("scenario.toast.deleteFailed", { message: String(e) }), "error");
+      showToast(t("scenario.toast.deleteFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     }
   }, [activeId, loadData, showToast, t]);
 
@@ -99,7 +105,7 @@ export function useScenarioFlow({ scenarios, allSkills, selectableSkills, showTo
       }
       showToast(t("scenario.toast.copied"), "success");
     } catch (e) {
-      showToast(t("scenario.toast.copyFailed", { message: String(e) }), "error");
+      showToast(t("scenario.toast.copyFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error");
     }
   }, [showToast, t]);
 
@@ -118,6 +124,7 @@ export function useScenarioFlow({ scenarios, allSkills, selectableSkills, showTo
       setManualInput,
       togglePath,
       clear: clearEditor,
+      creating,
       create,
     },
     expandedId,

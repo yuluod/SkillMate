@@ -23,18 +23,18 @@ async function loadDashboard() {
     invoke("get_git_backup"),
   ]);
   const diagnostics = [];
-  const optionalValue = (section, label, result, fallback) => {
+  const optionalValue = (section, result, fallback) => {
     if (result.status === "fulfilled") return result.value;
-    diagnostics.push({ section, label, message: String(result.reason) });
+    diagnostics.push({ section, message: String(result.reason) });
     return fallback;
   };
 
   return {
     assistants,
     librarySkills,
-    tags: optionalValue("tags", "标签", tagsResult, []),
-    scenarios: optionalValue("scenarios", "组合", scenariosResult, []),
-    git: optionalValue("git", "Git 备份", gitResult, {
+    tags: optionalValue("tags", tagsResult, []),
+    scenarios: optionalValue("scenarios", scenariosResult, []),
+    git: optionalValue("git", gitResult, {
       enabled: false,
       repo_path: "",
       remote_url: "",
@@ -53,7 +53,7 @@ async function readSkill(path) {
   if (contentResult.status === "rejected") throw contentResult.reason;
 
   const diagnostics = validationResult.status === "rejected"
-    ? [{ section: "validation", label: "结构验证", message: String(validationResult.reason) }]
+    ? [{ section: "validation", message: String(validationResult.reason) }]
     : [];
   return {
     content: contentResult.value,
