@@ -146,8 +146,10 @@ fn adoption_rolls_back_migrated_scenarios_when_a_later_reference_update_fails() 
         insert_scenario(&db, id, std::slice::from_ref(&source_path));
     }
     db.execute_batch(
+        // 库路径分隔符随平台不同：Windows 写入的是 \library\，需同时匹配两种写法。
         "CREATE TRIGGER reject_second_scenario BEFORE UPDATE ON scenarios
-         WHEN NEW.id = 'second' AND instr(NEW.skill_ids_json, '/library/') > 0
+         WHEN NEW.id = 'second' AND (instr(NEW.skill_ids_json, '/library/') > 0
+            OR instr(NEW.skill_ids_json, '\\library\\') > 0)
          BEGIN SELECT RAISE(ABORT, '场景写入失败'); END;",
     )
     .unwrap();
