@@ -713,6 +713,16 @@ export function getMarketInstallRequest(item) {
   };
 }
 
+// skills.sh 结果没有真实描述时，后端会用名称填充 description；与名称一致的描述视为缺失，避免行内重复文案。
+export function marketItemDescription(item) {
+  const description = typeof item?.description === "string" ? item.description.trim() : "";
+  if (!description) {
+    return "";
+  }
+  const name = typeof item?.name === "string" ? item.name.trim() : "";
+  return description === name ? "" : description;
+}
+
 export function buildSkillDescription(skill) {
   const { manifestDescription } = normalizeSkillStructure(skill);
   if (manifestDescription) {

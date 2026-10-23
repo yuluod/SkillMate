@@ -1,6 +1,7 @@
 import { useState } from "react";
 import Icon from "./Icon.jsx";
 import { skillmateApi } from "../lib/skillmateApi.js";
+import { marketItemDescription } from "../lib/skillmate.mjs";
 import { useI18n } from "../lib/i18n.jsx";
 import { toUserErrorMessage } from "../lib/errorMessage.mjs";
 import { SurfaceHeader, SurfaceSectionHeader } from "./SurfaceHeader.jsx";
@@ -42,7 +43,7 @@ function MarketResult({ item, installed, onInstall, onOpenSource }) {
         <div><strong>{item.name}</strong><span>{item.repository}</span></div>
         <span className="source-badge git">{item.source === "skills-sh" ? "skills.sh" : "GitHub"}</span>
       </div>
-      <p>{item.description || item.skillId || item.repository}</p>
+      <p>{marketItemDescription(item) || item.skillId || item.repository}</p>
       <div className="market-result-meta">
         {item.installs > 0 && <span>{t("market.installs", { count: item.installs.toLocaleString() })}</span>}
         {item.stars > 0 && <span>{t("market.stars", { count: item.stars.toLocaleString() })}</span>}

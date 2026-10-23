@@ -28,6 +28,7 @@ import {
   buildDashboardStats,
   getMarketInstallRequest,
   getMarketInstallSource,
+  marketItemDescription,
   buildSkillMateManifestPreviewSummary,
   buildSkillDescription,
   buildStructureWarningSummary,
@@ -130,6 +131,15 @@ test("skills.sh 市场安装请求保留具体 Skill 身份", () => {
     source: "https://github.com/anthropics/knowledge-work-plugins.git",
     preferredSkillId: "review-contract",
   });
+});
+
+test("市场描述与名称重复或缺失时返回空串，真实描述原样透传", () => {
+  assert.equal(marketItemDescription({ name: "code-review", description: "code-review" }), "");
+  assert.equal(marketItemDescription({ name: "code-review", description: "" }), "");
+  assert.equal(marketItemDescription({ name: "code-review" }), "");
+  assert.equal(marketItemDescription({ name: "code-review", description: "Review contract diffs before merging" }), "Review contract diffs before merging");
+  assert.equal(marketItemDescription({ name: "code-review", description: "  Review contract diffs  " }), "Review contract diffs");
+  assert.equal(marketItemDescription({ name: "code-review", description: " code-review " }), "");
 });
 
 function readAppSource() {
