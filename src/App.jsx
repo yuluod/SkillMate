@@ -294,6 +294,8 @@ function App() {
   useEffect(() => {
     mountedRef.current = true;
     loadData({ resetUpdates: false });
+    // 暂存区跨重启可见：启动后恢复未过期的撤销条，不阻塞首屏加载。
+    refreshTrashState().catch(() => {});
     return () => {
       mountedRef.current = false;
       loadRequestRef.current += 1;
@@ -660,7 +662,7 @@ function App() {
     return count + (state === "behind" ? 1 : 0);
   }, 0);
 
-  async function openPreview(path) {
+  const openPreview = useCallback(async (path) => {
     try {
       const { content, validation, diagnostics = [] } = await skillmateApi.inventory.readSkill(path);
       const skill = allSkills.find((item) => item.path === path) || null;
@@ -673,9 +675,42 @@ function App() {
       });
       setPreviewOpen(true);
     } catch (e) { showToast(t("preview.failed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error"); }
+  }, [allSkills, showToast, t]);
+
+  // 从后端重建撤销条状态：暂存区列表按过期时间升序，取最早一条展示并调度自动清理，
+  // 清理成功后再刷新以浮出下一条；失败时只收起撤销条，剩余条目交由重启维护兜底。
+  async function refreshTrashState() {
+    let entries;
+    try {
+      entries = await skillmateApi.inventory.listTrashedSkills();
+    } catch {
+      // 拉取暂存区失败时保持现状，不改动当前撤销条。
+      return;
+    }
+    if (!mountedRef.current) return;
+    const first = Array.isArray(entries) && entries.length > 0 ? entries[0] : null;
+    if (!first) {
+      setTrashReceipt(null);
+      trashTimerRef.current.clear();
+      return;
+    }
+    setTrashReceipt(first);
+    // 过期时间缺失或非法时不调度自动清理（NaN 会让 setTimeout 立即触发），交由重启后的维护兜底。
+    const expiresAt = Number(first.expiresAt ?? first.expires_at);
+    if (!Number.isFinite(expiresAt) || expiresAt <= 0) return;
+    trashTimerRef.current.start(Math.max(0, expiresAt - Date.now()), async () => {
+      if (mountedRef.current) setTrashReceipt(null);
+      try {
+        await skillmateApi.inventory.purgeTrash(first.token);
+      } catch {
+        // 清理失败时不再刷新，避免对同一条目反复重试。
+        return;
+      }
+      if (mountedRef.current) refreshTrashState();
+    });
   }
 
-  async function remove(path, name, availableIn = []) {
+  const remove = useCallback(async (path, name, availableIn = []) => {
     const sharedWarning = availableIn.length > 1
       ? t("trash.shared", { assistants: availableIn.map((assistant) => assistant.name).join(t("common.listSeparator")) })
       : "";
@@ -684,12 +719,14 @@ function App() {
       try {
         const receipt = await skillmateApi.inventory.trashSkill(path);
         setTrashReceipt(receipt);
-        // 过期时间缺失或非法时不调度自动清理（NaN 会让 setTimeout 立即触发），交由重启后的维护兜底。
+        // 过期时间缺失或非法时不调度自动清理（NaN 会让 setTimeout 立即触发），交由重启维护兜底。
         const expiresAt = Number(receipt.expiresAt ?? receipt.expires_at);
         if (Number.isFinite(expiresAt) && expiresAt > 0) {
           trashTimerRef.current.start(Math.max(0, expiresAt - Date.now()), async () => {
             setTrashReceipt(null);
-            try { await skillmateApi.inventory.purgeTrash(receipt.token); } catch { /* 重启维护会清理遗留暂存区。 */ }
+            try { await skillmateApi.inventory.purgeTrash(receipt.token); } catch { /* 重启维护会清理遗留暂存区。 */ return; }
+            // 清理完成后刷新暂存区，浮出跨重启遗留的其他撤销条。
+            if (mountedRef.current) refreshTrashState();
           });
         }
         showToast(t("trash.done", { name }), "success");
@@ -697,7 +734,7 @@ function App() {
       } catch (e) { showToast(t("trash.failed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error"); }
       finally { setLoading(false); }
     }, { confirmLabel: t("trash.action") });
-  }
+  }, [confirmAction, loadData, showToast, t]);
 
   async function undoTrash() {
     if (!trashReceipt) return;
@@ -707,12 +744,14 @@ function App() {
       showToast(t("trash.restored", { name: trashReceipt.name }), "success");
       setTrashReceipt(null);
       await loadData();
+      // 恢复后刷新暂存区，让下一条遗留撤销条（如有）继续可见。
+      await refreshTrashState();
     } catch (error) {
       showToast(t("trash.restoreFailed", { message: toUserErrorMessage(error, t("error.safeRetry")) }), "error");
     }
   }
 
-  async function unlinkSymlink(path, name) {
+  const unlinkSymlink = useCallback(async (path, name) => {
     confirmAction(t("unlink.title"), t("unlink.message", { name }), async () => {
       setLoading(true);
       try {

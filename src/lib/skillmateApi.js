@@ -70,6 +70,7 @@ export const skillmateApi = Object.freeze({
     trashSkill: (path) => invoke("trash_skill", { path }),
     restoreTrash: (token) => invoke("restore_trashed_skill", { token }),
     purgeTrash: (token) => invoke("purge_trashed_skill", { token }),
+    listTrashedSkills: () => invoke("list_trashed_skills"),
     unlinkSkill: (path) => invoke("unlink_symlink_skill", { path }),
     openFolder: (path) => invoke("open_folder", { path }),
     inspectProject: (projectPath) => invoke("inspect_project", { projectPath }),

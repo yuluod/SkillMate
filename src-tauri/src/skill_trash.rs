@@ -132,6 +132,41 @@ impl SkillTrash {
         Ok("已恢复 Skill".to_string())
     }
 
+    /// 列出仍在撤销窗口内的条目（按过期时间升序），顺带清理已过期条目。
+    /// 应用重启后前端凭此恢复撤销条展示。
+    pub fn list(&mut self) -> Vec<TrashReceipt> {
+        let now = now_ms();
+        let mut receipts = Vec::new();
+        let mut expired = Vec::new();
+        for (token, entry) in &self.entries {
+            if now - entry.created_at > UNDO_WINDOW_MS {
+                expired.push(token.clone());
+                continue;
+            }
+            let name = entry
+                .stash
+                .file_name()
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap_or_default();
+            receipts.push((
+                entry.created_at + UNDO_WINDOW_MS,
+                TrashReceipt {
+                    token: token.clone(),
+                    name,
+                    original_path: entry.original.to_string_lossy().to_string(),
+                    expires_at: entry.created_at + UNDO_WINDOW_MS,
+                },
+            ));
+        }
+        for token in expired {
+            if let Some(entry) = self.entries.remove(&token) {
+                let _ = remove_entry_files(&entry);
+            }
+        }
+        receipts.sort_by_key(|(expires_at, _)| *expires_at);
+        receipts.into_iter().map(|(_, receipt)| receipt).collect()
+    }
+
     pub fn purge(&mut self, token: &str) -> Result<bool, String> {
         let Some(entry) = self.entries.remove(token) else {
             return Ok(false);
@@ -437,6 +472,32 @@ mod tests {
         assert!(is_explicitly_managed(&db, &skill).unwrap());
         assert!(!root.join(TRASH_DIRECTORY).exists());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn list_returns_unexpired_entries_sorted_and_purges_expired() {
+        let (db, root, skill) = managed_skill("list-a");
+        let (db2, root2, skill2) = managed_skill("list-b");
+        let mut trash = SkillTrash::default();
+        let first = trash.trash(&db, &skill).unwrap();
+        let second = trash.trash(&db2, &skill2).unwrap();
+
+        let receipts = trash.list();
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(receipts[0].token, first.token);
+        assert_eq!(receipts[1].token, second.token);
+        assert!(receipts[0].expires_at <= receipts[1].expires_at);
+        assert_eq!(receipts[0].name, "writer");
+
+        // 手动把第二条改为已过期：list 应排除并清理其暂存文件。
+        trash.entries.get_mut(&second.token).unwrap().created_at -= UNDO_WINDOW_MS + 1_000;
+        let receipts = trash.list();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].token, first.token);
+        assert!(!root2.join(TRASH_DIRECTORY).join(&second.token).exists());
+        assert!(root.join(TRASH_DIRECTORY).join(&first.token).exists());
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(root2);
     }
 
     #[test]

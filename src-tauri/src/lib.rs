@@ -1445,6 +1445,17 @@ async fn delete_skill(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn list_trashed_skills(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<skill_trash::TrashReceipt>, String> {
+    let mut trash = state
+        .trash
+        .lock()
+        .map_err(|_| "撤销暂存区已锁定，请重启应用后重试".to_string())?;
+    Ok(trash.list())
+}
+
+#[tauri::command]
 fn trash_skill(
     state: tauri::State<'_, AppState>,
     path: String,
@@ -1905,6 +1916,7 @@ pub fn run() {
             preview_install_skill,
             install_skill,
             delete_skill,
+            list_trashed_skills,
             trash_skill,
             restore_trashed_skill,
             purge_trashed_skill,
