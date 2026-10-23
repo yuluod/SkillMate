@@ -229,6 +229,7 @@ function App() {
   const [adoptionCandidate, setAdoptionCandidate] = useState(null);
   const [projectInspectionRevision, setProjectInspectionRevision] = useState(0);
   const projectWorkspace = useProjectWorkspace();
+  const projectWorkspacePath = projectWorkspace.path;
   const [updatePreviewPath, setUpdatePreviewPath] = useState("");
   const {
     input: searchInput,
@@ -245,6 +246,8 @@ function App() {
   const addTagPendingRef = useRef(false);
   const mountedRef = useRef(false);
   const loadRequestRef = useRef(0);
+  // loadData 与 gitBackupFlow 互相依赖（见两处定义），hydrate 经此引用取最新值。
+  const gitHydrateRef = useRef(null);
   if (!toastTimerRef.current) {
     toastTimerRef.current = createResettableTimer();
   }
@@ -305,7 +308,7 @@ function App() {
   }, []);
 
   // Custom confirm dialog helper
-  function confirmAction(title, message, onConfirm, options = {}) {
+  const confirmAction = useCallback((title, message, onConfirm, options = {}) => {
     setConfirmState({
       open: true,
       title,
@@ -314,7 +317,7 @@ function App() {
       tone: options.tone || "danger",
       onConfirm,
     });
-  }
+  }, [t]);
 
   useEffect(() => {
     const m = window.matchMedia("(prefers-color-scheme: dark)");
@@ -361,7 +364,7 @@ function App() {
     });
   }, [t]);
 
-  async function loadData(options = {}) {
+  const loadData = useCallback(async (options = {}) => {
     const resetUpdates = options?.resetUpdates ?? true;
     const requestId = ++loadRequestRef.current;
     setLoading(true);
@@ -392,7 +395,7 @@ function App() {
         details: diagnosticMessage,
       } : null);
       if (resetUpdates) resetUpdateState();
-      if (!failedSections.has("git")) gitBackupFlow.hydrate(git);
+      if (!failedSections.has("git")) gitHydrateRef.current?.(git);
       if (diagnosticMessage) showToast(t("toast.partialData"), "warn");
     } catch (e) {
       if (mountedRef.current && requestId === loadRequestRef.current) {
@@ -410,7 +413,7 @@ function App() {
         setInit(false);
       }
     }
-  }
+  }, [resetUpdateState, showToast, t]);
 
   const selectedTags = useMemo(
     () => tags.filter(tag => tag.selected).map(tag => tag.id),
@@ -446,6 +449,7 @@ function App() {
   const activeScenario = scenarioFlow.active;
 
   const gitBackupFlow = useGitBackupFlow({ saved: data.git, showToast, loadData });
+  gitHydrateRef.current = gitBackupFlow.hydrate;
 
   const skills = useMemo(() => {
     let list = [...allSkills];
@@ -539,6 +543,9 @@ function App() {
     loadData,
     setLoading,
   });
+  // installFlow 对象每次渲染都是新引用；行组件要的回调只依赖这几个稳定的底层方法。
+  const { prepare: prepareInstallSource } = installFlow.source;
+  const { setMode: setInstallTargetMode, setProjectPath: setInstallProjectPath } = installFlow.target;
 
   const {
     library: libraryFlow,
@@ -551,11 +558,11 @@ function App() {
     setTags(prev => prev.map(t => t.id === id ? { ...t, selected: !t.selected } : t));
   }
 
-  function toggleSkillSelection(path) {
+  const toggleSkillSelection = useCallback((path) => {
     setSelectedSkillPaths((current) => current.includes(path)
       ? current.filter((item) => item !== path)
       : [...current, path]);
-  }
+  }, []);
 
   function toggleVisibleSkillSelection() {
     const visiblePaths = skills.map((skill) => skill.path);
@@ -613,7 +620,7 @@ function App() {
     );
   }
 
-  function openTagEditor(skillOrSkills) {
+  const openTagEditor = useCallback((skillOrSkills) => {
     const batch = Array.isArray(skillOrSkills);
     const editorSkills = batch ? skillOrSkills : [skillOrSkills];
     setTagEditor({
@@ -622,7 +629,7 @@ function App() {
       selected: batch ? [] : [...(editorSkills[0]?.tags || [])],
       mode: batch ? "add" : "replace",
     });
-  }
+  }, []);
 
   function toggleSkillTag(tagId) {
     setTagEditor((current) => ({
@@ -761,7 +768,7 @@ function App() {
       } catch (e) { showToast(t("unlink.failed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error"); }
       finally { setLoading(false); }
     }, { confirmLabel: t("unlink.action"), tone: "primary" });
-  }
+  }, [confirmAction, loadData, showToast, t]);
 
   const orderedUpdatable = useMemo(() => [...updatable].sort((a, b) => {
     const aInfo = getSyncInfo(a);
@@ -798,9 +805,9 @@ function App() {
     return checkAppUpdate();
   }, [appUpdateView.primaryAction, checkAppUpdate, installAppUpdate, restartApp]);
 
-  async function openDir(path) {
+  const openDir = useCallback(async (path) => {
     try { await skillmateApi.inventory.openFolder(getDir(path)); } catch (e) { showToast(t("folder.openFailed", { message: toUserErrorMessage(e, t("error.safeRetry")) }), "error"); }
-  }
+  }, [showToast, t]);
 
   function installMarketSkill(item) {
     const request = getMarketInstallRequest(item);
@@ -817,13 +824,13 @@ function App() {
     setInstallOpen(true);
   }
 
-  function enableLibrarySkill(skill) {
+  const enableLibrarySkill = useCallback((skill) => {
     const skillsToEnable = Array.isArray(skill) ? skill : [skill];
-    installFlow.source.prepare(skillsToEnable.map((item) => item.symlink_source || item.path), "", "local", "enable");
-    installFlow.target.setMode(projectWorkspace.path ? "symlink" : "copy");
-    installFlow.target.setProjectPath(projectWorkspace.path);
+    prepareInstallSource(skillsToEnable.map((item) => item.symlink_source || item.path), "", "local", "enable");
+    setInstallTargetMode(projectWorkspacePath ? "symlink" : "copy");
+    setInstallProjectPath(projectWorkspacePath);
     setInstallOpen(true);
-  }
+  }, [prepareInstallSource, projectWorkspacePath, setInstallOpen, setInstallProjectPath, setInstallTargetMode]);
 
   async function completeDrift(message) {
     showToast(typeof message === "string" && message.trim() ? message : t("drift.complete"), "success");

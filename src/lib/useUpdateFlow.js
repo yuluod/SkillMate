@@ -22,8 +22,10 @@ export function useUpdateFlow({ updatable, showToast, loadData }) {
   const getSyncInfo = useCallback((skill) =>
     getUpdateInfo(skill, updateState[skill.path], t("updates.state.unknown")), [t, updateState]);
 
-  const isCurrent = operation => operation.generation === generation.current;
-  const change = (operation, paths, transform) => {
+  // 行组件（UpdateRow）用 React.memo 依赖这些回调的引用稳定性，内部链条全部包 useCallback。
+  const isCurrent = useCallback(
+    (operation) => operation.generation === generation.current, []);
+  const change = useCallback((operation, paths, transform) => {
     if (!isCurrent(operation)) return;
     setUpdateState(previous => {
       if (!isCurrent(operation)) return previous;
@@ -31,40 +33,40 @@ export function useUpdateFlow({ updatable, showToast, loadData }) {
       paths.forEach(path => { next[path] = transform(previous[path] || {}, path); });
       return next;
     });
-  };
-  const begin = (paths, updating = false) => {
+  }, [isCurrent]);
+  const begin = useCallback((paths, updating = false) => {
     const operation = { generation: generation.current };
     paths.forEach(path => active.current.set(path, operation));
     change(operation, paths, state => ({ ...state, checking: !updating, updating }));
     return operation;
-  };
-  const finish = (operation, paths) => {
+  }, [change]);
+  const finish = useCallback((operation, paths) => {
     paths.forEach(path => {
       if (active.current.get(path) === operation) active.current.delete(path);
     });
     change(operation, paths, state => ({ ...state, checking: false, updating: false }));
-  };
-  const failedResult = error => ({ syncState: "failed",
-    message: t("updates.toast.checkFailed", { message: toUserErrorMessage(error, t("error.safeRetry")) }) });
-  const accept = (operation, path, result) => {
+  }, [change]);
+  const failedResult = useCallback(error => ({ syncState: "failed",
+    message: t("updates.toast.checkFailed", { message: toUserErrorMessage(error, t("error.safeRetry")) }) }), [t]);
+  const accept = useCallback((operation, path, result) => {
     change(operation, [path], state => adaptUpdateResult(state, result, t("updates.message.noResult")));
     return adaptUpdateResult({}, result, t("updates.message.noResult"));
-  };
-  const notify = result => {
+  }, [change, t]);
+  const notify = useCallback(result => {
     const notice = updateCheckNotice(result);
     showToast(language === "en" ? t(notice.key) : (result.message || t(notice.key)), notice.tone);
-  };
+  }, [showToast, t, language]);
   // Apply's follow-up check shares its lock instead of calling the public handler.
-  const probe = async (operation, path) => {
+  const probe = useCallback(async (operation, path) => {
     change(operation, [path], state => ({ ...state, checking: true }));
     let result;
     try { result = await skillmateApi.updates.checkOne(path); }
     catch (error) { result = failedResult(error); }
     if (!isCurrent(operation)) return;
     notify(accept(operation, path, result));
-  };
+  }, [accept, change, failedResult, isCurrent, notify]);
 
-  const checkAllUpdates = async () => {
+  const checkAllUpdates = useCallback(async () => {
     if (batch.current) return;
     const paths = [...new Set(updatable.map(skill => skill.path))]
       .filter(path => !active.current.has(path));
@@ -86,16 +88,16 @@ export function useUpdateFlow({ updatable, showToast, loadData }) {
       finish(operation, paths);
       if (batch.current === operation) batch.current = null;
     }
-  };
+  }, [accept, begin, failedResult, finish, isCurrent, showToast, t, updatable]);
 
-  const checkUpdate = async path => {
+  const checkUpdate = useCallback(async path => {
     if (active.current.has(path)) return;
     const operation = begin([path]);
     try { await probe(operation, path); }
     finally { finish(operation, [path]); }
-  };
+  }, [begin, finish, probe]);
 
-  const updateSkill = async (path, planToken) => {
+  const updateSkill = useCallback(async (path, planToken) => {
     if (active.current.has(path)) return false;
     const operation = begin([path], true);
     try {
@@ -115,7 +117,7 @@ export function useUpdateFlow({ updatable, showToast, loadData }) {
       showToast(t("updates.toast.updateFailed", { message: toUserErrorMessage(error, t("error.safeRetry")) }), "error");
       return false;
     } finally { finish(operation, [path]); }
-  };
+  }, [begin, finish, language, loadData, probe, showToast, t]);
 
   return { updateState, resetUpdateState, getSyncInfo, checkAllUpdates, checkUpdate, updateSkill };
 }

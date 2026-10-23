@@ -69,6 +69,92 @@ function sourceStampClass(kind) {
   return "unmanaged";
 }
 
+const SkillCardRow = React.memo(function SkillCardRow({
+  skill,
+  card,
+  index,
+  selected,
+  tags,
+  t,
+  onToggleSelection,
+  onEnable,
+  onAdopt,
+  onPreview,
+  onEditTags,
+  onOpenDirectory,
+  onUnlink,
+  onRemove,
+}) {
+  const needsReview = card.structureTone !== "success" || card.hasManagedDrift || card.securityWarningCount > 0;
+  return (
+    <article className={`registry-row ${selected ? "selected" : ""}`} style={{ "--i": index }} role="row">
+      <div className="registry-main registry-main-selectable" role="cell">
+        <label className="registry-select">
+          <input
+            type="checkbox"
+            checked={selected}
+            onChange={() => onToggleSelection(skill.path)}
+            aria-label={t("skills.select", { name: skill.name })}
+          />
+        </label>
+        <div className="registry-entry">
+          <div className="registry-identity">
+            <h3>{card.title}</h3>
+            {card.sourceLabel && <span className={`stamp stamp-source ${sourceStampClass(skill.source_type)}`}>{card.sourceLabel}</span>}
+          </div>
+          <div className="registry-signals">
+            <span className={`stamp ${card.structureTone}`} title={card.warningSummary}>{card.structureLabel}</span>
+            {card.isShared && <span className="stamp muted" title={card.availabilityLabel}>{t("skills.shared", { count: card.availableIn.length })}</span>}
+            {card.hasManagedDrift && <span className="stamp error">{t("skills.changed")}</span>}
+            {card.securityWarningCount > 0 && <span className="stamp error" title={card.securityWarningSummary}>{t("skills.risk", { count: card.securityWarningCount })}</span>}
+          </div>
+          {skill.tags.length > 0 && (
+            <div className="registry-tags">
+              {skill.tags.slice(0, 2).map(tagId => {
+                const tag = tags.find(item => item.id === tagId);
+                return tag ? <span key={tag.id} className="tag" style={{ "--c": tag.color }}>{tag.name}</span> : null;
+              })}
+              {skill.tags.length > 2 && <span className="tag more">+{skill.tags.length - 2}</span>}
+            </div>
+          )}
+          {card.description && <p className="registry-desc">{card.description}</p>}
+          <div className="registry-path" title={skill.path}>
+            <span>{formatHomePath(skill.path)}</span>
+            {skill.symlink_source && <span className="registry-symlink">→ {formatHomePath(skill.symlink_source)}</span>}
+          </div>
+          <div className="registry-provenance" aria-label={t("provenance.summary")}>
+            <span>{t("provenance.sourceLabel")}：{card.contentSourceLabel}</span>
+            <span>{t("provenance.managerLabel")}：{card.managerLabel}</span>
+            <span>{t("provenance.updateLabel")}：{card.updateStrategyLabel}</span>
+          </div>
+        </div>
+      </div>
+      <div className="registry-platform" title={card.availabilityLabel} role="cell">
+        <AiAvatar name={skill.ai} brand={skill.aiIcon} size={16} />
+        <span>{card.availabilityLabel || skill.ai}</span>
+      </div>
+      <div className="registry-size" role="cell">{skill.size}</div>
+      <div className="registry-actions" role="cell">
+        {card.canEnable && <button className="btn btn-primary btn-sm" onClick={() => onEnable(skill)} aria-label={t("skills.enable", { name: skill.name })}><Icon name="power" size={15} />{t("skills.enableAction")}</button>}
+        {card.canAdopt && <button className="btn btn-primary btn-sm" onClick={() => onAdopt({ skill, assistant: skill.ai, projectPath: "" })} aria-label={t("adoption.actionFor", { name: skill.name })}><Icon name="branch" size={15} />{t("adoption.action")}</button>}
+        <button className={`btn btn-sm ${needsReview ? "btn-review" : "btn-secondary"}`} onClick={() => onPreview(skill.path)} aria-label={t(needsReview ? "skills.reviewOne" : "skills.preview", { name: skill.name })}><Icon name={needsReview ? "shield" : "preview"} size={15} />{t(needsReview ? "skills.review" : "common.details")}</button>
+        <details className="registry-more">
+          <summary className="btn btn-ghost btn-sm" role="button" aria-label={t("skills.moreActions", { name: skill.name })}><Icon name="more" size={17} /></summary>
+          <div className="registry-more-actions">
+            <button className="btn btn-ghost btn-sm" onClick={() => onEditTags(skill)} aria-label={t("skills.editTags", { name: skill.name })}><Icon name="tag" size={15} />{t("skills.tagsAction")}</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => onOpenDirectory(skill.path)} aria-label={t("skills.openFolder", { name: skill.name })}><Icon name="folder" size={15} />{t("skills.folderAction")}</button>
+            {card.canUnlink ? (
+              <button className="btn btn-ghost btn-sm danger" onClick={() => onUnlink(skill.path, skill.name)} aria-label={t("skills.unlink", { name: skill.name })}><Icon name="unlink" size={15} />{t("skills.unlinkAction")}</button>
+            ) : card.canDelete ? (
+              <button className="btn btn-ghost btn-sm danger" onClick={() => onRemove(skill.path, skill.name, card.availableIn)} aria-label={t("skills.remove", { name: skill.name })}><Icon name="trash" size={15} />{t("skills.removeAction")}</button>
+            ) : null}
+          </div>
+        </details>
+      </div>
+    </article>
+  );
+});
+
 export function SkillsView({
   skills,
   allSkills,
@@ -165,78 +251,25 @@ export function SkillsView({
             </div>
           </div>
         ) : (
-          skills.map((skill, index) => {
-            const card = skillCards[index];
-            const selected = selectedSkillPaths.includes(skill.path);
-            const needsReview = card.structureTone !== "success" || card.hasManagedDrift || card.securityWarningCount > 0;
-            return (
-              <article className={`registry-row ${selected ? "selected" : ""}`} key={`${skill.path}-${skill.name}`} style={{ "--i": index }} role="row">
-                <div className="registry-main registry-main-selectable" role="cell">
-                  <label className="registry-select">
-                    <input
-                      type="checkbox"
-                      checked={selected}
-                      onChange={() => onToggleSelection(skill.path)}
-                      aria-label={t("skills.select", { name: skill.name })}
-                    />
-                  </label>
-                  <div className="registry-entry">
-                    <div className="registry-identity">
-                      <h3>{card.title}</h3>
-                      {card.sourceLabel && <span className={`stamp stamp-source ${sourceStampClass(skill.source_type)}`}>{card.sourceLabel}</span>}
-                    </div>
-                    <div className="registry-signals">
-                      <span className={`stamp ${card.structureTone}`} title={card.warningSummary}>{card.structureLabel}</span>
-                      {card.isShared && <span className="stamp muted" title={card.availabilityLabel}>{t("skills.shared", { count: card.availableIn.length })}</span>}
-                      {card.hasManagedDrift && <span className="stamp error">{t("skills.changed")}</span>}
-                      {card.securityWarningCount > 0 && <span className="stamp error" title={card.securityWarningSummary}>{t("skills.risk", { count: card.securityWarningCount })}</span>}
-                    </div>
-                    {skill.tags.length > 0 && (
-                      <div className="registry-tags">
-                        {skill.tags.slice(0, 2).map(tagId => {
-                          const tag = tags.find(item => item.id === tagId);
-                          return tag ? <span key={tag.id} className="tag" style={{ "--c": tag.color }}>{tag.name}</span> : null;
-                        })}
-                        {skill.tags.length > 2 && <span className="tag more">+{skill.tags.length - 2}</span>}
-                      </div>
-                    )}
-                    {card.description && <p className="registry-desc">{card.description}</p>}
-                    <div className="registry-path" title={skill.path}>
-                      <span>{formatHomePath(skill.path)}</span>
-                      {skill.symlink_source && <span className="registry-symlink">→ {formatHomePath(skill.symlink_source)}</span>}
-                    </div>
-                    <div className="registry-provenance" aria-label={t("provenance.summary")}>
-                      <span>{t("provenance.sourceLabel")}：{card.contentSourceLabel}</span>
-                      <span>{t("provenance.managerLabel")}：{card.managerLabel}</span>
-                      <span>{t("provenance.updateLabel")}：{card.updateStrategyLabel}</span>
-                    </div>
-                  </div>
-                </div>
-                <div className="registry-platform" title={card.availabilityLabel} role="cell">
-                  <AiAvatar name={skill.ai} brand={skill.aiIcon} size={16} />
-                  <span>{card.availabilityLabel || skill.ai}</span>
-                </div>
-                <div className="registry-size" role="cell">{skill.size}</div>
-                <div className="registry-actions" role="cell">
-                  {card.canEnable && <button className="btn btn-primary btn-sm" onClick={() => onEnable(skill)} aria-label={t("skills.enable", { name: skill.name })}><Icon name="power" size={15} />{t("skills.enableAction")}</button>}
-                  {card.canAdopt && <button className="btn btn-primary btn-sm" onClick={() => onAdopt({ skill, assistant: skill.ai, projectPath: "" })} aria-label={t("adoption.actionFor", { name: skill.name })}><Icon name="branch" size={15} />{t("adoption.action")}</button>}
-                  <button className={`btn btn-sm ${needsReview ? "btn-review" : "btn-secondary"}`} onClick={() => onPreview(skill.path)} aria-label={t(needsReview ? "skills.reviewOne" : "skills.preview", { name: skill.name })}><Icon name={needsReview ? "shield" : "preview"} size={15} />{t(needsReview ? "skills.review" : "common.details")}</button>
-                  <details className="registry-more">
-                    <summary className="btn btn-ghost btn-sm" role="button" aria-label={t("skills.moreActions", { name: skill.name })}><Icon name="more" size={17} /></summary>
-                    <div className="registry-more-actions">
-                      <button className="btn btn-ghost btn-sm" onClick={() => onEditTags(skill)} aria-label={t("skills.editTags", { name: skill.name })}><Icon name="tag" size={15} />{t("skills.tagsAction")}</button>
-                      <button className="btn btn-ghost btn-sm" onClick={() => onOpenDirectory(skill.path)} aria-label={t("skills.openFolder", { name: skill.name })}><Icon name="folder" size={15} />{t("skills.folderAction")}</button>
-                      {card.canUnlink ? (
-                        <button className="btn btn-ghost btn-sm danger" onClick={() => onUnlink(skill.path, skill.name)} aria-label={t("skills.unlink", { name: skill.name })}><Icon name="unlink" size={15} />{t("skills.unlinkAction")}</button>
-                      ) : card.canDelete ? (
-                        <button className="btn btn-ghost btn-sm danger" onClick={() => onRemove(skill.path, skill.name, card.availableIn)} aria-label={t("skills.remove", { name: skill.name })}><Icon name="trash" size={15} />{t("skills.removeAction")}</button>
-                      ) : null}
-                    </div>
-                  </details>
-                </div>
-              </article>
-            );
-          })
+          skills.map((skill, index) => (
+            <SkillCardRow
+              key={`${skill.path}-${skill.name}`}
+              skill={skill}
+              card={skillCards[index]}
+              index={index}
+              selected={selectedSkillPaths.includes(skill.path)}
+              tags={tags}
+              t={t}
+              onToggleSelection={onToggleSelection}
+              onEnable={onEnable}
+              onAdopt={onAdopt}
+              onPreview={onPreview}
+              onEditTags={onEditTags}
+              onOpenDirectory={onOpenDirectory}
+              onUnlink={onUnlink}
+              onRemove={onRemove}
+            />
+          ))
         )}
       </div>
     </div>
@@ -507,6 +540,45 @@ function updateButtonText(info, t) {
   return t("updatePreview.action");
 }
 
+const UpdateRow = React.memo(function UpdateRow({ skill, card, getSyncInfo, t, language, checkOne, updateOne }) {
+  const info = getSyncInfo(skill);
+  return (
+    <article className="registry-row" role="row">
+      <div className="registry-main" role="cell">
+        <div className="registry-title">
+          <h3>{skill.name}</h3>
+          <span className={`stamp stamp-source ${sourceStampClass(info.originKind)}`}>{originKindLabel(info.originKind, t)}</span>
+          <span className="stamp muted">{card.availabilityLabel || skill.ai}</span>
+        </div>
+        <div className="registry-path" title={info.resolvedLocator || info.originLocator || skill.upstream_url}>
+          <span>{remoteLabel(info.resolvedLocator || info.originLocator || skill.upstream_url, t)}</span>
+        </div>
+        <div className="registry-probe">
+          <span className={info.syncState === "behind" ? "warn" : ""}>{lagText(info, t)}</span>
+          <span>{t("updates.probed")} {probeTime(info.lastProbeAt, language, t)}</span>
+        </div>
+      </div>
+      <div className="registry-refs" aria-label={`${t("updates.current")} → ${t("updates.latest")}`} role="cell">
+        <span>{refLabel(info.installedRef)}</span>
+        <span className="registry-refs-arrow" aria-hidden="true">→</span>
+        <span className={info.syncState === "behind" ? "warn" : ""}>{refLabel(info.latestRef)}</span>
+      </div>
+      <div className="registry-state" role="cell">
+        <span className={`stamp ${stateTone(info.syncState)}`}>{stateText(info.syncState, t)}</span>
+      </div>
+      <div className="registry-actions" role="cell">
+        <button className="btn btn-secondary btn-sm" onClick={() => checkOne(skill.path)} disabled={!info.canCheck || info.checking || info.updating}><Icon name="refresh" size={14} />{t(info.checking ? "common.checking" : "common.check")}</button>
+        {info.canSync && <button className="btn btn-primary btn-sm" onClick={() => updateOne(skill.path)} disabled={info.checking || info.updating}><Icon name="download" size={14} />{updateButtonText(info, t)}</button>}
+        {!info.canSync && (
+          <span className="update-hint" title={skill.managed_by_app ? (info.message || t("updates.notSupported")) : t("updates.externalManaged")}>
+            {skill.managed_by_app ? (info.message || t("updates.notSupported")) : t("updates.externalManaged")}
+          </span>
+        )}
+      </div>
+    </article>
+  );
+});
+
 export function UpdatesView({ skills, orderedSkills, stats, updateState, getSyncInfo, checkAll, checkOne, updateOne }) {
   const { t, language } = useI18n();
   const skillCards = React.useMemo(
@@ -547,45 +619,18 @@ export function UpdatesView({ skills, orderedSkills, stats, updateState, getSync
             <div className="registry-actions" role="cell" />
           </div>
         ) : (
-          orderedSkills.map((skill, index) => {
-            const info = getSyncInfo(skill);
-            const card = skillCards[index];
-            return (
-              <article className="registry-row" key={skill.path} role="row">
-                <div className="registry-main" role="cell">
-                  <div className="registry-title">
-                    <h3>{skill.name}</h3>
-                    <span className={`stamp stamp-source ${sourceStampClass(info.originKind)}`}>{originKindLabel(info.originKind, t)}</span>
-                    <span className="stamp muted">{card.availabilityLabel || skill.ai}</span>
-                  </div>
-                  <div className="registry-path" title={info.resolvedLocator || info.originLocator || skill.upstream_url}>
-                    <span>{remoteLabel(info.resolvedLocator || info.originLocator || skill.upstream_url, t)}</span>
-                  </div>
-                  <div className="registry-probe">
-                    <span className={info.syncState === "behind" ? "warn" : ""}>{lagText(info, t)}</span>
-                    <span>{t("updates.probed")} {probeTime(info.lastProbeAt, language, t)}</span>
-                  </div>
-                </div>
-                <div className="registry-refs" aria-label={`${t("updates.current")} → ${t("updates.latest")}`} role="cell">
-                  <span>{refLabel(info.installedRef)}</span>
-                  <span className="registry-refs-arrow" aria-hidden="true">→</span>
-                  <span className={info.syncState === "behind" ? "warn" : ""}>{refLabel(info.latestRef)}</span>
-                </div>
-                <div className="registry-state" role="cell">
-                  <span className={`stamp ${stateTone(info.syncState)}`}>{stateText(info.syncState, t)}</span>
-                </div>
-                <div className="registry-actions" role="cell">
-                  <button className="btn btn-secondary btn-sm" onClick={() => checkOne(skill.path)} disabled={!info.canCheck || info.checking || info.updating}><Icon name="refresh" size={14} />{t(info.checking ? "common.checking" : "common.check")}</button>
-                  {info.canSync && <button className="btn btn-primary btn-sm" onClick={() => updateOne(skill.path)} disabled={info.checking || info.updating}><Icon name="download" size={14} />{updateButtonText(info, t)}</button>}
-                  {!info.canSync && (
-                    <span className="update-hint" title={skill.managed_by_app ? (info.message || t("updates.notSupported")) : t("updates.externalManaged")}>
-                      {skill.managed_by_app ? (info.message || t("updates.notSupported")) : t("updates.externalManaged")}
-                    </span>
-                  )}
-                </div>
-              </article>
-            );
-          })
+          orderedSkills.map((skill, index) => (
+            <UpdateRow
+              key={skill.path}
+              skill={skill}
+              card={skillCards[index]}
+              getSyncInfo={getSyncInfo}
+              t={t}
+              language={language}
+              checkOne={checkOne}
+              updateOne={updateOne}
+            />
+          ))
         )}
       </div>
     </div>
