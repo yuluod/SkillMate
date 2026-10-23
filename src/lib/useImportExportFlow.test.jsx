@@ -124,7 +124,8 @@ describe("useImportExportFlow library import", () => {
     expect(result.current.library.applyingImport).toBe(false);
     const [message, tone] = showToast.mock.lastCall;
     expect(tone).toBe("error");
-    expect(message).toContain("操作计划缺失，请重新预览");
+    // 计划令牌缺失经 common.planMissing 本地化，英文界面不再泄漏执行器内置中文。
+    expect(message).toContain("action plan is missing");
   });
 });
 

@@ -169,7 +169,7 @@ export function useImportExportFlow({ showToast, loadData }) {
     );
     if (!execution.started) {
       if (execution.error) {
-        showToast(t("data.toast.importFailed", { message: toUserErrorMessage(execution.error, t("error.safeRetry")) }), "error");
+        showToast(t("data.toast.importFailed", { message: t("common.planMissing") }), "error");
       }
       return;
     }
@@ -262,7 +262,7 @@ export function useImportExportFlow({ showToast, loadData }) {
     );
     if (!execution.started) {
       if (execution.error) {
-        showToast(t("manifest.toast.applyFailed", { message: toUserErrorMessage(execution.error, t("error.safeRetry")) }), "error");
+        showToast(t("manifest.toast.applyFailed", { message: t("common.planMissing") }), "error");
       }
       return;
     }
@@ -328,7 +328,7 @@ export function useImportExportFlow({ showToast, loadData }) {
     );
     if (!execution.started) {
       if (execution.error) {
-        showToast(t("profile.toast.applyFailed", { message: toUserErrorMessage(execution.error, t("error.safeRetry")) }), "error");
+        showToast(t("profile.toast.applyFailed", { message: t("common.planMissing") }), "error");
       }
       return;
     }
@@ -425,7 +425,7 @@ export function useImportExportFlow({ showToast, loadData }) {
     );
     if (!execution.started) {
       if (execution.error) {
-        showToast(t("scenarioManifest.toast.importFailed", { message: toUserErrorMessage(execution.error, t("error.safeRetry")) }), "error");
+        showToast(t("scenarioManifest.toast.importFailed", { message: t("common.planMissing") }), "error");
       }
       return;
     }
