@@ -248,6 +248,8 @@ function App() {
   const loadRequestRef = useRef(0);
   // loadData 与 gitBackupFlow 互相依赖（见两处定义），hydrate 经此引用取最新值。
   const gitHydrateRef = useRef(null);
+  // loadData 声明早于 useUpdateFlow，resetUpdateState 经此引用打破声明顺序循环。
+  const resetUpdateStateRef = useRef(null);
   if (!toastTimerRef.current) {
     toastTimerRef.current = createResettableTimer();
   }
@@ -394,7 +396,7 @@ function App() {
         impact: t("error.partialImpact"),
         details: diagnosticMessage,
       } : null);
-      if (resetUpdates) resetUpdateState();
+      if (resetUpdates) resetUpdateStateRef.current?.();
       if (!failedSections.has("git")) gitHydrateRef.current?.(git);
       if (diagnosticMessage) showToast(t("toast.partialData"), "warn");
     } catch (e) {
@@ -413,7 +415,7 @@ function App() {
         setInit(false);
       }
     }
-  }, [resetUpdateState, showToast, t]);
+  }, [showToast, t]);
 
   const selectedTags = useMemo(
     () => tags.filter(tag => tag.selected).map(tag => tag.id),
@@ -481,6 +483,7 @@ function App() {
     checkUpdate,
     updateSkill,
   } = useUpdateFlow({ updatable, showToast, loadData });
+  resetUpdateStateRef.current = resetUpdateState;
 
   const {
     appUpdateState,
