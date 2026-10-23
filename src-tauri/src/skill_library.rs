@@ -530,11 +530,30 @@ pub fn is_library_skill_path(path: &Path) -> bool {
 
 /// 登记判定要容忍路径别名（如 macOS 的 /var 与 /private/var）：
 /// 物化流程里的目标经过 canonicalize，与登记字符串可能不是同一写法。
+/// canonicalize 成功结果做进程级缓存——统一库目录极少重建链接，而每次
+/// 预览对全表逐行解析的系统调用开销会随库增长线性放大。失败不入缓存，
+/// 路径在进程存活期内创建后，下一次判定立即生效。
+fn cached_canonicalize(path: &Path) -> Option<PathBuf> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, PathBuf>>,
+    > = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    let mut guard = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(hit) = guard.get(path) {
+        return Some(hit.clone());
+    }
+    let resolved = path.canonicalize().ok()?;
+    guard.insert(path.to_path_buf(), resolved.clone());
+    Some(resolved)
+}
+
 fn is_registered_library_path(db: &Connection, path: &Path) -> bool {
     if library_skill_id(db, path).is_ok() {
         return true;
     }
-    let Ok(candidate) = path.canonicalize() else {
+    let Some(candidate) = cached_canonicalize(path) else {
         return false;
     };
     let registered = (|| {
@@ -548,10 +567,7 @@ fn is_registered_library_path(db: &Connection, path: &Path) -> bool {
     })()
     .unwrap_or_default();
     registered.iter().any(|row| {
-        Path::new(row)
-            .canonicalize()
-            .map(|canonical| canonical == candidate)
-            .unwrap_or(false)
+        cached_canonicalize(Path::new(row)).is_some_and(|canonical| canonical == candidate)
     })
 }
 
@@ -848,6 +864,42 @@ fn table_exists(db: &Connection, table: &str) -> Result<bool, String> {
         |row| row.get::<_, bool>(0),
     )
     .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registered_library_path_recognized_once_directory_appears() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE library_skills (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, library_path TEXT NOT NULL UNIQUE,
+                source TEXT NOT NULL, source_kind TEXT NOT NULL, resolved_ref TEXT,
+                content_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+             );",
+        )
+        .unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "skillmate-registered-path-{}",
+            crate::app_core::generate_id()
+        ));
+        let library_path = root.join("writer");
+        // 目录尚未创建时判定为未登记；目录创建并登记后，同一次进程内的
+        // 判定必须立即翻转——失败的 canonicalize 不允许进入缓存。
+        assert!(!is_registered_library_path(&db, &library_path));
+        fs::create_dir_all(&library_path).unwrap();
+        db.execute(
+            "INSERT INTO library_skills VALUES (
+                'skill-1', 'writer', ?, 'source', 'git', NULL, 'hash', 'now', 'now'
+             )",
+            [&library_path.to_string_lossy().into_owned()],
+        )
+        .unwrap();
+        assert!(is_registered_library_path(&db, &library_path));
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 
 #[cfg(all(test, windows))]

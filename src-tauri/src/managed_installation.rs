@@ -788,6 +788,19 @@ pub fn verify_managed_content_unchanged(db: &Connection, path: &Path) -> Result<
     Ok(())
 }
 
+/// 进程级跳过缓存：单个 Skill 迁移失败（特殊文件、漂移）后不再每次
+/// 排他操作重付全树哈希与警告；重新安装会写入 v2 指纹使其退出候选，
+/// 手工清理特殊文件后重启应用也会重试。
+fn skipped_migration_cache() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static SKIPPED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    SKIPPED.get_or_init(Default::default)
+}
+
+fn migration_skip_key(stored_path: &str, old_hash: &str) -> String {
+    format!("{stored_path}\u{0}{old_hash}")
+}
+
 pub(crate) fn migrate_managed_installation_fingerprints(
     db: &Connection,
 ) -> Result<(usize, Vec<String>), String> {
@@ -815,7 +828,18 @@ pub(crate) fn migrate_managed_installation_fingerprints(
     let mut warnings = Vec::new();
     for (stored_path, old_hash) in candidates {
         let path = Path::new(&stored_path);
+        let skip_key = migration_skip_key(&stored_path, &old_hash);
+        if skipped_migration_cache()
+            .lock()
+            .map(|cache| cache.contains(&skip_key))
+            .unwrap_or(false)
+        {
+            continue;
+        }
         let mut skip = |reason: String| {
+            if let Ok(mut cache) = skipped_migration_cache().lock() {
+                cache.insert(skip_key.clone());
+            }
             warnings.push(format!(
                 "已跳过 {} 的内容指纹迁移（保留旧基线，不影响漂移检测；重新安装该 Skill 后可消除）: {}",
                 stored_path, reason
@@ -1471,6 +1495,9 @@ mod tests {
             );
             // 旧基线核验路径仍然有效，破坏性操作保护不受影响。
             verify_managed_content_unchanged(&db, &path).unwrap();
+            // 跳过结果进程内缓存：再次迁移不再重付哈希与警告。
+            let (_, repeat_warnings) = migrate_managed_installation_fingerprints(&db).unwrap();
+            assert!(repeat_warnings.is_empty());
         }
         std::fs::remove_dir_all(root).unwrap();
     }
