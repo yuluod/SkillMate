@@ -633,11 +633,46 @@ async fn preview_install_skill(
     let task_project_path = project_path.clone();
     let task_selected_skill_paths = selected_skill_paths.clone();
     let task_preferred_skill_id = preferred_skill_id.clone();
+    // git 源的克隆与内容检测不访问数据库，先在跨进程操作锁外完成；
+    // 慢网络下的预览不再长期持有操作锁阻塞其他窗口与 CLI。
+    // 市场来源只解析一次：解析结果同时决定预取并传入构建器复用，
+    // 避免 marketplace.json 在两次解析之间变化导致预取克隆与预览包不一致。
+    let resolved_marketplace = if source == "claude_marketplace" {
+        Some(claude_marketplace::resolve_plugin_source(&package))
+    } else {
+        None
+    };
+    let prepare_source = match &resolved_marketplace {
+        Some(Ok((_, resolved))) => resolved.clone(),
+        Some(Err(_)) | None => source.clone(),
+    };
+    let task_prepared_git = if is_git_install_source(&prepare_source) {
+        let prepare_package = match &resolved_marketplace {
+            Some(Ok((resolved_package, _))) => resolved_package.clone(),
+            _ => package.clone(),
+        };
+        let prepare_selected_paths = selected_skill_paths.clone();
+        let prepare_preferred_skill_id = preferred_skill_id.clone();
+        Some(
+            run_blocking_task(move || {
+                PreparedGitInstall::prepare_selected(
+                    &prepare_package,
+                    prepare_selected_paths.as_deref(),
+                    prepare_preferred_skill_id.as_deref(),
+                )
+            })
+            .await
+            .unwrap_or_else(Err),
+        )
+    } else {
+        None
+    };
+    let task_resolved_marketplace = resolved_marketplace;
     match run_blocking_task(move || {
         let mode = task_install_mode.unwrap_or_else(|| "copy".to_string());
         run_exclusive_operation(|db| {
             let policy = load_install_policy(db);
-            Ok(build_install_request_preview(
+            Ok(build_install_request_preview_with_prepared(
                 db,
                 InstallPreviewRequest {
                     package: &task_package,
@@ -649,6 +684,8 @@ async fn preview_install_skill(
                     preferred_skill_id: task_preferred_skill_id.as_deref(),
                 },
                 policy.as_ref().map_err(Clone::clone),
+                task_prepared_git,
+                task_resolved_marketplace,
             ))
         })
     })
@@ -689,6 +726,20 @@ fn build_install_request_preview(
     request: InstallPreviewRequest<'_>,
     policy: Result<&InstallPolicyConfig, String>,
 ) -> InstallPreview {
+    build_install_request_preview_with_prepared(db, request, policy, None, None)
+}
+
+/// `prepared_git` 允许调用方在操作锁外提前完成 git 克隆与检测，
+/// `resolved_marketplace` 允许调用方复用锁外的市场来源解析；
+/// 传 `None` 时在锁内自行准备（CLI 与测试沿用原路径）。
+#[allow(clippy::too_many_arguments)]
+fn build_install_request_preview_with_prepared(
+    db: &Connection,
+    request: InstallPreviewRequest<'_>,
+    policy: Result<&InstallPolicyConfig, String>,
+    prepared_git: Option<Result<PreparedGitInstall, String>>,
+    resolved_marketplace: Option<Result<(String, String), String>>,
+) -> InstallPreview {
     let InstallPreviewRequest {
         package,
         source,
@@ -698,14 +749,16 @@ fn build_install_request_preview(
         selected_skill_paths,
         preferred_skill_id,
     } = request;
-    let resolved_marketplace;
+    let resolved_package;
     let resolved_source;
     let (package, source) = if source == "claude_marketplace" {
-        match claude_marketplace::resolve_plugin_source(package) {
+        match resolved_marketplace
+            .unwrap_or_else(|| claude_marketplace::resolve_plugin_source(package))
+        {
             Ok((package_value, source_value)) => {
-                resolved_marketplace = package_value;
+                resolved_package = package_value;
                 resolved_source = source_value;
-                (resolved_marketplace.as_str(), resolved_source.as_str())
+                (resolved_package.as_str(), resolved_source.as_str())
             }
             Err(error) => {
                 return finalize_install_request_preview(
@@ -756,11 +809,15 @@ fn build_install_request_preview(
     };
     let preview = if is_git_install_source(source) {
         let skill_name = install_target_name(package, source).unwrap_or_default();
-        match PreparedGitInstall::prepare_selected(
-            package,
-            selected_skill_paths,
-            preferred_skill_id,
-        ) {
+        let prepared = match prepared_git {
+            Some(result) => result,
+            None => PreparedGitInstall::prepare_selected(
+                package,
+                selected_skill_paths,
+                preferred_skill_id,
+            ),
+        };
+        match prepared {
             Ok(prepared) => prepared.preview(&library_root, &skill_name),
             Err(error) => {
                 let mut preview = install_preview_error(
