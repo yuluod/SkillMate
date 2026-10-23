@@ -74,6 +74,10 @@ The library owns content, provenance, and update state. Agent directories only d
 | Cursor | `~/.cursor/skills` | — | `.cursor/skills` |
 | OpenCode | `~/.config/opencode/skills` | — | `.opencode/skills` |
 | GitHub Copilot | `~/.copilot/skills` | — | `.github/skills` |
+| Devin | `~/.config/devin/skills` | `~/.codeium/windsurf/skills`, `~/.codeium/windsurf-next/skills`, `~/.codeium/windsurf-insiders/skills`, `~/.agents/skills` | `.devin/skills` |
+| DeepSeek Harness | `~/.dsh/skills` | `~/.agents/skills` | `.dsh/skills` |
+| ZCode | `~/.zcode/skills` | `~/.agents/skills` | `.zcode/skills` |
+| Kimi Code | `~/.kimi-code/skills` | `~/.agents/skills` | `.kimi-code/skills` |
 
 SkillMate scans every discovery directory declared for a platform. Project inspection merges project-level and global content, applies project-first precedence, and shows inferred visible Skills and the number shadowed by a same-named project Skill. This is inferred from directory conventions; it does not verify what an Agent has loaded at runtime.
 

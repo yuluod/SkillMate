@@ -2,7 +2,7 @@
 
 这些图标仅用于帮助用户识别 SkillMate 支持的平台，不代表对应品牌对 SkillMate 的认可或背书。品牌名称和图形商标归各自权利人所有。
 
-应用运行时只读取仓库内的静态资源，不会从外部网站加载图标。为保证 36px 小尺寸下的清晰度，平台图标统一使用 1:1 SVG 画布和 `contain` 缩放。
+应用运行时只读取仓库内的静态资源，不会从外部网站加载图标。为保证 36px 小尺寸下的清晰度，平台图标统一使用 1:1 官方原图（优先 SVG 画布，品牌未提供 SVG 时使用官方 PNG 位图）和 `contain` 缩放。
 
 | 文件 | 平台 | 获取来源 | 获取日期 |
 |---|---|---|---|
@@ -13,5 +13,9 @@
 | `cursor.svg` | Cursor | [OpenClaw Provider Icons](https://github.com/openclaw/openclaw/tree/main/ui/public/provider-icons)；产品来源参考 [Cursor](https://cursor.com/) | 2026-08-30 |
 | `opencode.svg` | OpenCode | [OpenClaw Provider Icons](https://github.com/openclaw/openclaw/tree/main/ui/public/provider-icons)；产品来源参考 [OpenCode](https://github.com/anomalyco/opencode) | 2026-08-30 |
 | `copilot.svg` | GitHub Copilot | [GitHub Brand Toolkit](https://brand.github.com/foundations/logo) 中的 `Copilot_Icon_Black.svg` | 2026-08-30 |
+| `devin.svg` | Devin | [devin.ai](https://devin.ai/) 站点 `favicon.svg`；产品来源参考 [Devin 文档](https://docs.devin.ai/) | 2026-10-23 |
+| `deepseek.png` | DeepSeek Harness | [www.deepseek.com](https://www.deepseek.com/) 站点 `favicon.ico` 中的官方位图帧（仅做 ico 到 PNG 的格式转换） | 2026-10-23 |
+| `zcode.png` | ZCode | ZCode 桌面应用（`dev.zcode.app`）自带的 `Resources/icon.png` | 2026-10-23 |
+| `kimi.png` | Kimi Code | [www.kimi.com](https://www.kimi.com/) 站点声明的 `pwa-192.png` | 2026-10-23 |
 
 更新资源时应保留官方文件的图形、比例和颜色，不进行重绘、变形或添加效果，并重新确认对应品牌的最新使用规范。

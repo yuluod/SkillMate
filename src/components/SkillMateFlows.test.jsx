@@ -413,6 +413,10 @@ describe("外观偏好与登记册布局", () => {
       ["Cursor", "cursor"],
       ["OpenCode", "opencode"],
       ["GitHub Copilot", "copilot"],
+      ["Devin", "devin"],
+      ["DeepSeek Harness", "deepseek"],
+      ["ZCode", "zcode"],
+      ["Kimi Code", "kimi"],
     ];
     const { container } = render(
       <>{platforms.map(([name, brand]) => <AiAvatar key={brand} name={name} brand={brand} />)}</>,

@@ -254,6 +254,52 @@ pub fn assistant_definitions() -> &'static [AssistantDefinition] {
             project_install_path: Some(".github/skills"),
             recursive_discovery_depth: 2,
         },
+        AssistantDefinition {
+            name: "Devin",
+            ai_type: "skill",
+            icon: "devin",
+            global_install_path: "~/.config/devin/skills",
+            // Devin 原生目录优先，同时兼容 Windsurf 通道目录与 ~/.agents/skills。
+            global_discovery_paths: &[
+                "~/.config/devin/skills",
+                "~/.codeium/windsurf/skills",
+                "~/.codeium/windsurf-next/skills",
+                "~/.codeium/windsurf-insiders/skills",
+                "~/.agents/skills",
+            ],
+            project_install_path: Some(".devin/skills"),
+            recursive_discovery_depth: 2,
+        },
+        AssistantDefinition {
+            name: "DeepSeek Harness",
+            ai_type: "skill",
+            icon: "deepseek",
+            global_install_path: "~/.dsh/skills",
+            // DeepSeek Harness 原生目录优先，再回退共享的 ~/.agents/skills。
+            global_discovery_paths: &["~/.dsh/skills", "~/.agents/skills"],
+            project_install_path: Some(".dsh/skills"),
+            recursive_discovery_depth: 2,
+        },
+        AssistantDefinition {
+            name: "ZCode",
+            ai_type: "skill",
+            icon: "zcode",
+            global_install_path: "~/.zcode/skills",
+            global_discovery_paths: &["~/.zcode/skills", "~/.agents/skills"],
+            project_install_path: Some(".zcode/skills"),
+            recursive_discovery_depth: 2,
+        },
+        AssistantDefinition {
+            name: "Kimi Code",
+            ai_type: "skill",
+            icon: "kimi",
+            global_install_path: "~/.kimi-code/skills",
+            // 启用固定走默认根 ~/.kimi-code/skills（与其他平台一致，不解析
+            // KIMI_CODE_HOME 等环境变量），另读跨工具共享的 ~/.agents/skills。
+            global_discovery_paths: &["~/.kimi-code/skills", "~/.agents/skills"],
+            project_install_path: Some(".kimi-code/skills"),
+            recursive_discovery_depth: 2,
+        },
     ]
 }
 
@@ -679,6 +725,40 @@ mod tests {
                 global_install: ".copilot/skills",
                 global_discovery: &[".copilot/skills"],
                 project_install: ".github/skills",
+            },
+            ExpectedPaths {
+                name: "Devin",
+                icon: "devin",
+                global_install: ".config/devin/skills",
+                global_discovery: &[
+                    ".config/devin/skills",
+                    ".codeium/windsurf/skills",
+                    ".codeium/windsurf-next/skills",
+                    ".codeium/windsurf-insiders/skills",
+                    ".agents/skills",
+                ],
+                project_install: ".devin/skills",
+            },
+            ExpectedPaths {
+                name: "DeepSeek Harness",
+                icon: "deepseek",
+                global_install: ".dsh/skills",
+                global_discovery: &[".dsh/skills", ".agents/skills"],
+                project_install: ".dsh/skills",
+            },
+            ExpectedPaths {
+                name: "ZCode",
+                icon: "zcode",
+                global_install: ".zcode/skills",
+                global_discovery: &[".zcode/skills", ".agents/skills"],
+                project_install: ".zcode/skills",
+            },
+            ExpectedPaths {
+                name: "Kimi Code",
+                icon: "kimi",
+                global_install: ".kimi-code/skills",
+                global_discovery: &[".kimi-code/skills", ".agents/skills"],
+                project_install: ".kimi-code/skills",
             },
         ];
 

@@ -8,6 +8,10 @@ import geminiLogo from "../assets/brands/gemini.svg";
 import cursorLogo from "../assets/brands/cursor.svg";
 import opencodeLogo from "../assets/brands/opencode.svg";
 import copilotLogo from "../assets/brands/copilot.svg";
+import devinLogo from "../assets/brands/devin.svg";
+import deepseekLogo from "../assets/brands/deepseek.png";
+import zcodeLogo from "../assets/brands/zcode.png";
+import kimiLogo from "../assets/brands/kimi.png";
 import { useI18n } from "../lib/i18n.jsx";
 import { toUserErrorMessage } from "../lib/errorMessage.mjs";
 import { SurfaceHeader } from "./SurfaceHeader.jsx";
@@ -21,6 +25,10 @@ const AI_META = {
   cursor: { bg: "#111111", src: cursorLogo, mode: "contain" },
   opencode: { bg: "#ffffff", src: opencodeLogo, mode: "contain" },
   copilot: { bg: "#ffffff", src: copilotLogo, mode: "contain" },
+  devin: { bg: "#ffffff", src: devinLogo, mode: "contain" },
+  deepseek: { bg: "#ffffff", src: deepseekLogo, mode: "contain" },
+  zcode: { bg: "#18181b", src: zcodeLogo, mode: "contain" },
+  kimi: { bg: "#111111", src: kimiLogo, mode: "contain" },
 };
 
 export const AiAvatar = React.memo(function AiAvatar({ name, brand, size = 36 }) {

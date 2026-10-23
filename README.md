@@ -74,6 +74,10 @@ Git / 本地目录 / Claude Marketplace
 | Cursor | `~/.cursor/skills` | — | `.cursor/skills` |
 | OpenCode | `~/.config/opencode/skills` | — | `.opencode/skills` |
 | GitHub Copilot | `~/.copilot/skills` | — | `.github/skills` |
+| Devin | `~/.config/devin/skills` | `~/.codeium/windsurf/skills`、`~/.codeium/windsurf-next/skills`、`~/.codeium/windsurf-insiders/skills`、`~/.agents/skills` | `.devin/skills` |
+| DeepSeek Harness | `~/.dsh/skills` | `~/.agents/skills` | `.dsh/skills` |
+| ZCode | `~/.zcode/skills` | `~/.agents/skills` | `.zcode/skills` |
+| Kimi Code | `~/.kimi-code/skills` | `~/.agents/skills` | `.kimi-code/skills` |
 
 SkillMate 会同时扫描平台声明的发现目录。项目核验功能会把项目级与全局内容合并，并按项目优先原则展示推断可见的 Skills 和被同名内容覆盖的数量。这是基于目录约定的推断，不代表 Agent 运行时已加载这些内容。
 
