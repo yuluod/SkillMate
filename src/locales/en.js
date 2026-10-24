@@ -140,7 +140,7 @@ const en = {
   "dashboard.subtitle": "Review local Skill assets, deployments, and anything that needs attention.",
   "dashboard.statusSummary": "Local Skill status summary",
   "dashboard.skills": "Library Skills",
-  "dashboard.assistants": "Platforms found",
+  "dashboard.assistants": "Platforms",
   "dashboard.tags": "Tags",
   "dashboard.updates": "Updates",
   "dashboard.risks": "To review",

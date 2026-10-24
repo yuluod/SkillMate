@@ -819,6 +819,7 @@ test("Skill 卡片视图应当优先使用 manifest 标题和说明", () => {
       contentSourceLabel: "Git 仓库",
       managerLabel: "SkillMate",
       updateStrategyLabel: "由 SkillMate 更新",
+      provenanceNotes: ["Git 仓库", "SkillMate", "由 SkillMate 更新"],
       canCheck: true,
       canSync: true,
       hasUpdate: true,

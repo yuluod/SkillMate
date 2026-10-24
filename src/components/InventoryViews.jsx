@@ -122,11 +122,11 @@ const SkillCardRow = React.memo(function SkillCardRow({
             <span>{formatHomePath(skill.path)}</span>
             {skill.symlink_source && <span className="registry-symlink">→ {formatHomePath(skill.symlink_source)}</span>}
           </div>
-          <div className="registry-provenance" aria-label={t("provenance.summary")}>
-            <span>{t("provenance.sourceLabel")}：{card.contentSourceLabel}</span>
-            <span>{t("provenance.managerLabel")}：{card.managerLabel}</span>
-            <span>{t("provenance.updateLabel")}：{card.updateStrategyLabel}</span>
-          </div>
+          {card.provenanceNotes.length > 0 && (
+            <div className="registry-provenance" aria-label={t("provenance.summary")}>
+              {card.provenanceNotes.map((note) => <span key={note}>{note}</span>)}
+            </div>
+          )}
         </div>
       </div>
       <div className="registry-platform" title={card.availabilityLabel} role="cell">
@@ -135,9 +135,9 @@ const SkillCardRow = React.memo(function SkillCardRow({
       </div>
       <div className="registry-size" role="cell">{skill.size}</div>
       <div className="registry-actions" role="cell">
-        {card.canEnable && <button className="btn btn-primary btn-sm" onClick={() => onEnable(skill)} aria-label={t("skills.enable", { name: skill.name })}><Icon name="power" size={15} />{t("skills.enableAction")}</button>}
-        {card.canAdopt && <button className="btn btn-primary btn-sm" onClick={() => onAdopt({ skill, assistant: skill.ai, projectPath: "" })} aria-label={t("adoption.actionFor", { name: skill.name })}><Icon name="branch" size={15} />{t("adoption.action")}</button>}
-        <button className={`btn btn-sm ${needsReview ? "btn-review" : "btn-secondary"}`} onClick={() => onPreview(skill.path)} aria-label={t(needsReview ? "skills.reviewOne" : "skills.preview", { name: skill.name })}><Icon name={needsReview ? "shield" : "preview"} size={15} />{t(needsReview ? "skills.review" : "common.details")}</button>
+        {card.canEnable && <button className="btn btn-secondary btn-sm" onClick={() => onEnable(skill)} aria-label={t("skills.enable", { name: skill.name })}><Icon name="power" size={15} />{t("skills.enableAction")}</button>}
+        {card.canAdopt && <button className="btn btn-secondary btn-sm" onClick={() => onAdopt({ skill, assistant: skill.ai, projectPath: "" })} aria-label={t("adoption.actionFor", { name: skill.name })}><Icon name="branch" size={15} />{t("adoption.action")}</button>}
+        <button className="btn btn-secondary btn-sm" onClick={() => onPreview(skill.path)} aria-label={t(needsReview ? "skills.reviewOne" : "skills.preview", { name: skill.name })}><Icon name={needsReview ? "shield" : "preview"} size={15} />{t(needsReview ? "skills.review" : "common.details")}</button>
         <details className="registry-more">
           <summary className="btn btn-ghost btn-sm" role="button" aria-label={t("skills.moreActions", { name: skill.name })}><Icon name="more" size={17} /></summary>
           <div className="registry-more-actions">

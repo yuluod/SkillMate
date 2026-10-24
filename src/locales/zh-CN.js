@@ -141,7 +141,7 @@ const zhCN = {
   "dashboard.subtitle": "查看本机 Skill 资产、启用位置和需要处理的问题。",
   "dashboard.statusSummary": "本机 Skill 状态摘要",
   "dashboard.skills": "库中 Skills",
-  "dashboard.assistants": "已发现平台",
+  "dashboard.assistants": "平台",
   "dashboard.tags": "标签",
   "dashboard.updates": "可更新",
   "dashboard.risks": "需处理",

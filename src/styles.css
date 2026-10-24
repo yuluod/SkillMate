@@ -2601,8 +2601,6 @@ body {
   --cols: minmax(190px, 1fr) minmax(105px, 150px) minmax(88px, 110px) minmax(170px, 200px);
 }
 
-.registry:has(.registry-refs) .registry-title h3 { flex: 1 1 100%; }
-
 .registry-colhead {
   display: grid;
   grid-template-columns: var(--cols);
@@ -2696,6 +2694,11 @@ body {
   min-width: 0;
 }
 
+.registry-title,
+.registry-identity {
+  flex-wrap: nowrap;
+}
+
 .registry-title h3,
 .registry-identity h3 {
   font-size: 0.95rem;
@@ -2704,6 +2707,8 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .registry-signals { gap: 5px; }
@@ -2770,18 +2775,6 @@ body {
   justify-content: flex-end;
   gap: 4px;
   flex-wrap: wrap;
-}
-
-.btn-review {
-  color: var(--error);
-  border-color: color-mix(in srgb, var(--error) 40%, var(--border));
-  background: color-mix(in srgb, var(--error) 8%, var(--bg2));
-}
-
-.btn-review:hover {
-  color: var(--error);
-  border-color: color-mix(in srgb, var(--error) 62%, var(--border));
-  background: color-mix(in srgb, var(--error) 13%, var(--bg2));
 }
 
 .registry-more { flex: 0 0 auto; }
@@ -2851,7 +2844,6 @@ body {
   font-size: 0.66rem;
   font-weight: 750;
   letter-spacing: 0.04em;
-  text-transform: uppercase;
   line-height: 1.55;
   white-space: nowrap;
   flex-shrink: 0;
@@ -2862,7 +2854,7 @@ body {
 .stamp.error { color: var(--error); }
 .stamp.muted { color: var(--text3); }
 
-.stamp-source { color: var(--accent); }
+.stamp-source { color: var(--accent); text-transform: uppercase; }
 .stamp-source.npm, .stamp-source.pypi, .stamp-source.pip { color: var(--success); }
 .stamp-source.local, .stamp-source.unmanaged { color: var(--text3); }
 

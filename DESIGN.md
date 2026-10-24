@@ -72,7 +72,7 @@ Updates 页的列布局略有不同，用「当前 → 最新」版本列和状�
 每条 Skill 登记行包含：
 
 - **身份行**：名称（`h3`，截断省略）与来源签章
-- **审查行**：结构结论、共享状态、本地改动和静态风险；阻断性风险使用 error 色，并由右侧文字动作进入审查
+- **审查行**：结构结论、共享状态、本地改动和静态风险；阻断性风险使用 error 色，审查入口为常驻中性按钮，不随风险变红
 - **标签行**：普通组织标签独立于审查状态，最多显示 2 个，超出显示 `+N`
 - **来源签章**（`.stamp.stamp-source`）：git/github 为品牌蓝，npm/pip 为绿色，local/unmanaged 为灰色
 - **结构状态签章**（`.stamp` + tone）：complete/success、nonstandard/warn、invalid/error
@@ -81,9 +81,10 @@ Updates 页的列布局略有不同，用「当前 → 最新」版本列和状�
 - **风险签章**（`.stamp.error`）：安全警告数量
 - **描述**（`.registry-desc`，可选，截断省略）
 - **路径**（`.registry-path`，等宽字体，截断省略，symlink 显示箭头指向源）
+- **来源说明**（`.registry-provenance`，可选）：仅显示非默认值——Git/GitHub/外部 CLI 来源、SkillMate 托管或外部安装器、非手工更新策略；默认的本地未托管组合不占行高，完整带标签的来源信息在详情预览中查看
 - **平台**（`.registry-platform`）：AI 助手头像 + 可用性列表
 - **体积**（`.registry-size`，等宽 tabular-nums）
-- **操作**（`.registry-actions`）：常驻“查看/审查”文字动作；标签、目录和移除收进原生展开区，减少图标猜测
+- **操作**（`.registry-actions`）：启用/接管/审查统一 secondary，页面主操作（添加 Skill）保持唯一 primary；标签、目录和移除收进原生展开区，减少图标猜测
 
 登记册支持选择当前筛选结果，并复用标签编辑器批量添加标签；批量添加不移除条目已有标签。
 

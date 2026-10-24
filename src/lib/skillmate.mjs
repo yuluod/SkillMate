@@ -527,6 +527,16 @@ export function buildSkillCardView(skill, t) {
   const availableIn = Array.isArray(skill?.availableIn) && skill.availableIn.length > 0
     ? skill.availableIn
     : (skill?.ai ? [{ name: skill.ai, icon: skill.aiIcon || "" }] : []);
+  const provenanceNotes = [];
+  if (["github", "git", "external_cli"].includes(inferredSource)) {
+    provenanceNotes.push(localized(t, `provenance.source.${inferredSource}`, CONTENT_SOURCE_LABELS[inferredSource] || skill?.source || "未知来源"));
+  }
+  if (inferredManager !== "external") {
+    provenanceNotes.push(localized(t, `provenance.manager.${inferredManager}`, MANAGER_LABELS[inferredManager] || "外部或手工管理"));
+  }
+  if (inferredUpdate !== "manual") {
+    provenanceNotes.push(localized(t, `provenance.update.${inferredUpdate}`, UPDATE_STRATEGY_LABELS[inferredUpdate] || "手工维护"));
+  }
   return {
     title: skill?.manifest_title || skill?.name || "",
     description: buildSkillDescription(skill),
@@ -542,6 +552,7 @@ export function buildSkillCardView(skill, t) {
     contentSourceLabel: localized(t, `provenance.source.${inferredSource}`, CONTENT_SOURCE_LABELS[inferredSource] || skill?.source || "未知来源"),
     managerLabel: localized(t, `provenance.manager.${inferredManager}`, MANAGER_LABELS[inferredManager] || "外部或手工管理"),
     updateStrategyLabel: localized(t, `provenance.update.${inferredUpdate}`, UPDATE_STRATEGY_LABELS[inferredUpdate] || "手工维护"),
+    provenanceNotes,
     canCheck,
     canSync,
     hasUpdate: Boolean(skill?.has_update),
