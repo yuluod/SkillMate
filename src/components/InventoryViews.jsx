@@ -177,6 +177,7 @@ export function SkillsView({
   onToggleSelection = () => {},
   onToggleVisibleSelection = () => {},
   onClearSelection = () => {},
+  toolbar,
 }) {
   const { t } = useI18n();
   const selectedSkills = React.useMemo(
@@ -203,6 +204,7 @@ export function SkillsView({
           </>
         )}
       />
+      {toolbar}
       {discovery}
       {selectedSkills.length > 0 && (
         <div className="bulk-toolbar" role="region" aria-label={t("skills.bulkActions")}>
@@ -276,7 +278,7 @@ export function SkillsView({
   );
 }
 
-export function AssistantsView({ assistants, installedCount, onManageSkills, onAdopt, onMaterialize, projectRevision = 0, workspace }) {
+export function AssistantsView({ assistants, installedCount, onManageSkills, onAdopt, onMaterialize, projectRevision = 0, workspace, toolbar }) {
   const { t } = useI18n();
   const [expandedAssistant, setExpandedAssistant] = React.useState(null);
   return (
@@ -287,6 +289,7 @@ export function AssistantsView({ assistants, installedCount, onManageSkills, onA
         meta={t("assistants.configuredCount", { installed: installedCount, total: assistants.length })}
         actions={onManageSkills && <button className="btn btn-primary btn-sm" onClick={onManageSkills}><Icon name="skills" size={14} />{t("assistants.manage")}</button>}
       />
+      {toolbar}
       <ProjectInspectionPanel onAdopt={onAdopt} onMaterialize={onMaterialize} revision={projectRevision} workspace={workspace} />
       <div className="registry assistant-registry" role="table" aria-label={t("nav.assistants")}>
         <div className="registry-colhead" role="row">
@@ -579,7 +582,7 @@ const UpdateRow = React.memo(function UpdateRow({ skill, card, getSyncInfo, t, l
   );
 });
 
-export function UpdatesView({ skills, orderedSkills, stats, updateState, getSyncInfo, checkAll, checkOne, updateOne }) {
+export function UpdatesView({ skills, orderedSkills, stats, updateState, getSyncInfo, checkAll, checkOne, updateOne, toolbar }) {
   const { t, language } = useI18n();
   const skillCards = React.useMemo(
     () => orderedSkills.map((skill) => buildSkillCardView(skill, t)),
@@ -598,6 +601,7 @@ export function UpdatesView({ skills, orderedSkills, stats, updateState, getSync
           </>
         )}
       />
+      {toolbar}
       <div className="registry" role="table" aria-label={t("nav.updates")}>
         <div className="registry-colhead" role="row">
           <span className="registry-col-entry" role="columnheader">{t("registry.entry")}</span>

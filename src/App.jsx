@@ -66,14 +66,6 @@ const SETTINGS_TAB_LABELS = {
   skillset: "settings.tabs.skillset",
 };
 
-const VIEW_CONTEXT_LABELS = {
-  dashboard: "header.context.dashboard",
-  skills: "header.context.skills",
-  ai: "header.context.assistants",
-  scenarios: "header.context.scenarios",
-  updates: "header.context.updates",
-};
-
 
 
 function getParamOverride(key, allowed, search) {
@@ -856,11 +848,6 @@ function App() {
             <Logo />
             <h1 className="app-name">SkillMate</h1>
           </div>
-          <div className="header-context" aria-label={t(VIEWS[view].titleKey)}>
-            <span>{t(VIEWS[view].titleKey)}</span>
-            <span className="header-context-separator">/</span>
-            <strong>{t(view === "settings" ? SETTINGS_TAB_LABELS[settingsTab] : VIEW_CONTEXT_LABELS[view])}</strong>
-          </div>
         </div>
 
         <div className="header-center">
@@ -903,7 +890,6 @@ function App() {
         </nav>
 
         <main className={`content ${view === "settings" ? "content-settings" : ""}`} ref={contentRef}>
-          {["dashboard", "ai", "scenarios"].includes(view) && <ProjectWorkspaceBar workspace={projectWorkspace} onOpen={() => setView("ai")} />}
           {loadError && (
             <div className="load-error-banner" role="alert">
               <div className="load-error-copy">
@@ -917,32 +903,16 @@ function App() {
               <button className="btn btn-secondary btn-sm" onClick={() => loadData({ resetUpdates: false })}>{t("common.retry")}</button>
             </div>
           )}
-          {activeScenario && (view === "skills" || view === "updates") && (
-            <div className="settings-card" style={{ marginBottom: 16 }}>
-              <div className="settings-body" style={{ padding: 14 }}>
-                <div className="card-actions" style={{ justifyContent: "space-between" }}>
-                  <div>
-                    <strong>{t("scenarioFilter.title", { name: activeScenario.name })}</strong>
-                    <div className="git-meta">{t("scenarioFilter.count", { count: activeScenario.skill_ids.length })}</div>
-                  </div>
-                  <button className="btn btn-secondary btn-sm" onClick={() => scenarioFlow.setActiveId("")}>
-                    <Icon name="x" size={14} />{t("scenarioFilter.clear")}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-          {(view === "skills" || (view === "updates" && tags.length > 0)) && (
-            <TagFilterBar
-              tags={tags}
-              selectedCount={selectedTags.length}
-              onToggle={toggleTag}
-              onClear={() => setTags(current => current.map(tag => ({ ...tag, selected: false })))}
-              onManage={view === "skills" ? () => setTagManagerOpen(true) : undefined}
-            />
-          )}
           {init ? <Skeleton /> : view === "dashboard" && (
-            <DashboardView stats={dashboardStats} tagCount={tags.length} driftGroups={driftGroups} onNavigate={setView} onInstall={startAddSkill} onOpenDrift={setDriftGroup} />
+            <DashboardView
+              stats={dashboardStats}
+              tagCount={tags.length}
+              driftGroups={driftGroups}
+              onNavigate={setView}
+              onInstall={startAddSkill}
+              onOpenDrift={setDriftGroup}
+              toolbar={<ProjectWorkspaceBar workspace={projectWorkspace} onOpen={() => setView("ai")} />}
+            />
           )}
 
           {!init && view === "skills" && (
@@ -956,6 +926,30 @@ function App() {
               onToggleDiscovery={() => setDiscoveryOpen((open) => !open)}
               discoveryOpen={discoveryOpen}
               discovery={discoveryOpen ? <MarketDiscovery onInstall={installMarketSkill} installedSkills={allSkills} /> : null}
+              toolbar={<>
+                {activeScenario && (
+                  <div className="settings-card scenario-filter-card">
+                    <div className="settings-body">
+                      <div className="card-actions">
+                        <div>
+                          <strong>{t("scenarioFilter.title", { name: activeScenario.name })}</strong>
+                          <div className="git-meta">{t("scenarioFilter.count", { count: activeScenario.skill_ids.length })}</div>
+                        </div>
+                        <button className="btn btn-secondary btn-sm" onClick={() => scenarioFlow.setActiveId("")}>
+                          <Icon name="x" size={14} />{t("scenarioFilter.clear")}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <TagFilterBar
+                  tags={tags}
+                  selectedCount={selectedTags.length}
+                  onToggle={toggleTag}
+                  onClear={() => setTags(current => current.map(tag => ({ ...tag, selected: false })))}
+                  onManage={() => setTagManagerOpen(true)}
+                />
+              </>}
               onClearFilters={() => {
                 clearSearch();
                 setTags(current => current.map(tag => ({ ...tag, selected: false })));
@@ -976,11 +970,26 @@ function App() {
           )}
 
           {view === "ai" && (
-            <AssistantsView assistants={data.assistants} installedCount={statAI} onManageSkills={() => setView("skills")} onAdopt={setAdoptionCandidate} onMaterialize={setAdoptionCandidate} projectRevision={projectInspectionRevision} workspace={projectWorkspace} />
+            <AssistantsView
+              assistants={data.assistants}
+              installedCount={statAI}
+              onManageSkills={() => setView("skills")}
+              onAdopt={setAdoptionCandidate}
+              onMaterialize={setAdoptionCandidate}
+              projectRevision={projectInspectionRevision}
+              workspace={projectWorkspace}
+              toolbar={<ProjectWorkspaceBar workspace={projectWorkspace} onOpen={() => setView("ai")} />}
+            />
           )}
 
           {view === "scenarios" && (
-            <ScenarioView scenarios={data.scenarios} skills={scenarioSkills} flow={scenarioFlow} onEnable={enableLibrarySkill} projectPath={projectWorkspace.path} />
+            <ScenarioView
+              scenarios={data.scenarios}
+              skills={scenarioSkills}
+              flow={scenarioFlow}
+              onEnable={enableLibrarySkill}
+              toolbar={<ProjectWorkspaceBar workspace={projectWorkspace} onOpen={() => setView("ai")} />}
+            />
           )}
 
           {view === "updates" && (
@@ -993,6 +1002,14 @@ function App() {
               checkAll={checkAllUpdates}
               checkOne={checkUpdate}
               updateOne={setUpdatePreviewPath}
+              toolbar={tags.length > 0 && (
+                <TagFilterBar
+                  tags={tags}
+                  selectedCount={selectedTags.length}
+                  onToggle={toggleTag}
+                  onClear={() => setTags(current => current.map(tag => ({ ...tag, selected: false })))}
+                />
+              )}
             />
           )}
 

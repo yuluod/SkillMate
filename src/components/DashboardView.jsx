@@ -105,7 +105,7 @@ export function MarketDiscovery({ onInstall, installedSkills = [] }) {
   );
 }
 
-export default function DashboardView({ stats, tagCount, driftGroups, onNavigate, onInstall, onOpenDrift }) {
+export default function DashboardView({ stats, tagCount, driftGroups, onNavigate, onInstall, onOpenDrift, toolbar }) {
   const { t } = useI18n();
 
   const attentionCount = stats.updates + stats.structureIssues + stats.securityRisks
@@ -120,6 +120,7 @@ export default function DashboardView({ stats, tagCount, driftGroups, onNavigate
           <button className="btn btn-primary btn-sm" type="button" onClick={onInstall}><Icon name="plus" size={14} />{t("common.install")}</button>
         )}
       />
+      {toolbar}
 
       <div className="dashboard-status" aria-label={t("dashboard.statusSummary")}>
         <span className="stamp"><span className="stamp-num">{stats.skills}</span>{t("dashboard.skills")}</span>

@@ -40,7 +40,7 @@
 /* —— 关务台账 · 日间纸面(浅色) —— */
 [data-theme="light"] {
   --bg: #efece2;
-  --bg2: #f9f7ef;
+  --bg2: #faf8f0;
   --bg3: #e7e3d4;
   --bg4: #d9d3bf;
   --accent: #2450c4;
@@ -49,17 +49,17 @@
   --text2: #4b5065;
   --text3: #5d5f72;
   --text-on-accent: #ffffff;
-  --border: #cfc9b6;
+  --border: #c6bfa9;
   --rule: #aaa287;
   --success: #25714c;
   --warn: #8f5a10;
   --error: #b23327;
   --shadow: 0 2px 8px rgba(60, 54, 38, 0.14);
-  --sidebar: #e9e5d7;
+  --sidebar: #e2dcca;
   --toolbar: rgba(249, 247, 239, 0.92);
   --surface-hover: #f1eee1;
   --focus: rgba(36, 80, 196, 0.2);
-  --control: #f4f1e6;
+  --control: #f6f3e8;
   --control-strong: #e8e4d4;
 }
 
@@ -384,26 +384,6 @@ body {
   align-items: center;
   gap: 11px;
   flex-shrink: 0;
-}
-
-.header-context {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding-left: 22px;
-  border-left: var(--border-w) solid var(--border);
-  color: var(--text2);
-  font-size: 0.84rem;
-  white-space: nowrap;
-}
-
-.header-context strong {
-  color: var(--text);
-  font-weight: 700;
-}
-
-.header-context-separator {
-  color: var(--text3);
 }
 
 .logo {
@@ -1617,13 +1597,17 @@ body {
 .profile-description { margin-top: 6px; margin-bottom: 0; }
 
 .settings-card {
-  width: min(100%, 860px);
+  width: min(100%, 680px);
   background: transparent;
   border: 0;
   border-radius: 0;
   margin: 0;
   overflow: visible;
 }
+
+.scenario-filter-card { margin-bottom: 16px; }
+.scenario-filter-card .settings-body { padding: 14px; }
+.scenario-filter-card .card-actions { justify-content: space-between; }
 
 .settings-surface-header { margin-bottom: 0; }
 
@@ -3106,8 +3090,9 @@ body {
   [data-skin="ledger"] .nav-item.active::before { content: ""; }
 }
 
-.workspace-bar { padding: 16px; margin-bottom: 20px; border: var(--border-w) solid var(--border); border-radius: var(--radius); background: var(--bg); }
+.workspace-bar { padding: 0 0 14px; margin: -6px 0 0; border: 0; border-radius: 0; background: none; }
 .workspace-toolbar, .workspace-toolbar form, .workspace-project { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.workspace-toolbar strong { color: var(--text3); font-size: 0.78rem; font-weight: 680; }
 .workspace-toolbar form { flex: 1; }
 .workspace-toolbar input { flex: 1; min-width: 160px; }
 .workspace-bar summary { cursor: pointer; margin-top: 8px; }
