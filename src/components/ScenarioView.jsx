@@ -18,7 +18,7 @@ function skillPlatforms(skill, unknownLabel) {
   return [{ name: skill.ai || unknownLabel, icon: skill.aiIcon || "" }];
 }
 
-export default function ScenarioView({ scenarios, skills, flow, onEnable, projectPath = "" }) {
+export default function ScenarioView({ scenarios, skills, flow, onEnable, toolbar }) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
   const filteredSkills = useMemo(() => {
@@ -55,7 +55,7 @@ export default function ScenarioView({ scenarios, skills, flow, onEnable, projec
   return (
     <div className="scenario-view view-shell">
       <SurfaceHeader title={t("nav.scenarios")} description={t("scenarios.subtitle")} meta={scenarios.length} />
-      <p className="empty-hint">{t("scenarios.enableHint")}{projectPath && ` ${t("workspace.current", { path: projectPath })}`}</p>
+      {toolbar}
       <section className="scenario-editor-card">
         <header className="scenario-editor-head">
           <span className="scenario-editor-icon"><Icon name="scenarios" size={20} /></span>
@@ -131,7 +131,7 @@ export default function ScenarioView({ scenarios, skills, flow, onEnable, projec
         </footer>
       </section>
 
-      <SurfaceSectionHeader title={t("scenarios.saved")} meta={scenarios.length} />
+      <SurfaceSectionHeader title={t("scenarios.saved")} meta={scenarios.length} description={t("scenarios.enableHint")} />
       {scenarios.length === 0 ? (
         <div className="scenario-empty"><Icon name="scenarios" size={22} /><div><strong>{t("scenarios.empty")}</strong><p>{t("scenarios.emptyHint")}</p></div></div>
       ) : (
@@ -163,17 +163,22 @@ export default function ScenarioView({ scenarios, skills, flow, onEnable, projec
               </div>
               <div className="card-actions">
                 <button className="btn btn-secondary btn-sm" onClick={() => flow.setExpandedId(flow.expandedId === scenario.id ? "" : scenario.id)}><Icon name="preview" size={14} />{t(flow.expandedId === scenario.id ? "scenarios.collapse" : "scenarios.expand")}</button>
-                <button className="btn btn-secondary btn-sm" onClick={() => flow.apply(scenario)}><Icon name="search" size={14} />{t("scenarios.filter")}</button>
                 {onEnable && <button className="btn btn-primary btn-sm"
                   disabled={!canEnable}
                   title={t("scenarios.enableRequirement")}
                   onClick={() => onEnable(details.map(item => item.skill))}>
                   <Icon name="play" size={14} />{t("scenarios.enable")}
                 </button>}
-                <button className="btn btn-secondary btn-sm" onClick={() => flow.loadIntoEditor(scenario)}><Icon name="edit" size={14} />{t("scenarios.load")}</button>
-                <button className="btn btn-secondary btn-sm" onClick={() => flow.copyPaths(scenario.skill_ids)}><Icon name="copy" size={14} />{t("scenarios.copyPaths")}</button>
-                <button className="btn btn-ghost btn-sm danger" onClick={() => flow.remove(scenario.id)} title={t("scenarios.remove", { name: scenario.name })} aria-label={t("scenarios.remove", { name: scenario.name })}><Icon name="trash" size={16} /></button>
               </div>
+              <details className="registry-more scenario-more">
+                <summary className="btn btn-ghost btn-sm" role="button" aria-label={t("skills.moreActions", { name: scenario.name })}><Icon name="more" size={17} /></summary>
+                <div className="registry-more-actions">
+                  <button className="btn btn-ghost btn-sm" onClick={() => flow.apply(scenario)}><Icon name="search" size={14} />{t("scenarios.filter")}</button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => flow.loadIntoEditor(scenario)}><Icon name="edit" size={14} />{t("scenarios.load")}</button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => flow.copyPaths(scenario.skill_ids)}><Icon name="copy" size={14} />{t("scenarios.copyPaths")}</button>
+                  <button className="btn btn-ghost btn-sm danger" onClick={() => flow.remove(scenario.id)} title={t("scenarios.remove", { name: scenario.name })} aria-label={t("scenarios.remove", { name: scenario.name })}><Icon name="trash" size={16} /></button>
+                </div>
+              </details>
             </div>
             );
           })}
