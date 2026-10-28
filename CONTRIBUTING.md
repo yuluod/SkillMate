@@ -29,6 +29,18 @@ Git 测试会创建多个本地仓库；资源紧张时可用 `-- --test-threads
 `src-tauri/gen/schemas/` 是 Tauri 自动生成的编辑器 schema，不纳入版本控制。
 首次运行 `pnpm dev` 或执行 Rust 构建后会生成，无需手工编辑。
 
+## 构建产物清理
+
+Rust 构建产物会持续累积。安装 `cargo-sweep` 后执行：
+
+```bash
+cargo install cargo-sweep
+pnpm rust:sweep
+```
+
+该命令删除 `src-tauri/target` 中超过 14 天未使用的产物。它不处理
+`target/debug/incremental`，该目录的旧增量会话需另行删除；删除后下次构建会重新生成缓存。
+
 ## 本地验证
 
 ```bash
