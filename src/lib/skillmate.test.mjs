@@ -244,13 +244,13 @@ test("桌面端弹窗应当受视口高度约束并可纵向滚动", () => {
   assert.match(modalRule, /overscroll-behavior:\s*contain/);
 });
 
-test("经典主题的页眉与登记册只保留一处分隔线", () => {
+test("经典主题的页眉与技能行只保留一处分隔线", () => {
   const styles = readStylesSource();
   const surfaceHeaderRule = styles.match(/\[data-skin="ledger"\] \.surface-header\s*\{([^}]*)\}/s)?.[1] ?? "";
-  const registryRule = styles.match(/\[data-skin="ledger"\] \.registry\s*\{([^}]*)\}/s)?.[1] ?? "";
+  const rowRule = styles.match(/\[data-skin="ledger"\] \.skill-row\s*\{([^}]*)\}/s)?.[1] ?? "";
 
   assert.match(surfaceHeaderRule, /border-bottom:\s*3px double var\(--rule\)/);
-  assert.match(registryRule, /border-top:\s*0/);
+  assert.match(rowRule, /border-bottom-color:\s*var\(--rule\)/);
 });
 
 test("状态提示在弹窗遮罩上保持不透明背景", () => {
@@ -270,16 +270,14 @@ test("独立输入框复用统一控件尺寸", () => {
   assert.match(controlRule, /\.project-inspector-input input/);
 });
 
-test("维护页统计和登记条目保持可读尺寸", () => {
+test("可更新筛选片与引用列保持可读尺寸", () => {
   const styles = readStylesSource();
-  const toolbarStamp = styles.match(/\.update-toolbar \.stamp\s*\{([^}]*)\}/s)?.[1] ?? "";
-  const updateRegistry = styles.match(/\.registry:has\(\.registry-refs\)\s*\{([^}]*)\}/s)?.[1] ?? "";
-  const probe = styles.match(/\.registry-probe\s*\{([^}]*)\}/s)?.[1] ?? "";
+  const chip = styles.match(/\.filter-chip\s*\{([^}]*)\}/s)?.[1] ?? "";
+  const refs = styles.match(/\.skill-row \.registry-refs\s*\{([^}]*)\}/s)?.[1] ?? "";
 
-  assert.match(toolbarStamp, /min-height:\s*30px/);
-  assert.match(toolbarStamp, /font-size:\s*0\.72rem/);
-  assert.match(updateRegistry, /minmax\(190px,\s*1fr\)/);
-  assert.match(probe, /flex-wrap:\s*wrap/);
+  assert.match(chip, /height:\s*27px/);
+  assert.match(chip, /font-size:\s*0\.76rem/);
+  assert.match(refs, /flex-shrink:\s*0/);
 });
 
 test("安装来源保留 Git、本地目录与 Claude Marketplace", () => {
@@ -816,6 +814,7 @@ test("Skill 卡片视图应当优先使用 manifest 标题和说明", () => {
       securityWarningSummary: "",
       hasManagedDrift: false,
       sourceLabel: "Git",
+      sourceKind: "git",
       contentSourceLabel: "Git 仓库",
       managerLabel: "SkillMate",
       updateStrategyLabel: "由 SkillMate 更新",
@@ -823,6 +822,7 @@ test("Skill 卡片视图应当优先使用 manifest 标题和说明", () => {
       canCheck: true,
       canSync: true,
       hasUpdate: true,
+      updateBusy: false,
       updateSummary: "尚未检查来源",
       canEnable: false,
       canDelete: true,

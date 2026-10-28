@@ -92,11 +92,11 @@ function getSavedThemeMode() {
 }
 
 function getSavedSkin() {
-  if (typeof window === "undefined") return "ledger";
+  if (typeof window === "undefined") return "standard";
   const override = getParamOverride("skin", SKINS);
   if (override) return override;
   const saved = window.localStorage.getItem(SKIN_STORAGE_KEY);
-  return SKINS.includes(saved) ? saved : "ledger";
+  return SKINS.includes(saved) ? saved : "standard";
 }
 
 function getSystemTheme() {
@@ -142,38 +142,6 @@ const Logo = React.memo(function Logo() {
   return <img className="logo" src={appIcon} alt="" />;
 });
 
-function TagFilterBar({ tags, selectedCount, onToggle, onClear, onManage }) {
-  const { t } = useI18n();
-
-  return (
-    <div className="content-tag-filter" aria-label={t("sidebar.tags")}>
-      <div className="content-tag-filter-label">
-        <Icon name="tag" size={15} />
-        <span>{t("sidebar.tags")}</span>
-      </div>
-      <div className="tag-list">
-        {tags.map(tag => (
-          <button
-            key={tag.id}
-            className={`tag-chip ${tag.selected ? "active" : ""}`}
-            style={{ "--c": tag.color }}
-            aria-pressed={tag.selected}
-            onClick={() => onToggle(tag.id)}
-          >
-            <span className="tag-dot" />{tag.name}
-          </button>
-        ))}
-        {tags.length === 0 && <span className="content-tag-filter-empty">{t("tags.empty")}</span>}
-      </div>
-      <div className="content-tag-filter-actions">
-        {selectedCount > 0 && <button className="content-tag-filter-clear" onClick={onClear}>{t("common.clear")}</button>}
-        {onManage && <button className="btn btn-ghost btn-sm" onClick={onManage}><Icon name="tag" size={14} />{t("tags.manage")}</button>}
-      </div>
-    </div>
-  );
-}
-
-
 function getDir(path) {
   const i = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   return i >= 0 ? path.slice(0, i) : path;
@@ -197,6 +165,12 @@ function App() {
   const { t, language } = useI18n();
   const [data, setData] = useState(EMPTY_DATA);
   const [view, setView] = useState(getInitialView);
+  const [skillFilterRequest, setSkillFilterRequest] = useState({ filter: "all", nonce: 0 });
+
+  function openSkills(filter = "all") {
+    setSkillFilterRequest((current) => ({ filter, nonce: current.nonce + 1 }));
+    setView("skills");
+  }
   const [tags, setTags] = useState([]);
   const [confirmState, setConfirmState] = useState({ open: false, title: "", message: "", confirmLabel: "", tone: "danger", onConfirm: null });
   const [sort, setSort] = useState("name");
@@ -276,7 +250,9 @@ function App() {
     const handler = (e) => {
       if (e.altKey && e.key >= "1" && e.key <= "6") {
         e.preventDefault();
-        setView(NAV_VIEW_KEYS[parseInt(e.key) - 1]);
+        const next = NAV_VIEW_KEYS[parseInt(e.key) - 1];
+        if (next === "skills") setSkillFilterRequest((current) => ({ filter: "all", nonce: current.nonce + 1 }));
+        setView(next);
       }
     };
     window.addEventListener("keydown", handler);
@@ -559,12 +535,13 @@ function App() {
       : [...current, path]);
   }, []);
 
-  function toggleVisibleSkillSelection() {
-    const visiblePaths = skills.map((skill) => skill.path);
-    const allSelected = visiblePaths.length > 0 && visiblePaths.every((path) => selectedSkillPaths.includes(path));
-    setSelectedSkillPaths((current) => allSelected
-      ? current.filter((path) => !visiblePaths.includes(path))
-      : [...new Set([...current, ...visiblePaths])]);
+  function toggleVisibleSkillSelection(visiblePaths) {
+    setSelectedSkillPaths((current) => {
+      const allSelected = visiblePaths.length > 0 && visiblePaths.every((path) => current.includes(path));
+      return allSelected
+        ? current.filter((path) => !visiblePaths.includes(path))
+        : [...new Set([...current, ...visiblePaths])];
+    });
   }
 
 
@@ -773,19 +750,6 @@ function App() {
     return a.name.localeCompare(b.name, "zh-CN");
   }), [getSyncInfo, updatable]);
 
-  const updateStats = useMemo(() => {
-    let behind = 0;
-    let syncable = 0;
-    let failed = 0;
-    orderedUpdatable.forEach((skill) => {
-      const info = getSyncInfo(skill);
-      if (info.syncState === "behind") behind += 1;
-      if (info.canSync) syncable += 1;
-      if (info.syncState === "failed") failed += 1;
-    });
-    return { behind, syncable, failed };
-  }, [getSyncInfo, orderedUpdatable]);
-
   const appUpdateView = useMemo(
     () => buildAppUpdateView(appUpdateState, language),
     [appUpdateState, language]
@@ -848,6 +812,7 @@ function App() {
             <Logo />
             <h1 className="app-name">SkillMate</h1>
           </div>
+          <ProjectWorkspaceBar workspace={projectWorkspace} onOpen={() => setView("ai")} />
         </div>
 
         <div className="header-center">
@@ -872,12 +837,12 @@ function App() {
       </header>
 
       <div className="layout">
-        <nav className="sidebar">
+        <nav className="sidebar" aria-label={t("nav.primary")}>
           <div className="nav-items">
             {NAV_VIEW_KEYS.map((k) => {
               const v = VIEWS[k];
               return (
-                <button key={k} className={`nav-item ${view === k ? "active" : ""}`} onClick={() => setView(k)}>
+                <button key={k} aria-current={view === k ? "page" : undefined} className={`nav-item ${k === "settings" ? "nav-settings" : ""} ${view === k ? "active" : ""}`} onClick={() => (k === "skills" ? openSkills("all") : setView(k))}>
                   <Icon name={v.icon} size={18} />
                   <span>{t(v.titleKey)}</span>
                   {k === "skills" && statSkills > 0 && <span className="badge">{statSkills}</span>}
@@ -908,10 +873,9 @@ function App() {
               stats={dashboardStats}
               tagCount={tags.length}
               driftGroups={driftGroups}
-              onNavigate={setView}
+              onNavigate={(target, filter = "all") => (target === "skills" ? openSkills(filter) : setView(target))}
               onInstall={startAddSkill}
               onOpenDrift={setDriftGroup}
-              toolbar={<ProjectWorkspaceBar workspace={projectWorkspace} onOpen={() => setView("ai")} />}
             />
           )}
 
@@ -926,30 +890,15 @@ function App() {
               onToggleDiscovery={() => setDiscoveryOpen((open) => !open)}
               discoveryOpen={discoveryOpen}
               discovery={discoveryOpen ? <MarketDiscovery onInstall={installMarketSkill} installedSkills={allSkills} /> : null}
-              toolbar={<>
-                {activeScenario && (
-                  <div className="settings-card scenario-filter-card">
-                    <div className="settings-body">
-                      <div className="card-actions">
-                        <div>
-                          <strong>{t("scenarioFilter.title", { name: activeScenario.name })}</strong>
-                          <div className="git-meta">{t("scenarioFilter.count", { count: activeScenario.skill_ids.length })}</div>
-                        </div>
-                        <button className="btn btn-secondary btn-sm" onClick={() => scenarioFlow.setActiveId("")}>
-                          <Icon name="x" size={14} />{t("scenarioFilter.clear")}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-                <TagFilterBar
-                  tags={tags}
-                  selectedCount={selectedTags.length}
-                  onToggle={toggleTag}
-                  onClear={() => setTags(current => current.map(tag => ({ ...tag, selected: false })))}
-                  onManage={() => setTagManagerOpen(true)}
-                />
-              </>}
+              filterRequest={skillFilterRequest}
+              activeScenario={activeScenario}
+              onClearScenario={() => scenarioFlow.setActiveId("")}
+              onUpdate={setUpdatePreviewPath}
+              getSyncInfo={getSyncInfo}
+              selectedTagIds={tags.filter(tag => tag.selected).map(tag => tag.id)}
+              onToggleTag={toggleTag}
+              onClearTags={() => setTags(current => current.map(tag => ({ ...tag, selected: false })))}
+              onManageTags={() => setTagManagerOpen(true)}
               onClearFilters={() => {
                 clearSearch();
                 setTags(current => current.map(tag => ({ ...tag, selected: false })));
@@ -973,12 +922,10 @@ function App() {
             <AssistantsView
               assistants={data.assistants}
               installedCount={statAI}
-              onManageSkills={() => setView("skills")}
               onAdopt={setAdoptionCandidate}
               onMaterialize={setAdoptionCandidate}
               projectRevision={projectInspectionRevision}
               workspace={projectWorkspace}
-              toolbar={<ProjectWorkspaceBar workspace={projectWorkspace} onOpen={() => setView("ai")} />}
             />
           )}
 
@@ -988,28 +935,25 @@ function App() {
               skills={scenarioSkills}
               flow={scenarioFlow}
               onEnable={enableLibrarySkill}
-              toolbar={<ProjectWorkspaceBar workspace={projectWorkspace} onOpen={() => setView("ai")} />}
             />
           )}
 
           {view === "updates" && (
             <UpdatesView
-              skills={updatable}
               orderedSkills={orderedUpdatable}
-              stats={updateStats}
               updateState={updateState}
               getSyncInfo={getSyncInfo}
               checkAll={checkAllUpdates}
               checkOne={checkUpdate}
               updateOne={setUpdatePreviewPath}
-              toolbar={tags.length > 0 && (
-                <TagFilterBar
-                  tags={tags}
-                  selectedCount={selectedTags.length}
-                  onToggle={toggleTag}
-                  onClear={() => setTags(current => current.map(tag => ({ ...tag, selected: false })))}
-                />
-              )}
+              activeScenario={activeScenario}
+              onClearScenario={() => scenarioFlow.setActiveId("")}
+              tags={tags}
+              selectedTagCount={selectedTags.length}
+              selectedTagIds={tags.filter(tag => tag.selected).map(tag => tag.id)}
+              onToggleTag={toggleTag}
+              onClearTags={() => setTags(current => current.map(tag => ({ ...tag, selected: false })))}
+              onManageTags={() => setTagManagerOpen(true)}
             />
           )}
 

@@ -69,91 +69,162 @@ function sourceStampClass(kind) {
   return "unmanaged";
 }
 
-const SkillCardRow = React.memo(function SkillCardRow({
+function skillHue(name = "") {
+  let hash = 0;
+  for (const ch of name) hash = (hash * 31 + ch.codePointAt(0)) % 360;
+  return hash;
+}
+
+const SkillRow = React.memo(function SkillRow({
   skill,
   card,
-  index,
-  selected,
-  tags,
+  checked,
+  previewed,
   t,
   onToggleSelection,
-  onEnable,
-  onAdopt,
-  onPreview,
+  onOpenPreview,
+  onUpdate,
   onEditTags,
   onOpenDirectory,
   onUnlink,
   onRemove,
 }) {
-  const needsReview = card.structureTone !== "success" || card.hasManagedDrift || card.securityWarningCount > 0;
+  const needsAttention = card.structureTone !== "success" || card.hasManagedDrift || card.securityWarningCount > 0;
+  const metaParts = [
+    card.description,
+    card.sourceKind !== "unknown" ? card.contentSourceLabel : "",
+    skill.size,
+  ].filter(Boolean);
   return (
-    <article className={`registry-row ${selected ? "selected" : ""}`} style={{ "--i": index }} role="row">
-      <div className="registry-main registry-main-selectable" role="cell">
-        <label className="registry-select">
-          <input
-            type="checkbox"
-            checked={selected}
-            onChange={() => onToggleSelection(skill.path)}
-            aria-label={t("skills.select", { name: skill.name })}
-          />
-        </label>
-        <div className="registry-entry">
-          <div className="registry-identity">
-            <h3>{card.title}</h3>
-            {card.sourceLabel && <span className={`stamp stamp-source ${sourceStampClass(skill.source_type)}`}>{card.sourceLabel}</span>}
-          </div>
-          <div className="registry-signals">
-            <span className={`stamp ${card.structureTone}`} title={card.warningSummary}>{card.structureLabel}</span>
-            {card.isShared && <span className="stamp muted" title={card.availabilityLabel}>{t("skills.shared", { count: card.availableIn.length })}</span>}
-            {card.hasManagedDrift && <span className="stamp error">{t("skills.changed")}</span>}
-            {card.securityWarningCount > 0 && <span className="stamp error" title={card.securityWarningSummary}>{t("skills.risk", { count: card.securityWarningCount })}</span>}
-          </div>
-          {skill.tags.length > 0 && (
-            <div className="registry-tags">
-              {skill.tags.slice(0, 2).map(tagId => {
-                const tag = tags.find(item => item.id === tagId);
-                return tag ? <span key={tag.id} className="tag" style={{ "--c": tag.color }}>{tag.name}</span> : null;
-              })}
-              {skill.tags.length > 2 && <span className="tag more">+{skill.tags.length - 2}</span>}
-            </div>
-          )}
-          {card.description && <p className="registry-desc">{card.description}</p>}
-          <div className="registry-path" title={skill.path}>
-            <span>{formatHomePath(skill.path)}</span>
-            {skill.symlink_source && <span className="registry-symlink">→ {formatHomePath(skill.symlink_source)}</span>}
-          </div>
-          {card.provenanceNotes.length > 0 && (
-            <div className="registry-provenance" aria-label={t("provenance.summary")}>
-              {card.provenanceNotes.map((note) => <span key={note}>{note}</span>)}
-            </div>
+    <div
+      className={`skill-row${previewed ? " previewed" : ""}${checked ? " checked" : ""}`}
+      role="row"
+      tabIndex={0}
+      aria-selected={previewed}
+      onClick={() => onOpenPreview(skill.path)}
+      onKeyDown={(event) => {
+        if ((event.key === "Enter" || event.key === " ") && event.target === event.currentTarget) {
+          event.preventDefault();
+          onOpenPreview(skill.path);
+        }
+      }}
+    >
+      <label className="skill-select" onClick={(event) => event.stopPropagation()}>
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={() => onToggleSelection(skill.path)}
+          aria-label={t("skills.select", { name: skill.name })}
+        />
+      </label>
+      <span className="skill-logo" style={{ "--hue": String(skillHue(skill.name)) }} aria-hidden="true">{card.title.slice(0, 2)}</span>
+      <div className="skill-copy" role="cell">
+        <div className="skill-name">
+          <span className="skill-title">{card.title}</span>
+          {needsAttention && (
+            <span
+              className={`skill-flag ${card.securityWarningCount > 0 || card.hasManagedDrift ? "error" : "warn"}`}
+              title={[card.warningSummary, card.securityWarningSummary].filter(Boolean).join(" · ")}
+            />
           )}
         </div>
+        <div className="skill-meta">{metaParts.join(" · ")}</div>
       </div>
-      <div className="registry-platform" title={card.availabilityLabel} role="cell">
-        <AiAvatar name={skill.ai} brand={skill.aiIcon} size={16} />
-        <span>{card.availabilityLabel || skill.ai}</span>
+      {card.hasUpdate && card.canSync && (
+        <button
+          className="skill-update"
+          title={card.updateSummary}
+          disabled={card.updateBusy}
+          onClick={(event) => { event.stopPropagation(); onUpdate(skill.path); }}
+        >
+          <Icon name="download" size={12} />{t("skills.updateAction")}
+        </button>
+      )}
+      <div className="skill-badges" role="cell" title={card.availabilityLabel}>
+        {card.availableIn.slice(0, 4).map((assistant) => (
+          <AiAvatar key={assistant.name} name={assistant.name} brand={assistant.icon} size={22} />
+        ))}
+        {card.availableIn.length > 4 && <span className="agent-badge-more">+{card.availableIn.length - 4}</span>}
       </div>
-      <div className="registry-size" role="cell">{skill.size}</div>
-      <div className="registry-actions" role="cell">
-        {card.canEnable && <button className="btn btn-secondary btn-sm" onClick={() => onEnable(skill)} aria-label={t("skills.enable", { name: skill.name })}><Icon name="power" size={15} />{t("skills.enableAction")}</button>}
-        {card.canAdopt && <button className="btn btn-secondary btn-sm" onClick={() => onAdopt({ skill, assistant: skill.ai, projectPath: "" })} aria-label={t("adoption.actionFor", { name: skill.name })}><Icon name="branch" size={15} />{t("adoption.action")}</button>}
-        <button className="btn btn-secondary btn-sm" onClick={() => onPreview(skill.path)} aria-label={t(needsReview ? "skills.reviewOne" : "skills.preview", { name: skill.name })}><Icon name={needsReview ? "shield" : "preview"} size={15} />{t(needsReview ? "skills.review" : "common.details")}</button>
-        <details className="registry-more">
-          <summary className="btn btn-ghost btn-sm" role="button" aria-label={t("skills.moreActions", { name: skill.name })}><Icon name="more" size={17} /></summary>
-          <div className="registry-more-actions">
-            <button className="btn btn-ghost btn-sm" onClick={() => onEditTags(skill)} aria-label={t("skills.editTags", { name: skill.name })}><Icon name="tag" size={15} />{t("skills.tagsAction")}</button>
-            <button className="btn btn-ghost btn-sm" onClick={() => onOpenDirectory(skill.path)} aria-label={t("skills.openFolder", { name: skill.name })}><Icon name="folder" size={15} />{t("skills.folderAction")}</button>
-            {card.canUnlink ? (
-              <button className="btn btn-ghost btn-sm danger" onClick={() => onUnlink(skill.path, skill.name)} aria-label={t("skills.unlink", { name: skill.name })}><Icon name="unlink" size={15} />{t("skills.unlinkAction")}</button>
-            ) : card.canDelete ? (
-              <button className="btn btn-ghost btn-sm danger" onClick={() => onRemove(skill.path, skill.name, card.availableIn)} aria-label={t("skills.remove", { name: skill.name })}><Icon name="trash" size={15} />{t("skills.removeAction")}</button>
-            ) : null}
-          </div>
-        </details>
-      </div>
-    </article>
+      <details className="registry-more skill-more" onClick={(event) => event.stopPropagation()}>
+        <summary className="btn btn-ghost btn-sm" role="button" aria-label={t("skills.moreActions", { name: skill.name })}><Icon name="more" size={17} /></summary>
+        <div className="registry-more-actions">
+          <button className="btn btn-ghost btn-sm" onClick={() => onEditTags(skill)} aria-label={t("skills.editTags", { name: skill.name })}><Icon name="tag" size={15} />{t("skills.tagsAction")}</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => onOpenDirectory(skill.path)} aria-label={t("skills.openFolder", { name: skill.name })}><Icon name="folder" size={15} />{t("skills.folderAction")}</button>
+          {card.canUnlink ? (
+            <button className="btn btn-ghost btn-sm danger" onClick={() => onUnlink(skill.path, skill.name)} aria-label={t("skills.unlink", { name: skill.name })}><Icon name="unlink" size={15} />{t("skills.unlinkAction")}</button>
+          ) : card.canDelete ? (
+            <button className="btn btn-ghost btn-sm danger" onClick={() => onRemove(skill.path, skill.name, card.availableIn)} aria-label={t("skills.remove", { name: skill.name })}><Icon name="trash" size={15} />{t("skills.removeAction")}</button>
+          ) : null}
+        </div>
+      </details>
+    </div>
   );
 });
+
+function SkillDetailPane({ skill, card, tags, t, onClose, onPreview, onUpdate, onEnable, onAdopt, onEditTags }) {
+  if (!skill || !card) return null;
+  return (
+    <aside className="skill-pane" aria-label={t("skills.detailLabel", { name: card.title })}>
+      <div className="skill-pane-head">
+        <span className="skill-logo" style={{ "--hue": String(skillHue(skill.name)) }} aria-hidden="true">{card.title.slice(0, 2)}</span>
+        <div className="skill-pane-id">
+          <h2>{card.title}</h2>
+          <span className="skill-pane-path" title={skill.path}>{formatHomePath(skill.path)}</span>
+        </div>
+        <button className="btn btn-ghost btn-sm skill-pane-close" onClick={onClose} aria-label={t("skills.detailClose")}><Icon name="x" size={15} /></button>
+      </div>
+      <div className="skill-pane-block">
+        <div className="skill-pane-label">{t("skills.detailStatus")}</div>
+        <div className="skill-pane-chips">
+          <span className={`stamp ${card.structureTone}`}>{card.structureLabel}</span>
+          {card.isShared && <span className="stamp muted">{t("skills.shared", { count: card.availableIn.length })}</span>}
+          {card.hasManagedDrift && <span className="stamp error">{t("skills.changed")}</span>}
+          {card.securityWarningCount > 0 && <span className="stamp error" title={card.securityWarningSummary}>{t("skills.risk", { count: card.securityWarningCount })}</span>}
+          {card.hasUpdate && <span className="stamp warn">{t("skills.updateReady")}</span>}
+        </div>
+        {card.updateSummary && <p className="skill-pane-note">{card.updateSummary}</p>}
+      </div>
+      <div className="skill-pane-block">
+        <div className="skill-pane-label">{t("skills.detailSource")}</div>
+        <div className="skill-pane-kv">
+          <span>{t("provenance.sourceLabel")}</span><span>{card.contentSourceLabel}</span>
+          <span>{t("provenance.managerLabel")}</span><span>{card.managerLabel}</span>
+          <span>{t("provenance.updateLabel")}</span><span>{card.updateStrategyLabel}</span>
+        </div>
+      </div>
+      <div className="skill-pane-block">
+        <div className="skill-pane-label">{t("skills.detailAgents")}</div>
+        <div className="skill-pane-agents">
+          {card.availableIn.length === 0 ? (
+            <span className="skill-meta">{t("skills.detailNoAgents")}</span>
+          ) : card.availableIn.map((assistant) => (
+            <span className="skill-pane-agent" key={assistant.name}>
+              <AiAvatar name={assistant.name} brand={assistant.icon} size={20} />
+              {assistant.name}
+              <Icon name="check" size={13} />
+            </span>
+          ))}
+        </div>
+        {skill.tags.length > 0 && (
+          <div className="skill-pane-tags">
+            {skill.tags.slice(0, 4).map((tagId) => {
+              const tag = tags.find((item) => item.id === tagId);
+              return tag ? <span key={tag.id} className="tag" style={{ "--c": tag.color }}>{tag.name}</span> : null;
+            })}
+          </div>
+        )}
+      </div>
+      <div className="skill-pane-foot">
+        <button className="btn btn-secondary btn-sm" onClick={() => onEditTags(skill)} aria-label={t("skills.editTags", { name: skill.name })}><Icon name="tag" size={14} />{t("skills.tagsAction")}</button>
+        <button className="btn btn-secondary btn-sm" onClick={() => onPreview(skill.path)} aria-label={t("skills.reviewOne", { name: skill.name })}><Icon name="shield" size={14} />{t("skills.review")}</button>
+        {card.hasUpdate && card.canSync && <button className="btn btn-secondary btn-sm" disabled={card.updateBusy} onClick={() => onUpdate(skill.path)} aria-label={t("skills.updateAction")}><Icon name="download" size={14} />{t("skills.updateAction")}</button>}
+        {card.canAdopt && <button className="btn btn-secondary btn-sm" onClick={() => onAdopt({ skill, assistant: skill.ai, projectPath: "" })} aria-label={t("adoption.actionFor", { name: skill.name })}><Icon name="branch" size={14} />{t("adoption.action")}</button>}
+        {card.canEnable && <button className="btn btn-primary btn-sm" onClick={() => onEnable(skill)} aria-label={t("skills.enable", { name: skill.name })}><Icon name="power" size={14} />{t("skills.enableAction")}</button>}
+      </div>
+    </aside>
+  );
+}
 
 export function SkillsView({
   skills,
@@ -161,6 +232,7 @@ export function SkillsView({
   allSkillCount,
   selectedTagCount,
   tags,
+  selectedTagIds = [],
   onInstall,
   onToggleDiscovery = () => {},
   discoveryOpen = false,
@@ -177,9 +249,22 @@ export function SkillsView({
   onToggleSelection = () => {},
   onToggleVisibleSelection = () => {},
   onClearSelection = () => {},
-  toolbar,
+  onToggleTag = () => {},
+  onClearTags,
+  onManageTags,
+  filterRequest,
+  activeScenario,
+  onClearScenario,
+  onUpdate = () => {},
+  getSyncInfo,
 }) {
   const { t } = useI18n();
+  const [statusFilter, setStatusFilter] = React.useState("all");
+  const [previewPath, setPreviewPath] = React.useState("");
+
+  React.useEffect(() => {
+    if (filterRequest?.filter) setStatusFilter(filterRequest.filter);
+  }, [filterRequest]);
   const selectedSkills = React.useMemo(
     () => (allSkills ?? skills).filter((skill) => selectedSkillPaths.includes(skill.path)),
     [allSkills, skills, selectedSkillPaths]
@@ -188,23 +273,45 @@ export function SkillsView({
     () => selectedSkills.every((skill) => buildSkillCardView(skill, t).canEnable),
     [selectedSkills, t]
   );
-  const skillCards = React.useMemo(() => skills.map((skill) => buildSkillCardView(skill, t)), [skills, t]);
-  const allVisibleSelected = skills.length > 0 && skills.every((skill) => selectedSkillPaths.includes(skill.path));
+  const skillCards = React.useMemo(
+    () => skills.map((skill) => buildSkillCardView(skill, t, getSyncInfo?.(skill))),
+    [skills, t, getSyncInfo]
+  );
+  const totalSkillCount = allSkillCount ?? skills.length;
+  const attentionCount = React.useMemo(
+    () => skillCards.filter((card) => card.structureTone !== "success" || card.hasManagedDrift || card.securityWarningCount > 0).length,
+    [skillCards]
+  );
+  const updatesCount = React.useMemo(() => skillCards.filter((card) => card.hasUpdate).length, [skillCards]);
+  const visibleSkills = React.useMemo(() => {
+    if (statusFilter === "attention") {
+      return skills.filter((_, index) => skillCards[index].structureTone !== "success" || skillCards[index].hasManagedDrift || skillCards[index].securityWarningCount > 0);
+    }
+    if (statusFilter === "updates") return skills.filter((_, index) => skillCards[index].hasUpdate);
+    return skills;
+  }, [skills, skillCards, statusFilter]);
+  const previewSkill = React.useMemo(
+    () => (allSkills ?? skills).find((skill) => skill.path === previewPath) ?? null,
+    [allSkills, skills, previewPath]
+  );
+  const previewCard = React.useMemo(
+    () => (previewSkill ? buildSkillCardView(previewSkill, t, getSyncInfo?.(previewSkill)) : null),
+    [previewSkill, t, getSyncInfo]
+  );
+  const allVisibleSelected = visibleSkills.length > 0 && visibleSkills.every((skill) => selectedSkillPaths.includes(skill.path));
   return (
-    <div className="view-shell">
+    <div className="view-shell skills-view">
       <SurfaceHeader
         title={t("skills.title")}
         description={t("skills.subtitle")}
-        meta={t(skills.length !== allSkillCount ? "skills.countFiltered" : "skills.count", { count: skills.length, total: allSkillCount })}
+        meta={t(skills.length !== totalSkillCount ? "skills.countFiltered" : "skills.count", { count: skills.length, total: totalSkillCount })}
         actions={(
           <>
-          {selectedTagCount > 0 && <div className="filter-tag"><Icon name="tag" size={14} />{t("skills.selectedTags", { count: selectedTagCount })}</div>}
           <button className="btn btn-secondary btn-sm" aria-expanded={discoveryOpen} onClick={onToggleDiscovery}><Icon name="search" size={14} />{t(discoveryOpen ? "skills.hideDiscovery" : "skills.discover")}</button>
           <button className="btn btn-primary btn-sm" onClick={onInstall}><Icon name="plus" size={14} />{t("common.install")}</button>
           </>
         )}
       />
-      {toolbar}
       {discovery}
       {selectedSkills.length > 0 && (
         <div className="bulk-toolbar" role="region" aria-label={t("skills.bulkActions")}>
@@ -217,68 +324,100 @@ export function SkillsView({
           {!canEnableSelection && <span>{t("skills.enableLibraryOnly")}</span>}
         </div>
       )}
-      <div className="registry" role="table" aria-label={t("skills.title")}>
-        <div className="registry-colhead registry-colhead-selectable" role="row">
-          <label className="registry-col-entry registry-col-selectable" role="columnheader">
-            <input
-              type="checkbox"
-              checked={allVisibleSelected}
-              onChange={onToggleVisibleSelection}
-              aria-label={t(allVisibleSelected ? "skills.deselectVisible" : "skills.selectVisible")}
-            />
-            <span className="registry-entry-label">{t("registry.entry")}</span>
-            <span className="registry-selection-label" aria-hidden="true">{t(allVisibleSelected ? "skills.deselectVisible" : "skills.selectVisible")}</span>
-          </label>
-          <span className="registry-col-platform" role="columnheader">{t("registry.platform")}</span>
-          <span className="registry-col-size" role="columnheader">{t("registry.size")}</span>
-          <span className="registry-col-actions" role="columnheader">{t("registry.actions")}</span>
-        </div>
-        {skills.length === 0 ? (
-          <div className="registry-row registry-empty" role="row">
-            <div className="registry-main" role="cell">
-              <div className="registry-title">
-                <span className="stamp muted" aria-hidden="true">{t("registry.empty")}</span>
-                <h3>{t(allSkillCount > 0 ? "skills.noMatch" : "skills.empty")}</h3>
-              </div>
-              <p className="registry-desc">{t(allSkillCount > 0 ? "skills.noMatchHint" : "skills.emptyHint")}</p>
-            </div>
-            <div className="registry-platform" role="cell" />
-            <div className="registry-size" role="cell" />
-            <div className="registry-actions" role="cell">
-              {allSkillCount > 0 ? (
-                <button className="btn btn-secondary btn-sm" onClick={onClearFilters}><Icon name="x" size={14} />{t("skills.clearFilters")}</button>
-              ) : (
-                <button className="btn btn-primary btn-sm" onClick={onInstall}><Icon name="plus" size={14} />{t("common.install")}</button>
-              )}
-            </div>
+      <div className="skills-shell">
+        <div className="skills-main">
+          <div className="skills-filters">
+            <button className={`filter-chip${statusFilter === "all" ? " active" : ""}`} aria-pressed={statusFilter === "all"} onClick={() => setStatusFilter("all")}>{t("skills.filterAll")}<span>{skills.length}</span></button>
+            <button className={`filter-chip danger${statusFilter === "attention" ? " active" : ""}`} aria-pressed={statusFilter === "attention"} onClick={() => setStatusFilter("attention")}>{t("skills.filterNeedsAttention")}<span>{attentionCount}</span></button>
+            <button className={`filter-chip warn${statusFilter === "updates" ? " active" : ""}`} aria-pressed={statusFilter === "updates"} onClick={() => setStatusFilter("updates")}>{t("skills.filterUpdates")}<span>{updatesCount}</span></button>
+            <span className="filter-divider" aria-hidden="true" />
+            {tags.map((tag) => (
+              <button
+                key={tag.id}
+                className={`filter-chip tag${selectedTagIds.includes(tag.id) ? " active" : ""}`}
+                style={{ "--c": tag.color }}
+                aria-pressed={selectedTagIds.includes(tag.id)}
+                onClick={() => onToggleTag(tag.id)}
+              >
+                <span className="filter-dot" aria-hidden="true" />{tag.name}
+              </button>
+            ))}
+            {activeScenario && (
+              <button
+                className="filter-chip active"
+                onClick={onClearScenario}
+                title={t("scenarioFilter.title", { name: activeScenario.name })}
+                aria-label={t("scenarioFilter.clear")}
+              >
+                <Icon name="scenarios" size={13} />
+                {activeScenario.name}
+                <span>{activeScenario.skill_ids.length}</span>
+                <Icon name="x" size={12} />
+              </button>
+            )}
+            {selectedTagCount > 0 && onClearTags && <button className="btn btn-ghost btn-sm" onClick={onClearTags}>{t("common.clear")}</button>}
+            <span className="filter-spacer" aria-hidden="true" />
+            {onManageTags && <button className="btn btn-ghost btn-sm" onClick={onManageTags}><Icon name="tag" size={14} />{t("tags.manage")}</button>}
+            <button className="btn btn-ghost btn-sm" onClick={() => onToggleVisibleSelection(visibleSkills.map((skill) => skill.path))} aria-label={t(allVisibleSelected ? "skills.deselectVisible" : "skills.selectVisible")}>{t(allVisibleSelected ? "skills.deselectVisible" : "skills.selectVisible")}</button>
           </div>
-        ) : (
-          skills.map((skill, index) => (
-            <SkillCardRow
-              key={`${skill.path}-${skill.name}`}
-              skill={skill}
-              card={skillCards[index]}
-              index={index}
-              selected={selectedSkillPaths.includes(skill.path)}
-              tags={tags}
-              t={t}
-              onToggleSelection={onToggleSelection}
-              onEnable={onEnable}
-              onAdopt={onAdopt}
-              onPreview={onPreview}
-              onEditTags={onEditTags}
-              onOpenDirectory={onOpenDirectory}
-              onUnlink={onUnlink}
-              onRemove={onRemove}
-            />
-          ))
-        )}
+          {visibleSkills.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-icon"><Icon name="skills" size={22} /></div>
+              <h3>{t(totalSkillCount > 0 ? "skills.noMatch" : "skills.empty")}</h3>
+              <p>{t(totalSkillCount > 0 ? "skills.noMatchHint" : "skills.emptyHint")}</p>
+              <div className="empty-actions">
+                {totalSkillCount === 0 ? (
+                  <button className="btn btn-primary btn-sm" onClick={onInstall}><Icon name="plus" size={14} />{t("common.install")}</button>
+                ) : statusFilter !== "all" ? (
+                  <button className="btn btn-secondary btn-sm" onClick={() => setStatusFilter("all")}>{t("skills.clearFilters")}</button>
+                ) : (
+                  <button className="btn btn-secondary btn-sm" onClick={onClearFilters}><Icon name="x" size={14} />{t("skills.clearFilters")}</button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="skill-list" role="table" aria-label={t("skills.title")}>
+              {visibleSkills.map((skill) => {
+                const index = skills.indexOf(skill);
+                return (
+                  <SkillRow
+                    key={`${skill.path}-${skill.name}`}
+                    skill={skill}
+                    card={skillCards[index]}
+                    checked={selectedSkillPaths.includes(skill.path)}
+                    previewed={skill.path === previewPath}
+                    t={t}
+                    onToggleSelection={onToggleSelection}
+                    onOpenPreview={setPreviewPath}
+                    onUpdate={onUpdate}
+                    onEditTags={onEditTags}
+                    onOpenDirectory={onOpenDirectory}
+                    onUnlink={onUnlink}
+                    onRemove={onRemove}
+                  />
+                );
+              })}
+            </div>
+          )}
+        </div>
+        <SkillDetailPane
+          skill={previewSkill}
+          card={previewCard}
+          tags={tags}
+          t={t}
+          onClose={() => setPreviewPath("")}
+          onPreview={onPreview}
+          onUpdate={onUpdate}
+          onEnable={onEnable}
+          onAdopt={onAdopt}
+          onEditTags={onEditTags}
+        />
       </div>
     </div>
   );
 }
 
-export function AssistantsView({ assistants, installedCount, onManageSkills, onAdopt, onMaterialize, projectRevision = 0, workspace, toolbar }) {
+export function AssistantsView({ assistants, installedCount, onAdopt, onMaterialize, projectRevision = 0, workspace, toolbar }) {
   const { t } = useI18n();
   const [expandedAssistant, setExpandedAssistant] = React.useState(null);
   return (
@@ -287,26 +426,19 @@ export function AssistantsView({ assistants, installedCount, onManageSkills, onA
         title={t("nav.assistants")}
         description={t("assistants.subtitle")}
         meta={t("assistants.configuredCount", { installed: installedCount, total: assistants.length })}
-        actions={onManageSkills && <button className="btn btn-primary btn-sm" onClick={onManageSkills}><Icon name="skills" size={14} />{t("assistants.manage")}</button>}
       />
       {toolbar}
       <ProjectInspectionPanel onAdopt={onAdopt} onMaterialize={onMaterialize} revision={projectRevision} workspace={workspace} />
-      <div className="registry assistant-registry" role="table" aria-label={t("nav.assistants")}>
-        <div className="registry-colhead" role="row">
-          <span role="columnheader">{t("assistants.platform")}</span>
-          <span role="columnheader">{t("assistants.location")}</span>
-          <span role="columnheader">{t("assistants.status")}</span>
-          <span className="registry-col-actions" role="columnheader">{t("assistants.skills")}</span>
-        </div>
+      <div
+        className="skill-list assistant-list"
+        role={assistants.length > 0 ? "table" : undefined}
+        aria-label={assistants.length > 0 ? t("nav.assistants") : undefined}
+      >
         {assistants.length === 0 ? (
-          <div className="registry-row registry-empty" role="row">
-            <div className="registry-main" role="cell">
-              <div className="registry-title"><span className="stamp muted">{t("registry.empty")}</span><h3>{t("assistants.empty")}</h3></div>
-              <p className="registry-desc">{t("assistants.emptyHint")}</p>
-            </div>
-            <div className="registry-path" role="cell" />
-            <div className="registry-state" role="cell" />
-            <div className="registry-actions" role="cell" />
+          <div className="empty-state">
+            <div className="empty-icon"><Icon name="skills" size={22} /></div>
+            <h3>{t("assistants.empty")}</h3>
+            <p>{t("assistants.emptyHint")}</p>
           </div>
         ) : assistants.map((assistant, index) => {
           const expanded = expandedAssistant === assistant.name;
@@ -315,56 +447,54 @@ export function AssistantsView({ assistants, installedCount, onManageSkills, onA
           const detailId = `assistant-details-${index}`;
           return (
             <React.Fragment key={assistant.name}>
-              <article className={`registry-row ${expanded ? "assistant-row-expanded" : ""}`} role="row">
-                <div className="assistant-entry" role="cell">
-                  <AiAvatar name={assistant.name} brand={assistant.icon} size={36} />
-                  <div className="registry-entry">
-                    <div className="registry-identity"><h3>{assistant.name}</h3></div>
-                    {Array.isArray(assistant.diagnostics) && assistant.diagnostics.length > 0 && (
-                      <details className="scan-diagnostics">
-                        <summary>{t("assistants.diagnostics", { count: assistant.diagnostics.length })}</summary>
-                        <ul>
-                          {assistant.diagnostics.slice(0, 5).map((diagnostic, diagnosticIndex) => (
-                            <li key={`${diagnostic.path}-${diagnostic.code}-${diagnosticIndex}`}>
-                              <span title={diagnostic.path}>{formatHomePath(diagnostic.path)}</span>
-                              <small>{diagnostic.message}</small>
-                            </li>
-                          ))}
-                        </ul>
-                      </details>
-                    )}
+              <article className={`skill-row agent-row${expanded ? " previewed" : ""}`} role="row">
+                <AiAvatar name={assistant.name} brand={assistant.icon} size={34} />
+                <div className="skill-copy" role="cell">
+                  <div className="skill-name">
+                    <span className="skill-title">{assistant.name}</span>
+                  </div>
+                  <div className="skill-meta" title={paths.join("\n")}>
+                    {[
+                      formatHomePath(assistant.path),
+                      ...(paths.length > 1 ? [t("assistants.directories", { count: paths.length })] : []),
+                      t("assistants.skillCount", { count: assistant.exists ? assistant.skills.length : 0 }),
+                    ].join(" · ")}
                   </div>
                 </div>
-                <div className="registry-path assistant-locations" title={paths.join("\n")} role="cell">
-                  <span className="assistant-location-primary">{formatHomePath(assistant.path)}</span>
-                  {paths.length > 1 && <span className="assistant-location-count">{t("assistants.directories", { count: paths.length })}</span>}
-                </div>
-                <div className="registry-state" role="cell"><span className={`stamp ${assistant.exists ? "success" : "muted"}`}>{t(assistant.exists ? "assistants.configured" : "assistants.notConfigured")}</span></div>
-                <div className="assistant-skills" role="cell">
-                  {assistant.exists && assistant.skills.length > 0 ? (
-                    assistant.skills.slice(0, 2).map(skill => <span key={skill.path || skill.name} className="tag">{skill.name}</span>)
-                  ) : <span className="registry-desc">{t("assistants.noSkills")}</span>}
-                  {hasDetails && (
-                    <button
-                      className="assistant-skills-toggle"
-                      type="button"
-                      aria-expanded={expanded}
-                      aria-controls={detailId}
-                      onClick={() => setExpandedAssistant(current => current === assistant.name ? null : assistant.name)}
-                    >
-                      {t(expanded
-                        ? "assistants.hideDetails"
-                        : assistant.skills.length > 2
-                          ? "assistants.showAllSkills"
-                          : "assistants.showDetails", { count: assistant.skills.length })}
-                      <Icon name="arrow" size={13} className={expanded ? "expanded" : ""} />
-                    </button>
-                  )}
-                </div>
+                {Array.isArray(assistant.diagnostics) && assistant.diagnostics.length > 0 && (
+                  <details className="scan-diagnostics">
+                    <summary>{t("assistants.diagnostics", { count: assistant.diagnostics.length })}</summary>
+                    <ul>
+                      {assistant.diagnostics.slice(0, 5).map((diagnostic, diagnosticIndex) => (
+                        <li key={`${diagnostic.path}-${diagnostic.code}-${diagnosticIndex}`}>
+                          <span title={diagnostic.path}>{formatHomePath(diagnostic.path)}</span>
+                          <small>{diagnostic.message}</small>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+                <span className={`stamp ${assistant.exists ? "success" : "muted"}`} role="cell">{t(assistant.exists ? "assistants.configured" : "assistants.notConfigured")}</span>
+                {hasDetails && (
+                  <button
+                    className="row-chevron"
+                    type="button"
+                    aria-expanded={expanded}
+                    aria-controls={detailId}
+                    aria-label={t(expanded
+                      ? "assistants.hideDetails"
+                      : assistant.skills.length > 2
+                        ? "assistants.showAllSkills"
+                        : "assistants.showDetails", { count: assistant.skills.length })}
+                    onClick={() => setExpandedAssistant(current => current === assistant.name ? null : assistant.name)}
+                  >
+                    <Icon name="arrow" size={14} className={expanded ? "expanded" : ""} />
+                  </button>
+                )}
               </article>
               {expanded && (
                 <div className="assistant-detail-panel" role="row">
-                  <div id={detailId} className="assistant-detail-content" role="cell" aria-colspan="4">
+                  <div id={detailId} className="assistant-detail-content" role="cell">
                     {paths.length > 1 && (
                       <section className="assistant-detail-section">
                         <div className="assistant-detail-head">
@@ -404,6 +534,7 @@ function ProjectInspectionPanel({ onAdopt, onMaterialize, revision, workspace })
   const [error, setError] = React.useState("");
   const [expanded, setExpanded] = React.useState("");
   const [request, setRequest] = React.useState(0);
+  const [foldOpen, setFoldOpen] = React.useState(false);
   const selectedPath = React.useRef("");
   const rememberRef = React.useRef(workspace?.remember);
   rememberRef.current = workspace?.remember;
@@ -441,8 +572,15 @@ function ProjectInspectionPanel({ onAdopt, onMaterialize, revision, workspace })
 
   return (
     <section className="project-inspector" aria-labelledby="project-inspector-title">
+      <button className="inspector-fold" type="button" aria-expanded={foldOpen} onClick={() => setFoldOpen(current => !current)}>
+        <Icon name="search" size={14} />
+        <strong id="project-inspector-title">{t("projectInspection.title")}</strong>
+        <span className="inspector-fold-sub">{workspace?.path ? formatHomePath(workspace.path) : t("projectInspection.hint")}</span>
+        <Icon name="arrow" size={13} className={foldOpen ? "expanded" : ""} />
+      </button>
+      {foldOpen && (<>
       <div className="project-inspector-head">
-        <div><h3 id="project-inspector-title">{t("projectInspection.title")}</h3><p>{t("projectInspection.hint")}</p></div>
+        <div><p>{t("projectInspection.hint")}</p></div>
         <div className="project-inspector-input">
           {!workspace && <>
             <label className="visually-hidden" htmlFor="project-inspection-path">{t("projectInspection.path")}</label>
@@ -481,6 +619,7 @@ function ProjectInspectionPanel({ onAdopt, onMaterialize, revision, workspace })
           })}
         </div>
       )}
+      </>)}
     </section>
   );
 }
@@ -543,33 +682,32 @@ function updateButtonText(info, t) {
   return t("updatePreview.action");
 }
 
-const UpdateRow = React.memo(function UpdateRow({ skill, card, getSyncInfo, t, language, checkOne, updateOne }) {
+const UpdateRow = React.memo(function UpdateRow({ skill, getSyncInfo, t, language, checkOne, updateOne }) {
   const info = getSyncInfo(skill);
+  const metaParts = [
+    remoteLabel(info.resolvedLocator || info.originLocator || skill.upstream_url, t),
+    lagText(info, t),
+    `${t("updates.probed")} ${probeTime(info.lastProbeAt, language, t)}`,
+  ].filter(Boolean);
   return (
-    <article className="registry-row" role="row">
-      <div className="registry-main" role="cell">
-        <div className="registry-title">
-          <h3>{skill.name}</h3>
+    <article className="skill-row update-row" role="row">
+      <span className="skill-logo" style={{ "--hue": String(skillHue(skill.name)) }} aria-hidden="true">{skill.name.slice(0, 2)}</span>
+      <div className="skill-copy" role="cell">
+        <div className="skill-name">
+          <span className="skill-title">{skill.name}</span>
           <span className={`stamp stamp-source ${sourceStampClass(info.originKind)}`}>{originKindLabel(info.originKind, t)}</span>
-          <span className="stamp muted">{card.availabilityLabel || skill.ai}</span>
         </div>
-        <div className="registry-path" title={info.resolvedLocator || info.originLocator || skill.upstream_url}>
-          <span>{remoteLabel(info.resolvedLocator || info.originLocator || skill.upstream_url, t)}</span>
-        </div>
-        <div className="registry-probe">
-          <span className={info.syncState === "behind" ? "warn" : ""}>{lagText(info, t)}</span>
-          <span>{t("updates.probed")} {probeTime(info.lastProbeAt, language, t)}</span>
-        </div>
+        <div className="skill-meta" title={info.resolvedLocator || info.originLocator || skill.upstream_url}>{metaParts.join(" · ")}</div>
       </div>
       <div className="registry-refs" aria-label={`${t("updates.current")} → ${t("updates.latest")}`} role="cell">
         <span>{refLabel(info.installedRef)}</span>
         <span className="registry-refs-arrow" aria-hidden="true">→</span>
         <span className={info.syncState === "behind" ? "warn" : ""}>{refLabel(info.latestRef)}</span>
       </div>
-      <div className="registry-state" role="cell">
+      <div className="skill-badges" role="cell">
         <span className={`stamp ${stateTone(info.syncState)}`}>{stateText(info.syncState, t)}</span>
       </div>
-      <div className="registry-actions" role="cell">
+      <div className="skill-badges" role="cell">
         <button className="btn btn-secondary btn-sm" onClick={() => checkOne(skill.path)} disabled={!info.canCheck || info.checking || info.updating}><Icon name="refresh" size={14} />{t(info.checking ? "common.checking" : "common.check")}</button>
         {info.canSync && <button className="btn btn-primary btn-sm" onClick={() => updateOne(skill.path)} disabled={info.checking || info.updating}><Icon name="download" size={14} />{updateButtonText(info, t)}</button>}
         {!info.canSync && (
@@ -582,61 +720,111 @@ const UpdateRow = React.memo(function UpdateRow({ skill, card, getSyncInfo, t, l
   );
 });
 
-export function UpdatesView({ skills, orderedSkills, stats, updateState, getSyncInfo, checkAll, checkOne, updateOne, toolbar }) {
+export function UpdatesView({
+  orderedSkills,
+  updateState,
+  getSyncInfo,
+  checkAll,
+  checkOne,
+  updateOne,
+  tags = [],
+  selectedTagCount = 0,
+  selectedTagIds = [],
+  onToggleTag = () => {},
+  onClearTags,
+  onManageTags,
+  activeScenario,
+  onClearScenario,
+}) {
   const { t, language } = useI18n();
-  const skillCards = React.useMemo(
-    () => orderedSkills.map((skill) => buildSkillCardView(skill, t)),
-    [orderedSkills, t]
+  const [statusFilter, setStatusFilter] = React.useState("all");
+  const pendingRows = React.useMemo(
+    () => orderedSkills
+      .map((skill) => ({ skill, tone: stateTone(getSyncInfo(skill).syncState) }))
+      .filter((row) => row.tone !== "success"),
+    [orderedSkills, getSyncInfo]
+  );
+  const countByTone = React.useMemo(() => ({
+    all: pendingRows.length,
+    warn: pendingRows.filter((row) => row.tone === "warn").length,
+    error: pendingRows.filter((row) => row.tone === "error").length,
+  }), [pendingRows]);
+  const visibleSkills = React.useMemo(
+    () => (statusFilter === "all" ? pendingRows : pendingRows.filter((row) => row.tone === statusFilter))
+      .map((row) => row.skill),
+    [pendingRows, statusFilter]
   );
   return (
-    <div className="view-shell">
+    <div className="view-shell skills-view">
       <SurfaceHeader
         title={t("nav.updates")}
         description={t("updates.subtitle")}
-        meta={skills.length}
-        actions={(
-          <>
-          <div className="update-toolbar"><span className={`stamp ${stats.behind > 0 ? "warn" : "success"}`}>{t("updates.pending", { count: stats.behind })}</span><span className="stamp muted">{t("updates.syncable", { count: stats.syncable })}</span>{stats.failed > 0 && <span className="stamp error">{t("updates.failed", { count: stats.failed })}</span>}</div>
-          <button className="btn btn-primary btn-sm" onClick={checkAll} disabled={Object.values(updateState).some(state => state.checking || state.updating)}><Icon name="refresh" size={14} />{t("updates.checkAll")}</button>
-          </>
-        )}
+        meta={pendingRows.length}
+        actions={<button className="btn btn-primary btn-sm" onClick={checkAll} disabled={Object.values(updateState).some(state => state.checking || state.updating)}><Icon name="refresh" size={14} />{t("updates.checkAll")}</button>}
       />
-      {toolbar}
-      <div className="registry" role="table" aria-label={t("nav.updates")}>
-        <div className="registry-colhead" role="row">
-          <span className="registry-col-entry" role="columnheader">{t("registry.entry")}</span>
-          <span className="registry-col-refs" role="columnheader">{t("updates.current")} → {t("updates.latest")}</span>
-          <span className="registry-col-state" role="columnheader">{t("updates.status")}</span>
-          <span className="registry-col-actions" role="columnheader">{t("registry.actions")}</span>
+      <div className="skills-filters">
+        <button className={`filter-chip${statusFilter === "all" ? " active" : ""}`} aria-pressed={statusFilter === "all"} onClick={() => setStatusFilter("all")}>{t("skills.filterAll")}<span>{countByTone.all}</span></button>
+        <button className={`filter-chip warn${statusFilter === "warn" ? " active" : ""}`} aria-pressed={statusFilter === "warn"} onClick={() => setStatusFilter("warn")}>{t("updates.filterBehind")}<span>{countByTone.warn}</span></button>
+        <button className={`filter-chip danger${statusFilter === "error" ? " active" : ""}`} aria-pressed={statusFilter === "error"} onClick={() => setStatusFilter("error")}>{t("updates.filterFailed")}<span>{countByTone.error}</span></button>
+        {tags.length > 0 && <span className="filter-divider" aria-hidden="true" />}
+        {tags.map((tag) => (
+          <button
+            key={tag.id}
+            className={`filter-chip tag${selectedTagIds.includes(tag.id) ? " active" : ""}`}
+            style={{ "--c": tag.color }}
+            aria-pressed={selectedTagIds.includes(tag.id)}
+            onClick={() => onToggleTag(tag.id)}
+          >
+            <span className="filter-dot" aria-hidden="true" />{tag.name}
+          </button>
+        ))}
+        {activeScenario && (
+          <button
+            className="filter-chip active"
+            onClick={onClearScenario}
+            title={t("scenarioFilter.title", { name: activeScenario.name })}
+            aria-label={t("scenarioFilter.clear")}
+          >
+            <Icon name="scenarios" size={13} />
+            {activeScenario.name}
+            <span>{activeScenario.skill_ids.length}</span>
+            <Icon name="x" size={12} />
+          </button>
+        )}
+        {selectedTagCount > 0 && onClearTags && <button className="btn btn-ghost btn-sm" onClick={onClearTags}>{t("common.clear")}</button>}
+        <span className="filter-spacer" aria-hidden="true" />
+        {onManageTags && <button className="btn btn-ghost btn-sm" onClick={onManageTags}><Icon name="tag" size={14} />{t("tags.manage")}</button>}
+      </div>
+      {pendingRows.length === 0 ? (
+        <div className="empty-state">
+          <div className="empty-icon"><Icon name="updates" size={22} /></div>
+          <h3>{t("updates.empty")}</h3>
+          <p>{t("updates.emptyHint")}</p>
         </div>
-        {skills.length === 0 ? (
-          <div className="registry-row registry-empty" role="row">
-            <div className="registry-main" role="cell">
-              <div className="registry-title">
-                <span className="stamp success" aria-hidden="true">{t("registry.clear")}</span>
-                <h3>{t("updates.empty")}</h3>
-              </div>
-              <p className="registry-desc">{t("updates.emptyHint")}</p>
-            </div>
-            <div className="registry-refs" role="cell" />
-            <div className="registry-state" role="cell" />
-            <div className="registry-actions" role="cell" />
+      ) : visibleSkills.length === 0 ? (
+        <div className="empty-state">
+          <div className="empty-icon"><Icon name="search" size={22} /></div>
+          <h3>{t("skills.noMatch")}</h3>
+          <p>{t("skills.noMatchHint")}</p>
+          <div className="empty-actions">
+            <button className="btn btn-secondary btn-sm" onClick={() => setStatusFilter("all")}>{t("skills.clearFilters")}</button>
           </div>
-        ) : (
-          orderedSkills.map((skill, index) => (
+        </div>
+      ) : (
+        <div className="skill-list" role="table" aria-label={t("nav.updates")}>
+          {visibleSkills.map((skill) => (
             <UpdateRow
               key={skill.path}
               skill={skill}
-              card={skillCards[index]}
               getSyncInfo={getSyncInfo}
               t={t}
               language={language}
               checkOne={checkOne}
               updateOne={updateOne}
             />
-          ))
-        )}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -492,7 +492,7 @@ export function buildValidationSummary(report, t) {
   }));
 }
 
-export function buildSkillCardView(skill, t) {
+export function buildSkillCardView(skill, t, updateInfo) {
   const structure = normalizeSkillStructure(skill);
   const isSymlink = ["symlink", "deployment"].includes(skill?.source_type);
   const isManaged = Boolean(skill?.managed_by_app);
@@ -501,11 +501,11 @@ export function buildSkillCardView(skill, t) {
   const inferredSource = skill?.content_source || (["git", "github"].includes(originKind) ? (skill?.upstream_url?.includes("github.com") ? "github" : "git") : "unknown");
   const inferredManager = skill?.manager || (isManaged ? "skillmate" : "external");
   const inferredUpdate = skill?.update_strategy || (isManaged && originKind === "git" ? "skillmate" : "manual");
-  const canCheck = typeof skill?.can_check === "boolean"
+  const canCheck = updateInfo?.canCheck ?? (typeof skill?.can_check === "boolean"
     ? skill.can_check
-    : CHECKABLE_ORIGIN_KINDS.has(originKind);
-  const canSync = Boolean(skill?.can_sync);
-  const syncState = skill?.sync_state || "unknown";
+    : CHECKABLE_ORIGIN_KINDS.has(originKind));
+  const canSync = Boolean(updateInfo?.canSync ?? skill?.can_sync);
+  const syncState = updateInfo?.syncState ?? skill?.sync_state ?? "unknown";
   const updateSummary = (() => {
     if (syncState === "current") return localized(t, "preview.updateCurrent", "已是最新，可随时重新检查");
     if (syncState === "behind") {
@@ -549,13 +549,15 @@ export function buildSkillCardView(skill, t) {
       .join(localized(t, "common.listSeparator", "、")),
     hasManagedDrift: structure.warnings.includes("managed_content_changed"),
     sourceLabel: skill?.source || localized(t, "source.unmanaged", "未托管"),
+    sourceKind: inferredSource,
     contentSourceLabel: localized(t, `provenance.source.${inferredSource}`, CONTENT_SOURCE_LABELS[inferredSource] || skill?.source || "未知来源"),
     managerLabel: localized(t, `provenance.manager.${inferredManager}`, MANAGER_LABELS[inferredManager] || "外部或手工管理"),
     updateStrategyLabel: localized(t, `provenance.update.${inferredUpdate}`, UPDATE_STRATEGY_LABELS[inferredUpdate] || "手工维护"),
     provenanceNotes,
     canCheck,
     canSync,
-    hasUpdate: Boolean(skill?.has_update),
+    hasUpdate: Boolean(updateInfo?.hasUpdate ?? skill?.has_update),
+    updateBusy: Boolean(updateInfo?.checking || updateInfo?.updating),
     updateSummary,
     canEnable: Boolean(skill?.in_library || skill?.source_type === "deployment"),
     canDelete: isManaged && !isSymlink,

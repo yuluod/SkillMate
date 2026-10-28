@@ -139,12 +139,13 @@ describe("Dashboard 数据加载", () => {
 
   it("概览聚焦本机状态并保留直接添加入口", () => {
     const onInstall = vi.fn();
+    const onNavigate = vi.fn();
     const { container } = render(
       <DashboardView
         stats={{ skills: 21, assistants: 4, updates: 0, structureIssues: 0, securityRisks: 0, localChanges: 0, driftGroups: 0, diagnostics: 0 }}
         tagCount={4}
         driftGroups={[]}
-        onNavigate={vi.fn()}
+        onNavigate={onNavigate}
         onInstall={onInstall}
         onOpenDrift={vi.fn()}
       />
@@ -158,6 +159,11 @@ describe("Dashboard 数据加载", () => {
     expect(statusSummary.parentElement).toBe(container.firstElementChild);
     fireEvent.click(screen.getByRole("button", { name: "添加 Skill" }));
     expect(onInstall).toHaveBeenCalledTimes(1);
+    for (const button of statusSummary.querySelectorAll("button")) fireEvent.click(button);
+    expect(onNavigate.mock.calls.map(([view]) => view)).toEqual(["skills", "ai", "updates"]);
+    onNavigate.mockClear();
+    for (const button of screen.getByLabelText("开始工作").querySelectorAll("button")) fireEvent.click(button);
+    expect(onNavigate.mock.calls.map(([view]) => view)).toEqual(["skills", "ai", "scenarios"]);
   });
 
   it("市场结果使用系统浏览器打开来源，安装动作只进入检查流程", async () => {
@@ -334,7 +340,7 @@ describe("Dashboard 数据加载", () => {
   });
 });
 
-describe("外观偏好与登记册布局", () => {
+describe("外观偏好与列表布局", () => {
   it("URL 临时覆盖不写回本地偏好", () => {
     const storage = { setItem: vi.fn() };
 
@@ -346,7 +352,7 @@ describe("外观偏好与登记册布局", () => {
     expect(storage.setItem).toHaveBeenCalledWith("skillmate-skin", "standard");
   });
 
-  it("Skills 与 Updates 空状态保持四列登记行结构", () => {
+  it("Skills 与 Updates 空状态独立成块", () => {
     const skillsRender = render(
       <SkillsView
         skills={[]}
@@ -362,20 +368,14 @@ describe("外观偏好与登记册布局", () => {
         onRemove={vi.fn()}
       />
     );
-    const skillCells = [...skillsRender.container.querySelector(".registry-empty").children];
-    const skillRegistry = skillsRender.container.querySelector(".registry");
-    expect(skillCells).toHaveLength(4);
-    expect(skillCells[0].classList.contains("registry-main")).toBe(true);
-    expect(skillRegistry?.getAttribute("role")).toBe("table");
-    expect(skillRegistry?.querySelectorAll('[role="columnheader"]')).toHaveLength(4);
-    expect(skillRegistry?.querySelector(".registry-empty")?.getAttribute("role")).toBe("row");
-    expect(skillRegistry?.querySelectorAll('.registry-empty > [role="cell"]')).toHaveLength(4);
+    const skillEmpty = skillsRender.container.querySelector(".empty-state");
+    expect(skillEmpty?.querySelector("h3")).toBeTruthy();
+    expect(skillEmpty?.querySelector(".empty-actions button")).toBeTruthy();
+    expect(skillsRender.container.querySelector(".skill-list")).toBeNull();
 
     const updatesRender = render(
       <UpdatesView
-        skills={[]}
         orderedSkills={[]}
-        stats={{ behind: 0, syncable: 0, failed: 0 }}
         updateState={{}}
         getSyncInfo={vi.fn()}
         checkAll={vi.fn()}
@@ -383,24 +383,17 @@ describe("外观偏好与登记册布局", () => {
         updateOne={vi.fn()}
       />
     );
-    const updateCells = [...updatesRender.container.querySelector(".registry-empty").children];
-    const updateRegistry = updatesRender.container.querySelector(".registry");
-    expect(updateCells).toHaveLength(4);
-    expect(updateCells[0].classList.contains("registry-main")).toBe(true);
-    expect(updateRegistry?.getAttribute("role")).toBe("table");
-    expect(updateRegistry?.querySelectorAll('[role="columnheader"]')).toHaveLength(4);
-    expect(updateRegistry?.querySelector(".registry-empty")?.getAttribute("role")).toBe("row");
-    expect(updateRegistry?.querySelectorAll('.registry-empty > [role="cell"]')).toHaveLength(4);
+    const updateEmpty = updatesRender.container.querySelector(".empty-state");
+    expect(updateEmpty?.querySelector("h3")).toBeTruthy();
+    expect(updatesRender.container.querySelector(".skill-list")).toBeNull();
   });
 
-  it("平台空状态复用登记册与统一页面标题", () => {
+  it("平台空状态与统一页面标题", () => {
     const { container } = render(<AssistantsView assistants={[]} installedCount={0} />);
 
     expect(container.querySelector(".surface-header .surface-meta")?.textContent).toBe("已发现 0 / 0");
-    expect(container.querySelector(".assistant-registry .registry-empty")?.children).toHaveLength(4);
-    expect(container.querySelector(".assistant-registry")?.getAttribute("role")).toBe("table");
-    expect(container.querySelectorAll('.assistant-registry [role="columnheader"]')).toHaveLength(4);
-    expect(container.querySelectorAll('.assistant-registry .registry-empty > [role="cell"]')).toHaveLength(4);
+    expect(container.querySelector(".assistant-list .empty-state")).toBeTruthy();
+    expect(container.querySelector(".assistant-list .skill-row")).toBeNull();
     expect(screen.getByText("尚未发现平台")).toBeTruthy();
   });
 
@@ -446,8 +439,8 @@ describe("外观偏好与登记册布局", () => {
 
     const toggle = screen.getByRole("button", { name: "查看全部 4" });
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.getByText("~/.agents/skills")).toBeTruthy();
-    expect(screen.getByText("2 个目录")).toBeTruthy();
+    expect(screen.getByText(/~\/\.agents\/skills/)).toBeTruthy();
+    expect(screen.getByText(/2 个目录/)).toBeTruthy();
 
     await user.click(toggle);
 
@@ -498,6 +491,7 @@ describe("外观偏好与登记册布局", () => {
     const onAdopt = vi.fn();
     render(<AssistantsView assistants={[]} installedCount={0} onAdopt={onAdopt} />);
 
+    fireEvent.click(screen.getByRole("button", { name: /项目 Skills 核验/ }));
     fireEvent.change(screen.getByLabelText("项目路径"), { target: { value: "/work/demo" } });
     fireEvent.click(screen.getByRole("button", { name: "检查" }));
     await screen.findByText("共 2 · 项目 1 · 全局 1");
@@ -551,6 +545,7 @@ describe("外观偏好与登记册布局", () => {
       throw new Error(`未处理命令: ${command}`);
     });
     render(<AssistantsView assistants={[]} installedCount={0} onMaterialize={onMaterialize} />);
+    fireEvent.click(screen.getByRole("button", { name: /项目 Skills 核验/ }));
     fireEvent.change(screen.getByLabelText("项目路径"), { target: { value: "/work/demo" } });
     fireEvent.click(screen.getByRole("button", { name: "检查" }));
     await screen.findByText("共 4 · 项目 3 · 全局 1");
@@ -594,7 +589,7 @@ describe("外观偏好与登记册布局", () => {
     expect(invoke).not.toHaveBeenCalledWith("materialize_skill", expect.anything());
   });
 
-  it("来源签章由稳定来源类型决定样式", () => {
+  it("来源说明由稳定来源类型决定，Updates 登记行保留签章", () => {
     const unmanagedRender = render(
       <SkillsView
         skills={[{
@@ -622,23 +617,21 @@ describe("外观偏好与登记册布局", () => {
         onRemove={vi.fn()}
       />
     );
-    expect(unmanagedRender.container.querySelector(".stamp-source")?.classList.contains("unmanaged")).toBe(true);
-    expect(unmanagedRender.container.querySelectorAll('.registry-row[role="row"] > [role="cell"]')).toHaveLength(4);
+    expect(unmanagedRender.container.querySelector('.skill-row[role="row"] .skill-meta')?.textContent).not.toContain("未知来源");
+    expect(unmanagedRender.container.querySelectorAll('.skill-row[role="row"]')).toHaveLength(1);
     unmanagedRender.unmount();
 
     const skill = { path: "/tmp/.agents/skills/package", name: "package" };
     const packageRender = render(
       <UpdatesView
-        skills={[skill]}
         orderedSkills={[skill]}
-        stats={{ behind: 0, syncable: 1, failed: 0 }}
         updateState={{}}
         getSyncInfo={() => ({
           originKind: "legacy_npm",
           originLocator: "example-package",
           installedRef: "1.0.0",
-          latestRef: "1.0.0",
-          syncState: "current",
+          latestRef: "1.0.1",
+          syncState: "behind",
           canSync: true,
         })}
         checkAll={vi.fn()}
@@ -647,7 +640,7 @@ describe("外观偏好与登记册布局", () => {
       />
     );
     expect(packageRender.container.querySelector(".stamp-source")?.classList.contains("npm")).toBe(true);
-    expect(packageRender.container.querySelectorAll('.registry-row[role="row"] > [role="cell"]')).toHaveLength(4);
+    expect(packageRender.container.querySelectorAll('.skill-row[role="row"] > [role="cell"]')).toHaveLength(4);
   });
 
   it("库中未启用的 Skill 提供直接启用操作", async () => {
@@ -683,9 +676,113 @@ describe("外观偏好与登记册布局", () => {
       />
     );
 
+    await user.click(screen.getByRole("row"));
     await user.click(screen.getByRole("button", { name: "启用 writer" }));
 
     expect(onEnable).toHaveBeenCalledWith(skill);
+  });
+
+  it("筛选片收窄技能行，详情栏随行展开并可关闭", async () => {
+    const user = userEvent.setup();
+    const healthy = {
+      path: "/tmp/skillmate/skills/healthy",
+      name: "healthy",
+      source: "Local",
+      source_type: "local",
+      managed_by_app: true,
+      in_library: true,
+      tags: [],
+      size: "1 KB",
+      ai: "SkillMate 库",
+      structure_status: "complete",
+      structure_warnings: [],
+    };
+    const risky = {
+      ...healthy,
+      path: "/tmp/skillmate/skills/risky",
+      name: "risky",
+      structure_status: "partial",
+      structure_warnings: ["missing_entry_document"],
+      has_update: true,
+      can_sync: true,
+    };
+    const onUpdate = vi.fn();
+    const props = {
+      skills: [healthy, risky],
+      allSkillCount: 2,
+      selectedTagCount: 0,
+      tags: [],
+      onInstall: vi.fn(),
+      onClearFilters: vi.fn(),
+      onEditTags: vi.fn(),
+      onOpenDirectory: vi.fn(),
+      onPreview: vi.fn(),
+      onUpdate,
+      onUnlink: vi.fn(),
+      onRemove: vi.fn(),
+    };
+    const { container, rerender } = render(<SkillsView {...props} />);
+
+    expect(container.querySelectorAll(".skill-row")).toHaveLength(2);
+    await user.click(screen.getByRole("button", { name: "更新" }));
+    expect(onUpdate).toHaveBeenCalledWith(risky.path);
+    await user.click(screen.getByRole("button", { name: /需处理/ }));
+    expect(container.querySelectorAll(".skill-row")).toHaveLength(1);
+    expect(screen.getByText("risky")).toBeTruthy();
+
+    await user.click(screen.getByText("risky").closest(".skill-row"));
+    expect(container.querySelector(".skill-pane")?.getAttribute("aria-label")).toBe("risky 详情");
+    await user.click(screen.getByRole("button", { name: "关闭详情" }));
+    expect(container.querySelector(".skill-pane")).toBeNull();
+
+    screen.getByRole("button", { name: "risky 的更多操作" }).focus();
+    await user.keyboard("{Enter}");
+    expect(container.querySelector(".skill-pane")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /全部/ }));
+    screen.getByText("healthy").closest(".skill-row").focus();
+    await user.keyboard("{Enter}");
+    expect(container.querySelector(".skill-pane")?.getAttribute("aria-label")).toBe("healthy 详情");
+
+    rerender(<SkillsView {...props} filterRequest={{ filter: "attention", nonce: 1 }} />);
+    expect(container.querySelectorAll(".skill-row")).toHaveLength(1);
+    expect(screen.getByText("risky")).toBeTruthy();
+  });
+
+  it("可更新视图只列待处理项，并支持状态与标签筛选", async () => {
+    const user = userEvent.setup();
+    const onToggleTag = vi.fn();
+    const alpha = { path: "/tmp/skillmate/skills/alpha", name: "alpha", managed_by_app: true };
+    const beta = { path: "/tmp/skillmate/skills/beta", name: "beta", managed_by_app: true };
+    const { container } = render(
+      <UpdatesView
+        orderedSkills={[alpha, beta]}
+        updateState={{}}
+        getSyncInfo={(skill) => (skill.name === "alpha"
+          ? { syncState: "behind", originKind: "git", installedRef: "old", latestRef: "new", lagCount: 2, canCheck: true, canSync: true }
+          : { syncState: "current", originKind: "git", installedRef: "same", latestRef: "same", canCheck: true, canSync: true })}
+        checkAll={vi.fn()}
+        checkOne={vi.fn()}
+        updateOne={vi.fn()}
+        tags={[{ id: "t1", name: "写作", color: "#f00" }]}
+        selectedTagIds={[]}
+        onToggleTag={onToggleTag}
+      />
+    );
+
+    expect(container.querySelectorAll(".skill-row")).toHaveLength(1);
+    expect(screen.getByText("alpha")).toBeTruthy();
+    expect(screen.queryByText("beta")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /失败/ }));
+    expect(container.querySelectorAll(".skill-row")).toHaveLength(0);
+    expect(screen.getByText("没有匹配的 Skills")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: /全部/ }));
+    expect(container.querySelectorAll(".skill-row")).toHaveLength(1);
+
+    await user.click(screen.getByRole("button", { name: "写作" }));
+    expect(onToggleTag).toHaveBeenCalledWith("t1");
   });
 });
 
@@ -1097,6 +1194,7 @@ describe("安装流程交互", () => {
       />
     );
 
+    await user.click(screen.getByText("writer").closest(".skill-row"));
     expect(screen.getByText("共享 2")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "writer 的更多操作" }));
     await user.click(screen.getByRole("button", { name: "删除 writer" }));
@@ -1155,6 +1253,7 @@ describe("安装流程交互", () => {
       />
     );
 
+    await user.click(screen.getByText("risky").closest(".skill-row"));
     await user.click(screen.getByRole("button", { name: "审查 risky" }));
     expect(onPreview).toHaveBeenCalledWith("/tmp/.agents/skills/risky");
 
@@ -1426,6 +1525,8 @@ describe("场景与 Git 备份流程", () => {
         }}
       />
     );
+
+    await userEvent.click(screen.getByRole("button", { name: "新建场景" }));
 
     expect(screen.getByText("gh-address-comments")).toBeTruthy();
     expect(screen.getByText("~/.codex/skills/gh-address-comments")).toBeTruthy();

@@ -20,7 +20,7 @@ SkillMate 的差异化不是替代所有生态安装器，而是将严格的 Age
 
 ## Operating Context
 
-产品作为 Tauri 桌面应用运行，读取用户主目录和用户明确选择的项目目录中的 Skills。主导航按概览、技能库、启用位置、应用场景、维护和设置组织；应用场景面向用户的任务组合，环境快照、`skillmate.toml` 和 Git 备份作为渐进披露的高级能力。
+产品作为 Tauri 桌面应用运行，读取用户主目录和用户明确选择的项目目录中的 Skills。主导航按概览、技能库、启用位置、应用场景、可更新和设置组织；应用场景面向用户的任务组合，环境快照、`skillmate.toml` 和 Git 备份作为渐进披露的高级能力。
 
 ## Capabilities and Constraints
 

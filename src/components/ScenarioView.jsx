@@ -1,9 +1,15 @@
-import { useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import Icon from "./Icon.jsx";
 import { AiAvatar } from "./InventoryViews.jsx";
 import { useI18n } from "../lib/i18n.jsx";
-import { SurfaceHeader, SurfaceSectionHeader } from "./SurfaceHeader.jsx";
+import { SurfaceHeader } from "./SurfaceHeader.jsx";
 import { buildSkillCardView } from "../lib/skillmate.mjs";
+
+function skillHue(name = "") {
+  let hash = 0;
+  for (const ch of name) hash = (hash * 31 + ch.codePointAt(0)) % 360;
+  return hash;
+}
 
 function formatHomePath(path) {
   return path
@@ -21,6 +27,11 @@ function skillPlatforms(skill, unknownLabel) {
 export default function ScenarioView({ scenarios, skills, flow, onEnable, toolbar }) {
   const { t } = useI18n();
   const [query, setQuery] = useState("");
+  const [editorOpen, setEditorOpen] = useState(false);
+  const hasDraft = Boolean(
+    flow.editor.name || flow.editor.description || flow.editor.manualInput || flow.editor.selectedPaths.length > 0
+  );
+  const showEditor = editorOpen || hasDraft;
   const filteredSkills = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
     if (!normalizedQuery) return skills;
@@ -54,8 +65,16 @@ export default function ScenarioView({ scenarios, skills, flow, onEnable, toolba
 
   return (
     <div className="scenario-view view-shell">
-      <SurfaceHeader title={t("nav.scenarios")} description={t("scenarios.subtitle")} meta={scenarios.length} />
+      <SurfaceHeader
+        title={t("nav.scenarios")}
+        description={t("scenarios.subtitle")}
+        meta={scenarios.length}
+        actions={!showEditor && (
+          <button className="btn btn-primary btn-sm" onClick={() => setEditorOpen(true)}><Icon name="plus" size={14} />{t("scenarios.editor")}</button>
+        )}
+      />
       {toolbar}
+      {showEditor && (
       <section className="scenario-editor-card">
         <header className="scenario-editor-head">
           <span className="scenario-editor-icon"><Icon name="scenarios" size={20} /></span>
@@ -126,51 +145,58 @@ export default function ScenarioView({ scenarios, skills, flow, onEnable, toolba
           <span>{t("scenarios.selectedCount", { count: selectedCount })}</span>
           <div className="card-actions">
             <button className="btn btn-secondary btn-sm" onClick={flow.editor.clear}>{t("scenarios.clear")}</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setEditorOpen(false)}>{t("scenarios.editorCollapse")}</button>
             <button className="btn btn-primary btn-sm" disabled={flow.editor.creating} onClick={flow.editor.create}><Icon name="plus" size={14} />{t("scenarios.save")}</button>
           </div>
         </footer>
       </section>
+      )}
 
-      <SurfaceSectionHeader title={t("scenarios.saved")} meta={scenarios.length} description={t("scenarios.enableHint")} />
+      <div className="seclabel">{t("scenarios.saved")} · {scenarios.length}</div>
+      <p className="seclabel-sub">{t("scenarios.enableHint")}</p>
       {scenarios.length === 0 ? (
         <div className="scenario-empty"><Icon name="scenarios" size={22} /><div><strong>{t("scenarios.empty")}</strong><p>{t("scenarios.emptyHint")}</p></div></div>
       ) : (
-        <div className="scenario-list">
+        <div className="skill-list">
           {scenarios.map((scenario) => {
             const details = flow.details[scenario.id] || [];
             const canEnable = details.length > 0 && details.every(item => item.exists && buildSkillCardView(item.skill, t).canEnable);
+            const names = scenario.skill_ids
+              .map(id => skills.find(entry => entry.path === id)?.name)
+              .filter(Boolean);
+            const metaParts = [
+              scenario.description,
+              t("scenarios.skillCount", { count: scenario.skill_ids.length }),
+              scenario.created_at,
+            ].filter(Boolean);
             return (
-            <div className="scenario-card" key={scenario.id}>
-              <div className="scenario-icon"><Icon name="scenarios" size={24} /></div>
-              <div className="scenario-info">
-                <h3>{scenario.name}</h3>
-                {scenario.description && <p>{scenario.description}</p>}
-                <span>{t("scenarios.skillCount", { count: scenario.skill_ids.length })} · {scenario.created_at}</span>
-                {onEnable && !canEnable && <p className="empty-hint">{t("scenarios.enableRequirement")}</p>}
-                {flow.expandedId === scenario.id && (
-                  <div className="scenario-detail">
-                    {flow.details[scenario.id]?.map((item) => (
-                      <div key={item.path} className={`scenario-path-row ${item.exists ? "" : "missing"}`}>
-                        <div>
-                          <strong>{item.skill?.name || t("scenarios.missingSkill")}</strong>
-                          <div className="card-path scenario-detail-path">{formatHomePath(item.path)}</div>
-                        </div>
-                        <span className={`tag more ${item.exists ? "" : "warn"}`}>{item.exists ? (item.skill?.ai || t("scenarios.exists")) : t("scenarios.missing")}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
+            <React.Fragment key={scenario.id}>
+            <div className={`skill-row scenario-row${flow.expandedId === scenario.id ? " previewed" : ""}`}>
+              <span className="skill-logo" style={{ "--hue": String(skillHue(scenario.name)) }} aria-hidden="true">{scenario.name.slice(0, 2)}</span>
+              <div className="skill-copy">
+                <div className="skill-name">
+                  <span className="skill-title">{scenario.name}</span>
+                  {onEnable && !canEnable && <span className="dot amber" title={t("scenarios.enableRequirement")} />}
+                </div>
+                <div className="skill-meta">
+                  {metaParts.join(" · ")}
+                  {onEnable && !canEnable && ` · ${t("scenarios.enableRequirement")}`}
+                </div>
               </div>
-              <div className="card-actions">
-                <button className="btn btn-secondary btn-sm" onClick={() => flow.setExpandedId(flow.expandedId === scenario.id ? "" : scenario.id)}><Icon name="preview" size={14} />{t(flow.expandedId === scenario.id ? "scenarios.collapse" : "scenarios.expand")}</button>
-                {onEnable && <button className="btn btn-primary btn-sm"
-                  disabled={!canEnable}
-                  title={t("scenarios.enableRequirement")}
-                  onClick={() => onEnable(details.map(item => item.skill))}>
-                  <Icon name="play" size={14} />{t("scenarios.enable")}
-                </button>}
-              </div>
-              <details className="registry-more scenario-more">
+              {names.length > 0 && (
+                <div className="skill-badges">
+                  {names.slice(0, 2).map(name => <span key={name} className="tag">{name}</span>)}
+                  {names.length > 2 && <span className="tag more">+{names.length - 2}</span>}
+                </div>
+              )}
+              <button className="btn btn-ghost btn-sm" onClick={() => flow.setExpandedId(flow.expandedId === scenario.id ? "" : scenario.id)}>{t(flow.expandedId === scenario.id ? "scenarios.collapse" : "scenarios.expand")}<Icon name="arrow" size={13} className={flow.expandedId === scenario.id ? "expanded" : ""} /></button>
+              {onEnable && <button className={`btn btn-sm ${canEnable ? "btn-primary" : "btn-secondary"}`}
+                disabled={!canEnable}
+                title={t("scenarios.enableRequirement")}
+                onClick={() => onEnable(details.map(item => item.skill))}>
+                <Icon name="play" size={14} />{t("scenarios.enable")}
+              </button>}
+              <details className="registry-more skill-more">
                 <summary className="btn btn-ghost btn-sm" role="button" aria-label={t("skills.moreActions", { name: scenario.name })}><Icon name="more" size={17} /></summary>
                 <div className="registry-more-actions">
                   <button className="btn btn-ghost btn-sm" onClick={() => flow.apply(scenario)}><Icon name="search" size={14} />{t("scenarios.filter")}</button>
@@ -180,6 +206,20 @@ export default function ScenarioView({ scenarios, skills, flow, onEnable, toolba
                 </div>
               </details>
             </div>
+            {flow.expandedId === scenario.id && (
+              <div className="scenario-detail-panel">
+                {flow.details[scenario.id]?.map((item) => (
+                  <div key={item.path} className={`scenario-path-row ${item.exists ? "" : "missing"}`}>
+                    <div>
+                      <strong>{item.skill?.name || t("scenarios.missingSkill")}</strong>
+                      <div className="card-path scenario-detail-path">{formatHomePath(item.path)}</div>
+                    </div>
+                    <span className={`tag more ${item.exists ? "" : "warn"}`}>{item.exists ? (item.skill?.ai || t("scenarios.exists")) : t("scenarios.missing")}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            </React.Fragment>
             );
           })}
         </div>

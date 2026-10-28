@@ -142,7 +142,7 @@ function LanguageSettings() {
   );
 }
 
-const SKIN_OPTIONS = ["ledger", "standard", "cardbox"];
+const SKIN_OPTIONS = ["standard", "ledger", "cardbox"];
 const THEME_OPTIONS = ["system", "light", "dark"];
 
 function AppearanceSettings({ value }) {

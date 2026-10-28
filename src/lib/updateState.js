@@ -5,6 +5,7 @@ const fields = {
   syncState: "sync_state", message: "sync_message", lagCount: "lag_count",
   lastProbeAt: "last_probe_at", lastSyncAt: "last_sync_at",
   managedByApp: "managed_by_app", canCheck: "can_check", canSync: "can_sync",
+  hasUpdate: "has_update",
 };
 
 export function getUpdateInfo(skill, state = {}, unknownMessage = "") {
@@ -13,6 +14,7 @@ export function getUpdateInfo(skill, state = {}, unknownMessage = "") {
   return { ...info, message: info.message ?? unknownMessage,
     lagCount: info.lagCount ?? 0, canCheck: info.canCheck ?? false,
     canSync: info.canSync ?? false,
+    hasUpdate: info.hasUpdate ?? info.syncState === "behind",
     checking: Boolean(state.checking), updating: Boolean(state.updating) };
 }
 
