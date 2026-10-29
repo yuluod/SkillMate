@@ -812,7 +812,6 @@ function App() {
             <Logo />
             <h1 className="app-name">SkillMate</h1>
           </div>
-          <ProjectWorkspaceBar workspace={projectWorkspace} onOpen={() => setView("ai")} />
         </div>
 
         <div className="header-center">
@@ -926,6 +925,7 @@ function App() {
               onMaterialize={setAdoptionCandidate}
               projectRevision={projectInspectionRevision}
               workspace={projectWorkspace}
+              toolbar={<ProjectWorkspaceBar workspace={projectWorkspace} onOpen={() => setView("ai")} />}
             />
           )}
 

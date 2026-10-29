@@ -3003,12 +3003,12 @@ body {
    安静列表系统（本会话新增）
    ========================================================== */
 
-.header .ws-picker { -webkit-app-region: no-drag; }
-
 [data-skin="ledger"] .skill-row {
   padding-inline: 6px;
   border-bottom-color: var(--rule);
 }
+
+.view-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: -6px 0 16px; }
 
 .ws-picker { position: relative; flex-shrink: 0; }
 

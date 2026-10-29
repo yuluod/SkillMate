@@ -39,6 +39,17 @@ it("opens a project from the directory picker", async () => {
   expect(onOpen).toHaveBeenCalledOnce();
 });
 
+it("closes the project picker when clicking outside or pressing Escape", () => {
+  const { container } = render(<ProjectWorkspaceBar workspace={{ path: "", projects: [], select: vi.fn() }} onOpen={vi.fn()} />, { wrapper });
+  const picker = container.querySelector(".ws-picker");
+  picker.open = true;
+  fireEvent.mouseDown(document.body);
+  expect(picker.open).toBe(false);
+  picker.open = true;
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(picker.open).toBe(false);
+});
+
 it("ignores a late inspection when switching project", async () => {
   const first = deferred(); const second = deferred(); const remember = vi.fn();
   invoke.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);

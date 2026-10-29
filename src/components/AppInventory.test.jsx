@@ -129,4 +129,13 @@ describe("技能库与父页面协作", () => {
     await user.click(screen.getByText("risky").closest('[role="row"]'));
     expect(screen.getByText(summary)).toBeTruthy();
   });
+
+  it("项目选择位于启用位置页的页头之下", async () => {
+    const user = userEvent.setup();
+    const { container } = start();
+    await screen.findByText("healthy");
+    expect(container.querySelector(".header").textContent).not.toContain("选择项目");
+    await user.click(within(screen.getByRole("navigation")).getByRole("button", { name: /^启用位置/ }));
+    expect(within(screen.getByRole("main")).getByText("选择项目")).toBeTruthy();
+  });
 });

@@ -427,7 +427,7 @@ export function AssistantsView({ assistants, installedCount, onAdopt, onMaterial
         description={t("assistants.subtitle")}
         meta={t("assistants.configuredCount", { installed: installedCount, total: assistants.length })}
       />
-      {toolbar}
+      {toolbar && <div className="view-toolbar">{toolbar}</div>}
       <ProjectInspectionPanel onAdopt={onAdopt} onMaterialize={onMaterialize} revision={projectRevision} workspace={workspace} />
       <div
         className="skill-list assistant-list"

@@ -25,9 +25,8 @@ export default function ProjectWorkspaceBar({ workspace, onOpen }) {
     } catch (reason) { setError(toUserErrorMessage(reason, t("error.safeRetry"))); }
   }
   useEffect(() => {
-    if (!pickerRef.current?.open) return;
     const onPointerDown = (event) => {
-      if (pickerRef.current && !pickerRef.current.contains(event.target)) closePicker();
+      if (pickerRef.current?.open && !pickerRef.current.contains(event.target)) closePicker();
     };
     const onKeyDown = (event) => { if (event.key === "Escape") closePicker(); };
     document.addEventListener("mousedown", onPointerDown);
@@ -36,7 +35,7 @@ export default function ProjectWorkspaceBar({ workspace, onOpen }) {
       document.removeEventListener("mousedown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
     };
-  });
+  }, []);
   return (
     <details className="ws-picker" ref={pickerRef}>
       <summary className="ws-chip" title={workspace.path || t("workspace.pick")}>
