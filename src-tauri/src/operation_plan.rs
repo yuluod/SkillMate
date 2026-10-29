@@ -35,7 +35,12 @@ impl StableHash {
     }
 
     pub fn finish(&self) -> String {
-        format!("{:x}", self.0.clone().finalize())
+        self.0
+            .clone()
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
     }
 }
 

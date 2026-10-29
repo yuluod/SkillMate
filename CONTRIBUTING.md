@@ -6,7 +6,7 @@
 
 - Node.js 24.22.1（见 `.node-version`）
 - pnpm 12.14.0（见 `package.json#packageManager`）
-- Rust 1.96.0（见 `rust-toolchain.toml`）
+- Rust 1.99.1（见 `rust-toolchain.toml`）
 - 当前平台所需的 Tauri v2 系统依赖
 
 安装依赖：

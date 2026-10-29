@@ -330,7 +330,17 @@ test("公开仓库必须提供完整许可证、贡献与安全治理文件", ()
   assert.match(nodeVersion, /^\d+\.\d+\.\d+$/);
   assert.equal(packageJson.engines.node, `>=${nodeVersion}`);
   assert.equal(packageJson.devEngines.runtime.version, `>=${nodeVersion}`);
-  assert.match(toolchain, /channel = "1\.96\.0"/);
+  const rustVersion = toolchain.match(/^channel\s*=\s*"([^"]+)"/m);
+  assert.ok(rustVersion, "rust-toolchain.toml 必须声明 channel");
+  const escapedRustVersion = rustVersion[1].replaceAll(".", "\\.");
+  assert.match(readText("CONTRIBUTING.md"), new RegExp(`Rust ${escapedRustVersion}`));
+  for (const path of [".github/workflows/ci.yml", ".github/workflows/release.yml"]) {
+    assert.match(
+      readText(path),
+      new RegExp(`RUST_VERSION: ${escapedRustVersion}`),
+      `${path} 的 RUST_VERSION 必须与 rust-toolchain.toml 一致`,
+    );
+  }
   assert.match(dependabot, /package-ecosystem: npm/);
   assert.match(dependabot, /package-ecosystem: cargo/);
   assert.match(dependabot, /package-ecosystem: github-actions/);
