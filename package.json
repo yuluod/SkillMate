@@ -6,12 +6,12 @@
   "license": "AGPL-3.0-or-later",
   "packageManager": "pnpm@12.14.0",
   "engines": {
-    "node": ">=24.22.1"
+    "node": "^24"
   },
   "devEngines": {
     "runtime": {
       "name": "node",
-      "version": ">=24.22.1",
+      "version": "^24",
       "onFail": "error"
     }
   },

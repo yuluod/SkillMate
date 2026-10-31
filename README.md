@@ -288,7 +288,7 @@ SkillMate 当前专注于目录型 Agent Skills，暂不提供：
 
 ## 本地开发
 
-需要 Node.js 24.22.1+、pnpm 12.14.0、Rust，以及当前系统对应的 [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/)。
+需要 Node.js 24.x、pnpm 12.14.0、Rust，以及当前系统对应的 [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/)。
 
 ```bash
 pnpm install
