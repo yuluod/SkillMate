@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState, useRef, useCallback } from "react";
+import { IconContext } from "@phosphor-icons/react";
 import Icon from "./components/Icon.jsx";
 import appIcon from "../src-tauri/icons/128x128.png";
 import {
@@ -802,7 +803,10 @@ function App() {
     setProjectInspectionRevision((revision) => revision + 1);
   }
 
+  const iconContext = useMemo(() => ({ weight: skin === "cardbox" ? "bold" : "regular" }), [skin]);
+
   return (
+    <IconContext.Provider value={iconContext}>
     <div className="app">
       {loading && <Loader label={t("common.loading")} />}
 
@@ -1116,6 +1120,7 @@ function App() {
         />
       )}
     </div>
+    </IconContext.Provider>
   );
 }
 
