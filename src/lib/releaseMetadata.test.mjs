@@ -326,10 +326,10 @@ test("公开仓库必须提供完整许可证、贡献与安全治理文件", ()
   assert.match(readText("SECURITY.md"), /Report a vulnerability/);
   assert.match(readText("CONTRIBUTING.md"), /cargo clippy/);
   // 三处版本声明互相应一致，避免升级时漏改某个文件。
-  const nodeVersion = readText(".node-version").trim();
-  assert.match(nodeVersion, /^\d+\.\d+\.\d+$/);
-  assert.equal(packageJson.engines.node, `>=${nodeVersion}`);
-  assert.equal(packageJson.devEngines.runtime.version, `>=${nodeVersion}`);
+  const nodeChannel = readText(".nvmrc").trim();
+  assert.match(nodeChannel, /^\d+(?:\.\d+){0,2}$/);
+  assert.equal(packageJson.engines.node, `^${nodeChannel}`);
+  assert.equal(packageJson.devEngines.runtime.version, `^${nodeChannel}`);
   const rustVersion = toolchain.match(/^channel\s*=\s*"([^"]+)"/m);
   assert.ok(rustVersion, "rust-toolchain.toml 必须声明 channel");
   const escapedRustVersion = rustVersion[1].replaceAll(".", "\\.");
