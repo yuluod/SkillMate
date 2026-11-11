@@ -3817,7 +3817,7 @@ mod tests {
             [&existing_key],
         )
         .unwrap();
-        let reason = skill_install::REASON_TARGET_EXISTS;
+        let reason = "Target directory already exists";
         let mut preview = install_preview_error(
             reason,
             "local".to_string(),
@@ -3840,6 +3840,15 @@ mod tests {
             });
         }
         preview.package_detection.warnings = vec!["target_exists".to_string()];
+
+        // 中文提示本身不能授权复用，必须存在对应目标的稳定冲突码。
+        let mut unrelated = preview.clone();
+        unrelated.target_actions[0].reason = "目标目录已存在".to_string();
+        unrelated.conflicts[0].reason = "unsafe_paths".to_string();
+        assert_eq!(
+            reuse_library_preview(&db, unrelated).target_actions[0].action,
+            "skip"
+        );
 
         let preview = reuse_library_preview(&db, preview);
 
