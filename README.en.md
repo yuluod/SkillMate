@@ -109,6 +109,10 @@ Choose a project folder from Overview, Deployments, or Scenarios. Successful ins
 - Scan global Skill directories for every supported platform.
 - Inspect a project path and calculate the Skills visible to each platform.
 - Distinguish project, global, shadowed, and shared discovery entries.
+- The Skill library lists each logical Skill once: deployments across platforms merge into one row, and the detail pane disables them per location.
+- Search and sort inside the library list, with All, Not enabled, Updates, and Needs attention filters. Desktop shows the first visible Skill’s details by default; smaller screens switch to details after selecting a row.
+- Choose “Enable to…” in the library to select agents and global/project scope in the right pane, then preview and confirm the file plan. Returning to details does not enable the Skill.
+- Show externally managed counts and missing sources on Overview.
 - Display content source, manager, update mechanism, and enabled platforms.
 - Summarize structure issues, static risks, local changes, content drift, and scan diagnostics.
 

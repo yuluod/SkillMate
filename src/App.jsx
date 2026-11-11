@@ -13,7 +13,7 @@ import {
 } from "./components/SkillMateModals.jsx";
 import SettingsView from "./components/SettingsView.jsx";
 import ScenarioView from "./components/ScenarioView.jsx";
-import { AssistantsView, SkillsView, UpdatesView } from "./components/InventoryViews.jsx";
+import { AssistantsView, SkillsView } from "./components/InventoryViews.jsx";
 import DashboardView, { MarketDiscovery } from "./components/DashboardView.jsx";
 import {
   buildAppUpdateView,
@@ -21,6 +21,7 @@ import {
   buildDriftGroups,
   buildScenarioSkillInventory,
   buildUniqueSkillInventory,
+  buildUnifiedSkillInventory,
   filterSkillsByScenario,
   getMarketInstallRequest,
 } from "./lib/skillmate.mjs";
@@ -51,10 +52,9 @@ const VIEWS = {
   skills: { titleKey: "nav.skills", icon: "skills" },
   ai: { titleKey: "nav.assistants", icon: "monitor" },
   scenarios: { titleKey: "nav.scenarios", icon: "scenarios" },
-  updates: { titleKey: "nav.updates", icon: "updates" },
   settings: { titleKey: "nav.settings", icon: "settings" },
 };
-const NAV_VIEW_KEYS = ["dashboard", "skills", "ai", "scenarios", "updates", "settings"];
+const NAV_VIEW_KEYS = ["dashboard", "skills", "ai", "scenarios", "settings"];
 
 const SETTINGS_TAB_LABELS = {
   language: "settings.language",
@@ -108,7 +108,8 @@ function getSystemTheme() {
 function getInitialView() {
   if (typeof window === "undefined") return "dashboard";
   const parts = window.location.hash.replace(/^#\/?/, "").split("/");
-  return VIEWS[parts[0]] ? parts[0] : "dashboard";
+  const key = parts[0] === "updates" ? "skills" : parts[0];
+  return VIEWS[key] ? key : "dashboard";
 }
 
 function getInitialSettingsTab() {
@@ -148,18 +149,6 @@ function getDir(path) {
   return i >= 0 ? path.slice(0, i) : path;
 }
 
-
-function getStatePriority(state) {
-  switch (state) {
-    case "behind": return 0;
-    case "failed": return 1;
-    case "diverged": return 2;
-    case "ahead_local": return 3;
-    case "unsupported": return 4;
-    case "current": return 5;
-    default: return 6;
-  }
-}
 
 
 function App() {
@@ -207,6 +196,7 @@ function App() {
 
   const [sysTheme, setSysTheme] = useState(getSystemTheme);
   const searchRef = useRef(null);
+  const searchRequestedRef = useRef(false);
   const contentRef = useRef(null);
   const toastTimerRef = useRef(null);
   const trashTimerRef = useRef(null);
@@ -230,9 +220,10 @@ function App() {
   useEffect(() => {
     const applyHash = () => {
       const parts = window.location.hash.replace(/^#\/?/, "").split("/");
-      if (VIEWS[parts[0]]) {
-        setView(parts[0]);
-        if (parts[0] === "settings" && parts[1] && SETTINGS_TAB_LABELS[parts[1]]) {
+      const key = parts[0] === "updates" ? "skills" : parts[0];
+      if (VIEWS[key]) {
+        setView(key);
+        if (key === "settings" && parts[1] && SETTINGS_TAB_LABELS[parts[1]]) {
           setSettingsTab(parts[1]);
         }
       }
@@ -246,10 +237,10 @@ function App() {
     if (window.location.hash !== next) window.location.hash = next;
   }, [view, settingsTab]);
 
-  // 快捷键：Alt+1~6 切换主导航。
+  // 快捷键：Alt+1~5 切换主导航。
   useEffect(() => {
     const handler = (e) => {
-      if (e.altKey && e.key >= "1" && e.key <= "6") {
+      if (e.altKey && e.key >= "1" && e.key <= "5") {
         e.preventDefault();
         const next = NAV_VIEW_KEYS[parseInt(e.key) - 1];
         if (next === "skills") setSkillFilterRequest((current) => ({ filter: "all", nonce: current.nonce + 1 }));
@@ -310,12 +301,22 @@ function App() {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
         if (document.querySelector('[role="dialog"], [role="alertdialog"]')) return;
-        searchRef.current?.focus();
+        if (searchRef.current) searchRef.current.focus();
+        else {
+          searchRequestedRef.current = true;
+          setView("skills");
+        }
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
+  useEffect(() => {
+    if (view === "skills" && searchRequestedRef.current && searchRef.current) {
+      searchRequestedRef.current = false;
+      searchRef.current.focus();
+    }
+  }, [view, init]);
   const showToast = useCallback((msg, type = "", options = {}) => {
     const safeMessage = type === "error"
       ? toUserErrorMessage(msg, t("error.safeRetry"), t("common.messageSeparator"))
@@ -404,6 +405,8 @@ function App() {
   }, [data.assistants, data.librarySkills, t]);
   const driftGroups = useMemo(() => buildDriftGroups(data.assistants, t), [data.assistants, t]);
   const scenarioSkills = useMemo(() => buildScenarioSkillInventory(allSkills), [allSkills]);
+  // 技能库列表与统计使用统一身份：同一逻辑 Skill 的多平台部署与库内主副本合并为一行。
+  const skillInventory = useMemo(() => buildUnifiedSkillInventory(allSkills), [allSkills]);
   const dashboardStats = useMemo(
     () => buildDashboardStats(data.assistants, data.librarySkills, t),
     [data.assistants, data.librarySkills, t]
@@ -423,26 +426,26 @@ function App() {
   gitHydrateRef.current = gitBackupFlow.hydrate;
 
   const skills = useMemo(() => {
-    let list = [...allSkills];
-    if (search) list = list.filter(s => s.name.toLowerCase().includes(search.toLowerCase()));
+    let list = [...skillInventory];
+    if (search) list = list.filter(s => [s.name, s.manifest_title, s.manifest_description, s.description].filter(Boolean).join(" ").toLowerCase().includes(search.toLowerCase()));
     if (selectedTags.length > 0) list = list.filter(s => selectedTags.some(t => s.tags.includes(t)));
     if (activeScenario) {
       list = filterSkillsByScenario({ skills: list, activeScenarioPaths: activeScenario.skill_ids });
     }
     list.sort((a, b) => sort === "date" ? Number(b.modified||0) - Number(a.modified||0) : a.name.localeCompare(b.name, "zh-CN"));
     return list;
-  }, [activeScenario, allSkills, search, selectedTags, sort]);
+  }, [activeScenario, skillInventory, search, selectedTags, sort]);
 
   const updatable = useMemo(() => {
-    let list = [...allSkills];
-    if (search) list = list.filter(s => s.name.toLowerCase().includes(search.toLowerCase()));
+    let list = [...skillInventory];
+    if (search) list = list.filter(s => [s.name, s.manifest_title, s.manifest_description, s.description].filter(Boolean).join(" ").toLowerCase().includes(search.toLowerCase()));
     if (selectedTags.length > 0) list = list.filter(s => selectedTags.some(t => s.tags.includes(t)));
     if (activeScenario) {
       list = filterSkillsByScenario({ skills: list, activeScenarioPaths: activeScenario.skill_ids });
     }
     list.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
     return list;
-  }, [activeScenario, allSkills, search, selectedTags]);
+  }, [activeScenario, skillInventory, search, selectedTags]);
 
   const {
     updateState,
@@ -636,8 +639,8 @@ function App() {
   }
 
   const statAI = data.assistants.filter(a => a.exists).length;
-  const statSkills = allSkills.length;
-  const updateBadge = allSkills.reduce((count, skill) => {
+  const statSkills = skillInventory.length;
+  const updateBadge = skillInventory.reduce((count, skill) => {
     const state = updateState[skill.path]?.syncState || skill.sync_state;
     return count + (state === "behind" ? 1 : 0);
   }, 0);
@@ -743,14 +746,6 @@ function App() {
     }, { confirmLabel: t("unlink.action"), tone: "primary" });
   }, [confirmAction, loadData, showToast, t]);
 
-  const orderedUpdatable = useMemo(() => [...updatable].sort((a, b) => {
-    const aInfo = getSyncInfo(a);
-    const bInfo = getSyncInfo(b);
-    const priority = getStatePriority(aInfo.syncState) - getStatePriority(bInfo.syncState);
-    if (priority !== 0) return priority;
-    return a.name.localeCompare(b.name, "zh-CN");
-  }), [getSyncInfo, updatable]);
-
   const appUpdateView = useMemo(
     () => buildAppUpdateView(appUpdateState, language),
     [appUpdateState, language]
@@ -818,23 +813,7 @@ function App() {
           </div>
         </div>
 
-        <div className="header-center">
-          {(view === "skills" || view === "updates") && (
-            <div className="search-box">
-              <Icon name="search" size={16} />
-              <input ref={searchRef} type="text" aria-label={view === "updates" ? t("header.searchUpdates") : t("nav.skills")} placeholder={view === "updates" ? t("header.searchUpdates") : t("header.searchSkills", { shortcut: typeof navigator !== "undefined" && navigator.platform?.startsWith("Mac") ? "⌘K" : "Ctrl+K" })} value={searchInput} onChange={e => handleSearchInput(e.target.value)} />
-              {search && <button className="search-x" aria-label={t("header.clearSearch")} onClick={clearSearch}><Icon name="x" size={14} /></button>}
-            </div>
-          )}
-        </div>
-
         <div className="header-right">
-          {view === "skills" && (
-            <div className="sort-tabs">
-              <button className={`sort-tab ${sort === "name" ? "active" : ""}`} onClick={() => setSort("name")}><Icon name="tag" size={14} />{t("sort.name")}</button>
-              <button className={`sort-tab ${sort === "date" ? "active" : ""}`} onClick={() => setSort("date")}><Icon name="clock" size={14} />{t("sort.time")}</button>
-            </div>
-          )}
           <button className="btn btn-ghost" onClick={loadData} title={t("common.refresh")} aria-label={t("common.refresh")}><Icon name="refresh" size={18} className={loading ? "spin" : ""} /></button>
         </div>
       </header>
@@ -847,10 +826,10 @@ function App() {
               return (
                 <button key={k} aria-current={view === k ? "page" : undefined} className={`nav-item ${k === "settings" ? "nav-settings" : ""} ${view === k ? "active" : ""}`} onClick={() => (k === "skills" ? openSkills("all") : setView(k))}>
                   <Icon name={v.icon} size={18} />
-                  <span>{t(v.titleKey)}</span>
+                  <span className="nav-label">{t(v.titleKey)}</span>
                   {k === "skills" && statSkills > 0 && <span className="badge">{statSkills}</span>}
+                  {k === "skills" && updateBadge > 0 && <span className="badge warn">{updateBadge}</span>}
                   {k === "ai" && <span className="badge">{statAI}</span>}
-                  {k === "updates" && updateBadge > 0 && <span className="badge warn">{updateBadge}</span>}
                 </button>
               );
             })}
@@ -885,10 +864,18 @@ function App() {
           {!init && view === "skills" && (
             <SkillsView
               skills={skills}
-              allSkills={allSkills}
-              allSkillCount={allSkills.length}
+              allSkills={skillInventory}
+              allSkillCount={skillInventory.length}
               selectedTagCount={selectedTags.length}
               tags={tags}
+              searchControl={<div className="search-box">
+                <Icon name="search" size={16} />
+                <input ref={searchRef} type="search" aria-label={t("skills.search")} placeholder={t("skills.searchPlaceholder")} value={searchInput} onChange={e => handleSearchInput(e.target.value)} />
+                {searchInput && <button className="search-x" aria-label={t("header.clearSearch")} onClick={clearSearch}><Icon name="x" size={14} /></button>}
+              </div>}
+              sortControl={<label className="library-sort"><span className="visually-hidden">{t("skills.sort")}</span><select value={sort} onChange={e => setSort(e.target.value)}><option value="name">{t("sort.name")}</option><option value="date">{t("sort.time")}</option></select></label>}
+              enablePanel={installOpen && installFlow.workflow === "enable" ? <InstallModal inline flow={installFlow} assistants={data.assistants} loading={loading} onClose={() => setInstallOpen(false)} /> : null}
+              onCloseEnable={() => setInstallOpen(false)}
               onInstall={startAddSkill}
               onToggleDiscovery={() => setDiscoveryOpen((open) => !open)}
               discoveryOpen={discoveryOpen}
@@ -914,6 +901,9 @@ function App() {
               onAdopt={setAdoptionCandidate}
               onUnlink={unlinkSymlink}
               onRemove={remove}
+              onCheckAll={checkAllUpdates}
+              checkBusy={Object.values(updateState).some(state => state.checking || state.updating)}
+              onCheck={checkUpdate}
               selectedSkillPaths={selectedSkillPaths}
               onToggleSelection={toggleSkillSelection}
               onToggleVisibleSelection={toggleVisibleSkillSelection}
@@ -939,25 +929,6 @@ function App() {
               skills={scenarioSkills}
               flow={scenarioFlow}
               onEnable={enableLibrarySkill}
-            />
-          )}
-
-          {view === "updates" && (
-            <UpdatesView
-              orderedSkills={orderedUpdatable}
-              updateState={updateState}
-              getSyncInfo={getSyncInfo}
-              checkAll={checkAllUpdates}
-              checkOne={checkUpdate}
-              updateOne={setUpdatePreviewPath}
-              activeScenario={activeScenario}
-              onClearScenario={() => scenarioFlow.setActiveId("")}
-              tags={tags}
-              selectedTagCount={selectedTags.length}
-              selectedTagIds={tags.filter(tag => tag.selected).map(tag => tag.id)}
-              onToggleTag={toggleTag}
-              onClearTags={() => setTags(current => current.map(tag => ({ ...tag, selected: false })))}
-              onManageTags={() => setTagManagerOpen(true)}
             />
           )}
 
@@ -1024,7 +995,7 @@ function App() {
         </main>
       </div>
 
-      {installOpen && (
+      {installOpen && !(view === "skills" && installFlow.workflow === "enable") && (
         <InstallModal
           flow={installFlow}
           assistants={data.assistants}

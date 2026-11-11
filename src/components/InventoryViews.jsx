@@ -1,6 +1,6 @@
 import React from "react";
 import Icon from "./Icon.jsx";
-import { buildSkillCardView } from "../lib/skillmate.mjs";
+import { buildSkillCardView, isStaleSkill } from "../lib/skillmate.mjs";
 import claudeLogo from "../assets/brands/claude.svg";
 import codexLogo from "../assets/brands/codex-openai.svg";
 import openclawLogo from "../assets/brands/openclaw.svg";
@@ -14,7 +14,7 @@ import zcodeLogo from "../assets/brands/zcode.png";
 import kimiLogo from "../assets/brands/kimi.png";
 import { useI18n } from "../lib/i18n.jsx";
 import { toUserErrorMessage } from "../lib/errorMessage.mjs";
-import { SurfaceHeader } from "./SurfaceHeader.jsx";
+import { SurfaceHeader, SurfaceSectionHeader } from "./SurfaceHeader.jsx";
 import { skillmateApi } from "../lib/skillmateApi.js";
 
 const AI_META = {
@@ -61,18 +61,18 @@ function formatHomePath(path = "") {
     .replace(/^[A-Za-z]:\\Users\\[^\\]+/i, "~");
 }
 
-function sourceStampClass(kind) {
-  if (["legacy_npm", "npm"].includes(kind)) return "npm";
-  if (["legacy_pip", "pip", "pypi"].includes(kind)) return "pip";
-  if (["local", "symlink", "deployment"].includes(kind)) return "local";
-  if (["git", "github"].includes(kind)) return "git";
-  return "unmanaged";
+function skillLocations(skill, card) {
+  if (Array.isArray(skill.deployments) && skill.deployments.length > 0) return skill.deployments;
+  if (skill.in_library) return [];
+  return card.availableIn.map((assistant) => ({ ...assistant, scope: skill.scope, projectPath: skill.project_path }));
 }
 
-function skillHue(name = "") {
-  let hash = 0;
-  for (const ch of name) hash = (hash * 31 + ch.codePointAt(0)) % 360;
-  return hash;
+function locationScope(location, t) {
+  if (location.scope === "project") {
+    const name = location.projectPath?.split(/[\\/]/).filter(Boolean).pop();
+    return name ? t("skills.projectLocation", { name }) : t("projectInspection.scope.project");
+  }
+  return location.scope === "global" ? t("projectInspection.scope.global") : t("skills.discoveredLocation");
 }
 
 const SkillRow = React.memo(function SkillRow({
@@ -89,15 +89,18 @@ const SkillRow = React.memo(function SkillRow({
   onUnlink,
   onRemove,
 }) {
-  const needsAttention = card.structureTone !== "success" || card.hasManagedDrift || card.securityWarningCount > 0;
-  const metaParts = [
-    card.description,
-    card.sourceKind !== "unknown" ? card.contentSourceLabel : "",
-    skill.size,
-  ].filter(Boolean);
+  const locations = skillLocations(skill, card);
+  const status = card.needsAttention
+    ? isStaleSkill(skill) ? t("skills.stale") : t("skills.filterNeedsAttention")
+    : card.hasUpdate ? t("skills.updateReady")
+      : skill.in_library ? t("skills.inLibrary") : card.managerLabel;
+  // 统一清单行：单位置时行级停用指向该部署路径；多位置收进详情栏按位置停用。
+  const singleDeployment = Array.isArray(skill.deployments) && skill.deployments.length === 1
+    ? skill.deployments[0]
+    : null;
   return (
     <div
-      className={`skill-row${previewed ? " previewed" : ""}${checked ? " checked" : ""}`}
+      className={`skill-row library-row${previewed ? " previewed" : ""}${checked ? " checked" : ""}`}
       role="row"
       tabIndex={0}
       aria-selected={previewed}
@@ -117,20 +120,19 @@ const SkillRow = React.memo(function SkillRow({
           aria-label={t("skills.select", { name: skill.name })}
         />
       </label>
-      <span className="skill-logo" style={{ "--hue": String(skillHue(skill.name)) }} aria-hidden="true">{card.title.slice(0, 2)}</span>
+      <span className="library-skill-icon" aria-hidden="true"><Icon name="box" size={19} /></span>
       <div className="skill-copy" role="cell">
         <div className="skill-name">
           <span className="skill-title">{card.title}</span>
-          {needsAttention && (
-            <span
-              className={`skill-flag ${card.securityWarningCount > 0 || card.hasManagedDrift ? "error" : "warn"}`}
-              title={[card.warningSummary, card.securityWarningSummary].filter(Boolean).join(" · ")}
-            />
-          )}
         </div>
-        <div className="skill-meta">{metaParts.join(" · ")}</div>
+        <div className="skill-meta" title={card.description}>{card.description}</div>
       </div>
-      {card.hasUpdate && card.canSync && (
+      <div className={`library-location${locations.length === 0 ? " empty" : ""}`} role="cell" title={locations.map((location) => `${location.name} · ${locationScope(location, t)}`).join("\n")}>
+        <span>{locations.length > 1 ? t("skills.locationCount", { count: locations.length }) : locations[0]?.name || t("skills.filterNotEnabled")}</span>
+        {locations.length > 0 && <small>{locations.length === 1 ? locationScope(locations[0], t) : [...new Set(locations.map((location) => location.name))].join(" · ")}</small>}
+      </div>
+      <div className={`library-status${card.needsAttention ? " attention" : card.hasUpdate ? " update" : ""}`} role="cell">
+      {card.hasUpdate && card.canSync ? (
         <button
           className="skill-update"
           title={card.updateSummary}
@@ -139,12 +141,8 @@ const SkillRow = React.memo(function SkillRow({
         >
           <Icon name="download" size={12} />{t("skills.updateAction")}
         </button>
-      )}
-      <div className="skill-badges" role="cell" title={card.availabilityLabel}>
-        {card.availableIn.slice(0, 4).map((assistant) => (
-          <AiAvatar key={assistant.name} name={assistant.name} brand={assistant.icon} size={22} />
-        ))}
-        {card.availableIn.length > 4 && <span className="agent-badge-more">+{card.availableIn.length - 4}</span>}
+      ) : <span title={status}>{status}</span>}
+      {card.hasUpdate && card.canSync && card.needsAttention && <small>{status}</small>}
       </div>
       <details className="registry-more skill-more" onClick={(event) => event.stopPropagation()}>
         <summary className="btn btn-ghost btn-sm" role="button" aria-label={t("skills.moreActions", { name: skill.name })}><Icon name="more" size={17} /></summary>
@@ -152,7 +150,7 @@ const SkillRow = React.memo(function SkillRow({
           <button className="btn btn-ghost btn-sm" onClick={() => onEditTags(skill)} aria-label={t("skills.editTags", { name: skill.name })}><Icon name="tag" size={15} />{t("skills.tagsAction")}</button>
           <button className="btn btn-ghost btn-sm" onClick={() => onOpenDirectory(skill.path)} aria-label={t("skills.openFolder", { name: skill.name })}><Icon name="folder" size={15} />{t("skills.folderAction")}</button>
           {card.canUnlink ? (
-            <button className="btn btn-ghost btn-sm danger" onClick={() => onUnlink(skill.path, skill.name)} aria-label={t("skills.unlink", { name: skill.name })}><Icon name="unlink" size={15} />{t("skills.unlinkAction")}</button>
+            <button className="btn btn-ghost btn-sm danger" onClick={() => onUnlink(singleDeployment ? singleDeployment.path : skill.path, skill.name)} aria-label={t("skills.unlink", { name: skill.name })}><Icon name="unlink" size={15} />{t("skills.unlinkAction")}</button>
           ) : card.canDelete ? (
             <button className="btn btn-ghost btn-sm danger" onClick={() => onRemove(skill.path, skill.name, card.availableIn)} aria-label={t("skills.remove", { name: skill.name })}><Icon name="trash" size={15} />{t("skills.removeAction")}</button>
           ) : null}
@@ -162,65 +160,82 @@ const SkillRow = React.memo(function SkillRow({
   );
 });
 
-function SkillDetailPane({ skill, card, tags, t, onClose, onPreview, onUpdate, onEnable, onAdopt, onEditTags }) {
+function SkillDetailPane({ skill, card, tags, t, onClose, onPreview, onUpdate, onCheck, onEnable, onAdopt, onEditTags, onUnlink, onOpenDirectory }) {
   if (!skill || !card) return null;
+  const singleDeployment = skill.deployments?.length === 1 ? skill.deployments[0] : null;
+  const locations = skillLocations(skill, card);
   return (
-    <aside className="skill-pane" aria-label={t("skills.detailLabel", { name: card.title })}>
+    <aside className="skill-pane library-detail" aria-label={t("skills.detailLabel", { name: card.title })}>
+      <div className="library-detail-top">
+        <span>{t("skills.details")}</span>
+        <button className="btn btn-ghost btn-sm" onClick={onClose} aria-label={t("skills.detailClose")}><Icon name="x" size={16} /></button>
+      </div>
       <div className="skill-pane-head">
-        <span className="skill-logo" style={{ "--hue": String(skillHue(skill.name)) }} aria-hidden="true">{card.title.slice(0, 2)}</span>
+        <span className="library-skill-icon"><Icon name="box" size={24} /></span>
         <div className="skill-pane-id">
           <h2>{card.title}</h2>
-          <span className="skill-pane-path" title={skill.path}>{formatHomePath(skill.path)}</span>
+          <span className="library-detail-owner">{card.managerLabel} · {card.contentSourceLabel}</span>
         </div>
-        <button className="btn btn-ghost btn-sm skill-pane-close" onClick={onClose} aria-label={t("skills.detailClose")}><Icon name="x" size={15} /></button>
       </div>
-      <div className="skill-pane-block">
-        <div className="skill-pane-label">{t("skills.detailStatus")}</div>
-        <div className="skill-pane-chips">
-          <span className={`stamp ${card.structureTone}`}>{card.structureLabel}</span>
-          {card.isShared && <span className="stamp muted">{t("skills.shared", { count: card.availableIn.length })}</span>}
-          {card.hasManagedDrift && <span className="stamp error">{t("skills.changed")}</span>}
-          {card.securityWarningCount > 0 && <span className="stamp error" title={card.securityWarningSummary}>{t("skills.risk", { count: card.securityWarningCount })}</span>}
-          {card.hasUpdate && <span className="stamp warn">{t("skills.updateReady")}</span>}
+      {card.description && <p className="library-detail-description">{card.description}</p>}
+      <div className="library-primary-actions">
+        {card.hasUpdate && card.canSync ? (
+          <button className="btn btn-primary" disabled={card.updateBusy} onClick={() => onUpdate(skill.path)}><Icon name="download" size={16} />{t("skills.viewUpdate")}</button>
+        ) : card.canEnable ? (
+          <button className="btn btn-primary" onClick={() => onEnable(skill)} aria-label={t("skills.enable", { name: skill.name })}><Icon name="plus" size={16} />{t("skills.enableTo")}</button>
+        ) : card.canAdopt ? (
+          <button className="btn btn-primary" onClick={() => onAdopt({ skill, assistant: skill.ai, projectPath: skill.scope === "project" ? skill.project_path || "" : "" })} aria-label={t("adoption.actionFor", { name: skill.name })}><Icon name="branch" size={16} />{t("adoption.action")}</button>
+        ) : null}
+        <button className={`btn ${card.canEnable || card.canAdopt || (card.hasUpdate && card.canSync) ? "btn-ghost" : "btn-primary"}`} onClick={() => onPreview(skill.path)} aria-label={t("skills.reviewOne", { name: skill.name })}><Icon name="preview" size={16} />{t("skills.readGuide")}</button>
+      </div>
+      {(card.needsAttention || card.hasUpdate || skill.manager === "skills_cli") && (
+        <div className="library-detail-notice">
+          {card.needsAttention && <strong>{[card.hasManagedDrift ? t("skills.changed") : "", card.securityWarningSummary, card.warningSummary, isStaleSkill(skill) ? t("skills.stale") : ""].filter(Boolean).join(" · ")}</strong>}
+          {card.updateSummary && <p>{card.updateSummary}</p>}
+          {skill.manager === "skills_cli" && <p><code>{t("skills.skillsCliHint", { name: skill.name })}</code></p>}
         </div>
-        {card.updateSummary && <p className="skill-pane-note">{card.updateSummary}</p>}
-      </div>
-      <div className="skill-pane-block">
-        <div className="skill-pane-label">{t("skills.detailSource")}</div>
+      )}
+      <section className="skill-pane-block library-detail-section">
+        <div className="library-section-title"><h3>{t("skills.detailAgents")}</h3><span>{t("skills.locationCount", { count: locations.length })}</span></div>
+        <div className="skill-pane-agents">
+          {locations.length === 0 ? <p className="skill-pane-note">{t("skills.detailNoAgents")}</p> : locations.map((location) => (
+            <div className="skill-pane-agent" key={location.path || location.name}>
+              <AiAvatar name={location.name} brand={location.icon} size={28} />
+              <span className="library-deployment-copy"><strong>{location.name}</strong><small title={location.projectPath || location.path}>{locationScope(location, t)}</small></span>
+              {location.managed && location.isSymlink && onUnlink ? (
+                <button className="skill-pane-unlink" onClick={() => onUnlink(location.path, skill.name)} aria-label={t("skills.unlinkAt", { assistant: location.name, name: card.title })}><Icon name="unlink" size={15} /></button>
+              ) : <Icon name="check" size={14} />}
+            </div>
+          ))}
+        </div>
+        {card.hasUpdate && card.canSync && card.canEnable && <button className="btn btn-ghost btn-sm" onClick={() => onEnable(skill)} aria-label={t("skills.enable", { name: skill.name })}><Icon name="plus" size={14} />{t("skills.addLocation")}</button>}
+      </section>
+      <section className="skill-pane-block library-detail-section">
+        <div className="library-section-title"><h3>{t("skills.sourceAndManager")}</h3></div>
         <div className="skill-pane-kv">
           <span>{t("provenance.sourceLabel")}</span><span>{card.contentSourceLabel}</span>
           <span>{t("provenance.managerLabel")}</span><span>{card.managerLabel}</span>
           <span>{t("provenance.updateLabel")}</span><span>{card.updateStrategyLabel}</span>
         </div>
-      </div>
-      <div className="skill-pane-block">
-        <div className="skill-pane-label">{t("skills.detailAgents")}</div>
-        <div className="skill-pane-agents">
-          {card.availableIn.length === 0 ? (
-            <span className="skill-meta">{t("skills.detailNoAgents")}</span>
-          ) : card.availableIn.map((assistant) => (
-            <span className="skill-pane-agent" key={assistant.name}>
-              <AiAvatar name={assistant.name} brand={assistant.icon} size={20} />
-              {assistant.name}
-              <Icon name="check" size={13} />
-            </span>
-          ))}
+        {skill.tags?.length > 0 && <div className="skill-pane-tags">{skill.tags.map((tagId) => {
+          const tag = tags.find((item) => item.id === tagId);
+          return tag ? <span key={tag.id} className="tag" style={{ "--c": tag.color }}>{tag.name}</span> : null;
+        })}</div>}
+      </section>
+      <details className="library-technical library-detail-section">
+        <summary>{t("skills.technicalDetails")}</summary>
+        <div className="skill-pane-chips">
+          <span className={`stamp ${card.structureTone}`}>{card.structureLabel}</span>
+          {card.advisoryWarningCount > 0 && <span className="stamp muted" title={card.advisoryWarningSummary}>{t("skills.advisory", { count: card.advisoryWarningCount })}</span>}
         </div>
-        {skill.tags.length > 0 && (
-          <div className="skill-pane-tags">
-            {skill.tags.slice(0, 4).map((tagId) => {
-              const tag = tags.find((item) => item.id === tagId);
-              return tag ? <span key={tag.id} className="tag" style={{ "--c": tag.color }}>{tag.name}</span> : null;
-            })}
-          </div>
-        )}
-      </div>
+        <p className="skill-pane-path" title={skill.path}>{formatHomePath(skill.path)}</p>
+        {card.updateSummary && !card.needsAttention && !card.hasUpdate && <p className="skill-pane-note">{card.updateSummary}</p>}
+      </details>
       <div className="skill-pane-foot">
-        <button className="btn btn-secondary btn-sm" onClick={() => onEditTags(skill)} aria-label={t("skills.editTags", { name: skill.name })}><Icon name="tag" size={14} />{t("skills.tagsAction")}</button>
-        <button className="btn btn-secondary btn-sm" onClick={() => onPreview(skill.path)} aria-label={t("skills.reviewOne", { name: skill.name })}><Icon name="shield" size={14} />{t("skills.review")}</button>
-        {card.hasUpdate && card.canSync && <button className="btn btn-secondary btn-sm" disabled={card.updateBusy} onClick={() => onUpdate(skill.path)} aria-label={t("skills.updateAction")}><Icon name="download" size={14} />{t("skills.updateAction")}</button>}
-        {card.canAdopt && <button className="btn btn-secondary btn-sm" onClick={() => onAdopt({ skill, assistant: skill.ai, projectPath: "" })} aria-label={t("adoption.actionFor", { name: skill.name })}><Icon name="branch" size={14} />{t("adoption.action")}</button>}
-        {card.canEnable && <button className="btn btn-primary btn-sm" onClick={() => onEnable(skill)} aria-label={t("skills.enable", { name: skill.name })}><Icon name="power" size={14} />{t("skills.enableAction")}</button>}
+        {card.canCheck && onCheck && <button className="btn btn-ghost btn-sm" disabled={card.updateBusy} onClick={() => onCheck(skill.path)} aria-label={t("preview.checkUpdate")}><Icon name="refresh" size={14} />{t("preview.checkUpdate")}</button>}
+        <button className="btn btn-ghost btn-sm" onClick={() => onEditTags(skill)} aria-label={t("skills.editTags", { name: skill.name })}><Icon name="tag" size={14} />{t("skills.tagsAction")}</button>
+        <button className="btn btn-ghost btn-sm" onClick={() => onOpenDirectory(skill.path)} aria-label={t("skills.openFolder", { name: skill.name })}><Icon name="folder" size={14} />{t("skills.folderAction")}</button>
+        {card.canUnlink && !card.isShared && onUnlink && <button className="btn btn-ghost btn-sm danger" onClick={() => onUnlink(singleDeployment ? singleDeployment.path : skill.path, skill.name)} aria-label={t("skills.unlink", { name: skill.name })}><Icon name="unlink" size={14} />{t("skills.unlinkAction")}</button>}
       </div>
     </aside>
   );
@@ -256,11 +271,19 @@ export function SkillsView({
   activeScenario,
   onClearScenario,
   onUpdate = () => {},
+  onCheckAll,
+  checkBusy = false,
+  onCheck,
   getSyncInfo,
+  searchControl,
+  sortControl,
+  enablePanel,
+  onCloseEnable,
 }) {
   const { t } = useI18n();
   const [statusFilter, setStatusFilter] = React.useState("all");
   const [previewPath, setPreviewPath] = React.useState("");
+  const [detailOpen, setDetailOpen] = React.useState(false);
 
   React.useEffect(() => {
     if (filterRequest?.filter) setStatusFilter(filterRequest.filter);
@@ -279,20 +302,27 @@ export function SkillsView({
   );
   const totalSkillCount = allSkillCount ?? skills.length;
   const attentionCount = React.useMemo(
-    () => skillCards.filter((card) => card.structureTone !== "success" || card.hasManagedDrift || card.securityWarningCount > 0).length,
+    () => skillCards.filter((card) => card.needsAttention).length,
     [skillCards]
   );
   const updatesCount = React.useMemo(() => skillCards.filter((card) => card.hasUpdate).length, [skillCards]);
+  const notEnabledCount = React.useMemo(
+    () => skills.filter((skill) => skill.in_library && !(Array.isArray(skill.deployments) && skill.deployments.length > 0)).length,
+    [skills]
+  );
   const visibleSkills = React.useMemo(() => {
     if (statusFilter === "attention") {
-      return skills.filter((_, index) => skillCards[index].structureTone !== "success" || skillCards[index].hasManagedDrift || skillCards[index].securityWarningCount > 0);
+      return skills.filter((_, index) => skillCards[index].needsAttention);
     }
     if (statusFilter === "updates") return skills.filter((_, index) => skillCards[index].hasUpdate);
+    if (statusFilter === "notEnabled") {
+      return skills.filter((skill) => skill.in_library && !(Array.isArray(skill.deployments) && skill.deployments.length > 0));
+    }
     return skills;
   }, [skills, skillCards, statusFilter]);
   const previewSkill = React.useMemo(
-    () => (allSkills ?? skills).find((skill) => skill.path === previewPath) ?? null,
-    [allSkills, skills, previewPath]
+    () => previewPath === null ? null : visibleSkills.find((skill) => skill.path === previewPath) ?? visibleSkills[0] ?? null,
+    [visibleSkills, previewPath]
   );
   const previewCard = React.useMemo(
     () => (previewSkill ? buildSkillCardView(previewSkill, t, getSyncInfo?.(previewSkill)) : null),
@@ -300,19 +330,21 @@ export function SkillsView({
   );
   const allVisibleSelected = visibleSkills.length > 0 && visibleSkills.every((skill) => selectedSkillPaths.includes(skill.path));
   return (
-    <div className="view-shell skills-view">
+    <div className={`view-shell skills-view${detailOpen || enablePanel ? " detail-open" : ""}`}>
       <SurfaceHeader
         title={t("skills.title")}
         description={t("skills.subtitle")}
-        meta={t(skills.length !== totalSkillCount ? "skills.countFiltered" : "skills.count", { count: skills.length, total: totalSkillCount })}
         actions={(
           <>
+          {onCheckAll && <button className="btn btn-ghost btn-sm" disabled={checkBusy} onClick={onCheckAll} aria-label={t("updates.checkAll")}><Icon name="refresh" size={14} />{t("updates.checkAll")}</button>}
           <button className="btn btn-secondary btn-sm" aria-expanded={discoveryOpen} onClick={onToggleDiscovery}><Icon name="search" size={14} />{t(discoveryOpen ? "skills.hideDiscovery" : "skills.discover")}</button>
           <button className="btn btn-primary btn-sm" onClick={onInstall}><Icon name="plus" size={14} />{t("common.install")}</button>
           </>
         )}
       />
       {discovery}
+      <div className="skills-shell">
+        <div className="skills-main">
       {selectedSkills.length > 0 && (
         <div className="bulk-toolbar" role="region" aria-label={t("skills.bulkActions")}>
           <strong>{t("skills.selected", { count: selectedSkills.length })}</strong>
@@ -324,13 +356,20 @@ export function SkillsView({
           {!canEnableSelection && <span>{t("skills.enableLibraryOnly")}</span>}
         </div>
       )}
-      <div className="skills-shell">
-        <div className="skills-main">
           <div className="skills-filters">
+            <div className="skills-status-filters">
             <button className={`filter-chip${statusFilter === "all" ? " active" : ""}`} aria-pressed={statusFilter === "all"} onClick={() => setStatusFilter("all")}>{t("skills.filterAll")}<span>{skills.length}</span></button>
-            <button className={`filter-chip danger${statusFilter === "attention" ? " active" : ""}`} aria-pressed={statusFilter === "attention"} onClick={() => setStatusFilter("attention")}>{t("skills.filterNeedsAttention")}<span>{attentionCount}</span></button>
+              <button className={`filter-chip${statusFilter === "notEnabled" ? " active" : ""}`} aria-pressed={statusFilter === "notEnabled"} onClick={() => setStatusFilter("notEnabled")}>{t("skills.filterNotEnabled")}<span>{notEnabledCount}</span></button>
             <button className={`filter-chip warn${statusFilter === "updates" ? " active" : ""}`} aria-pressed={statusFilter === "updates"} onClick={() => setStatusFilter("updates")}>{t("skills.filterUpdates")}<span>{updatesCount}</span></button>
-            <span className="filter-divider" aria-hidden="true" />
+            <button className={`filter-chip danger${statusFilter === "attention" ? " active" : ""}`} aria-pressed={statusFilter === "attention"} onClick={() => setStatusFilter("attention")}>{t("skills.filterNeedsAttention")}<span>{attentionCount}</span></button>
+            </div>
+            <div className="skills-filter-actions">
+              {onManageTags && <button className="btn btn-ghost btn-sm" onClick={onManageTags}><Icon name="tag" size={14} />{t("tags.manage")}</button>}
+              <button className="btn btn-ghost btn-sm" onClick={() => onToggleVisibleSelection(visibleSkills.map((skill) => skill.path))}><Icon name="check" size={15} />{t(allVisibleSelected ? "skills.deselectVisible" : "skills.selectVisible")}</button>
+            </div>
+          </div>
+          {(searchControl || sortControl) && <div className="library-search-row">{searchControl}{sortControl}</div>}
+          {(tags.length > 0 || activeScenario || selectedTagCount > 0) && <div className="skills-tag-filters">
             {tags.map((tag) => (
               <button
                 key={tag.id}
@@ -356,10 +395,7 @@ export function SkillsView({
               </button>
             )}
             {selectedTagCount > 0 && onClearTags && <button className="btn btn-ghost btn-sm" onClick={onClearTags}>{t("common.clear")}</button>}
-            <span className="filter-spacer" aria-hidden="true" />
-            {onManageTags && <button className="btn btn-ghost btn-sm" onClick={onManageTags}><Icon name="tag" size={14} />{t("tags.manage")}</button>}
-            <button className="btn btn-ghost btn-sm" onClick={() => onToggleVisibleSelection(visibleSkills.map((skill) => skill.path))} aria-label={t(allVisibleSelected ? "skills.deselectVisible" : "skills.selectVisible")}>{t(allVisibleSelected ? "skills.deselectVisible" : "skills.selectVisible")}</button>
-          </div>
+          </div>}
           {visibleSkills.length === 0 ? (
             <div className="empty-state">
               <div className="empty-icon"><Icon name="skills" size={22} /></div>
@@ -376,7 +412,12 @@ export function SkillsView({
               </div>
             </div>
           ) : (
-            <div className="skill-list" role="table" aria-label={t("skills.title")}>
+            <div className="skill-list library-list" role="table" aria-label={t("skills.title")}>
+              <div className="library-columns" role="row">
+                <span role="columnheader">{t("skills.columnSkill")}</span>
+                <span role="columnheader">{t("skills.detailAgents")}</span>
+                <span role="columnheader">{t("skills.detailStatus")}</span>
+              </div>
               {visibleSkills.map((skill) => {
                 const index = skills.indexOf(skill);
                 return (
@@ -385,10 +426,10 @@ export function SkillsView({
                     skill={skill}
                     card={skillCards[index]}
                     checked={selectedSkillPaths.includes(skill.path)}
-                    previewed={skill.path === previewPath}
+                    previewed={skill.path === previewSkill?.path}
                     t={t}
                     onToggleSelection={onToggleSelection}
-                    onOpenPreview={setPreviewPath}
+                    onOpenPreview={(path) => { onCloseEnable?.(); setPreviewPath(path); setDetailOpen(true); }}
                     onUpdate={onUpdate}
                     onEditTags={onEditTags}
                     onOpenDirectory={onOpenDirectory}
@@ -399,19 +440,24 @@ export function SkillsView({
               })}
             </div>
           )}
+          <footer className="library-list-footer"><span>{t("skills.countFiltered", { count: visibleSkills.length, total: totalSkillCount })}</span><span><Icon name="shield" size={13} />{t("skills.readOnlyNote")}</span></footer>
         </div>
-        <SkillDetailPane
+        {enablePanel || <SkillDetailPane
           skill={previewSkill}
           card={previewCard}
           tags={tags}
           t={t}
-          onClose={() => setPreviewPath("")}
+          onClose={() => { setPreviewPath(null); setDetailOpen(false); }}
           onPreview={onPreview}
           onUpdate={onUpdate}
+          onCheck={onCheck}
           onEnable={onEnable}
           onAdopt={onAdopt}
           onEditTags={onEditTags}
-        />
+          onUnlink={onUnlink}
+          onOpenDirectory={onOpenDirectory}
+        />}
+        {!enablePanel && !previewSkill && totalSkillCount > 0 && <aside className="library-detail-empty"><Icon name="preview" size={24} /><p>{t("skills.selectDetail")}</p></aside>}
       </div>
     </div>
   );
@@ -426,9 +472,10 @@ export function AssistantsView({ assistants, installedCount, onAdopt, onMaterial
         title={t("nav.assistants")}
         description={t("assistants.subtitle")}
         meta={t("assistants.configuredCount", { installed: installedCount, total: assistants.length })}
+        actions={toolbar}
       />
-      {toolbar && <div className="view-toolbar">{toolbar}</div>}
       <ProjectInspectionPanel onAdopt={onAdopt} onMaterialize={onMaterialize} revision={projectRevision} workspace={workspace} />
+      <SurfaceSectionHeader title={t("assistants.platforms")} meta={assistants.length} />
       <div
         className="skill-list assistant-list"
         role={assistants.length > 0 ? "table" : undefined}
@@ -443,7 +490,7 @@ export function AssistantsView({ assistants, installedCount, onAdopt, onMaterial
         ) : assistants.map((assistant, index) => {
           const expanded = expandedAssistant === assistant.name;
           const paths = assistant.paths?.length ? assistant.paths : [assistant.path].filter(Boolean);
-          const hasDetails = paths.length > 1 || assistant.skills.length > 2;
+          const hasDetails = paths.length > 0 || assistant.skills.length > 0;
           const detailId = `assistant-details-${index}`;
           return (
             <React.Fragment key={assistant.name}>
@@ -495,7 +542,7 @@ export function AssistantsView({ assistants, installedCount, onAdopt, onMaterial
               {expanded && (
                 <div className="assistant-detail-panel" role="row">
                   <div id={detailId} className="assistant-detail-content" role="cell">
-                    {paths.length > 1 && (
+                    {paths.length > 0 && (
                       <section className="assistant-detail-section">
                         <div className="assistant-detail-head">
                           <strong>{t("assistants.locationList")}</strong>
@@ -547,6 +594,7 @@ function ProjectInspectionPanel({ onAdopt, onMaterialize, revision, workspace })
     setError("");
     setInspection(null);
     setProjectPath(project);
+    setFoldOpen(true);
     skillmateApi.inventory.inspectProject(project).then((result) => {
       if (!cancelled) {
         setInspection(result);
@@ -621,210 +669,5 @@ function ProjectInspectionPanel({ onAdopt, onMaterialize, revision, workspace })
       )}
       </>)}
     </section>
-  );
-}
-
-function remoteLabel(url, t) {
-  if (!url) return t("source.unconfigured");
-  const ssh = url.match(/^[^@]+@([^:]+):(.+)$/);
-  if (ssh) return `${ssh[1]}/${ssh[2].replace(/\.git$/, "")}`;
-  try {
-    const parsed = new URL(url);
-    return `${parsed.host}${parsed.pathname.replace(/\.git$/, "")}`;
-  } catch {
-    return url.replace(/\.git$/, "");
-  }
-}
-
-function refLabel(value) {
-  if (!value) return "—";
-  return /^[0-9a-f]{12,}$/i.test(value) ? value.slice(0, 7) : value;
-}
-
-function probeTime(value, language, t) {
-  if (!value) return t("updates.never");
-  const date = new Date(Number(value));
-  if (Number.isNaN(date.getTime())) return t("updates.never");
-  return date.toLocaleString(language, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
-}
-
-function originKindLabel(kind, t) {
-  if (kind === "git") return "Git";
-  if (["legacy_npm", "npm"].includes(kind)) return t("source.legacyNpm");
-  if (["legacy_pip", "pip"].includes(kind)) return t("source.legacyPip");
-  if (kind === "local") return t("source.local");
-  return t("source.unmanaged");
-}
-
-function stateText(state, t) {
-  const known = new Set(["behind", "current", "failed", "diverged", "ahead_local", "local_fixed", "source_missing", "unsupported"]);
-  return t(`updates.state.${known.has(state) ? state : "unknown"}`);
-}
-
-function stateTone(state) {
-  if (state === "behind") return "warn";
-  if (["failed", "source_missing"].includes(state)) return "error";
-  if (state === "current") return "success";
-  return "muted";
-}
-
-function lagText(info, t) {
-  if (info.originKind === "git") return t("updates.commits", { count: info.lagCount || 0 });
-  if (["legacy_npm", "legacy_pip", "npm", "pip"].includes(info.originKind)) {
-    if (info.syncState === "behind") return t("updates.newVersion");
-    if (info.syncState === "current") return t("updates.currentShort");
-  }
-  return "—";
-}
-
-function updateButtonText(info, t) {
-  if (info.updating) return t(info.originKind === "git" ? "updates.updating" : "updates.syncing");
-  return t("updatePreview.action");
-}
-
-const UpdateRow = React.memo(function UpdateRow({ skill, getSyncInfo, t, language, checkOne, updateOne }) {
-  const info = getSyncInfo(skill);
-  const metaParts = [
-    remoteLabel(info.resolvedLocator || info.originLocator || skill.upstream_url, t),
-    lagText(info, t),
-    `${t("updates.probed")} ${probeTime(info.lastProbeAt, language, t)}`,
-  ].filter(Boolean);
-  return (
-    <article className="skill-row update-row" role="row">
-      <span className="skill-logo" style={{ "--hue": String(skillHue(skill.name)) }} aria-hidden="true">{skill.name.slice(0, 2)}</span>
-      <div className="skill-copy" role="cell">
-        <div className="skill-name">
-          <span className="skill-title">{skill.name}</span>
-          <span className={`stamp stamp-source ${sourceStampClass(info.originKind)}`}>{originKindLabel(info.originKind, t)}</span>
-        </div>
-        <div className="skill-meta" title={info.resolvedLocator || info.originLocator || skill.upstream_url}>{metaParts.join(" · ")}</div>
-      </div>
-      <div className="registry-refs" aria-label={`${t("updates.current")} → ${t("updates.latest")}`} role="cell">
-        <span>{refLabel(info.installedRef)}</span>
-        <span className="registry-refs-arrow" aria-hidden="true">→</span>
-        <span className={info.syncState === "behind" ? "warn" : ""}>{refLabel(info.latestRef)}</span>
-      </div>
-      <div className="skill-badges" role="cell">
-        <span className={`stamp ${stateTone(info.syncState)}`}>{stateText(info.syncState, t)}</span>
-      </div>
-      <div className="skill-badges" role="cell">
-        <button className="btn btn-secondary btn-sm" onClick={() => checkOne(skill.path)} disabled={!info.canCheck || info.checking || info.updating}><Icon name="refresh" size={14} />{t(info.checking ? "common.checking" : "common.check")}</button>
-        {info.canSync && <button className="btn btn-primary btn-sm" onClick={() => updateOne(skill.path)} disabled={info.checking || info.updating}><Icon name="download" size={14} />{updateButtonText(info, t)}</button>}
-        {!info.canSync && (
-          <span className="update-hint" title={skill.managed_by_app ? (info.message || t("updates.notSupported")) : t("updates.externalManaged")}>
-            {skill.managed_by_app ? (info.message || t("updates.notSupported")) : t("updates.externalManaged")}
-          </span>
-        )}
-      </div>
-    </article>
-  );
-});
-
-export function UpdatesView({
-  orderedSkills,
-  updateState,
-  getSyncInfo,
-  checkAll,
-  checkOne,
-  updateOne,
-  tags = [],
-  selectedTagCount = 0,
-  selectedTagIds = [],
-  onToggleTag = () => {},
-  onClearTags,
-  onManageTags,
-  activeScenario,
-  onClearScenario,
-}) {
-  const { t, language } = useI18n();
-  const [statusFilter, setStatusFilter] = React.useState("all");
-  const pendingRows = React.useMemo(
-    () => orderedSkills
-      .map((skill) => ({ skill, tone: stateTone(getSyncInfo(skill).syncState) }))
-      .filter((row) => row.tone !== "success"),
-    [orderedSkills, getSyncInfo]
-  );
-  const countByTone = React.useMemo(() => ({
-    all: pendingRows.length,
-    warn: pendingRows.filter((row) => row.tone === "warn").length,
-    error: pendingRows.filter((row) => row.tone === "error").length,
-  }), [pendingRows]);
-  const visibleSkills = React.useMemo(
-    () => (statusFilter === "all" ? pendingRows : pendingRows.filter((row) => row.tone === statusFilter))
-      .map((row) => row.skill),
-    [pendingRows, statusFilter]
-  );
-  return (
-    <div className="view-shell skills-view">
-      <SurfaceHeader
-        title={t("nav.updates")}
-        description={t("updates.subtitle")}
-        meta={pendingRows.length}
-        actions={<button className="btn btn-primary btn-sm" onClick={checkAll} disabled={Object.values(updateState).some(state => state.checking || state.updating)}><Icon name="refresh" size={14} />{t("updates.checkAll")}</button>}
-      />
-      <div className="skills-filters">
-        <button className={`filter-chip${statusFilter === "all" ? " active" : ""}`} aria-pressed={statusFilter === "all"} onClick={() => setStatusFilter("all")}>{t("skills.filterAll")}<span>{countByTone.all}</span></button>
-        <button className={`filter-chip warn${statusFilter === "warn" ? " active" : ""}`} aria-pressed={statusFilter === "warn"} onClick={() => setStatusFilter("warn")}>{t("updates.filterBehind")}<span>{countByTone.warn}</span></button>
-        <button className={`filter-chip danger${statusFilter === "error" ? " active" : ""}`} aria-pressed={statusFilter === "error"} onClick={() => setStatusFilter("error")}>{t("updates.filterFailed")}<span>{countByTone.error}</span></button>
-        {tags.length > 0 && <span className="filter-divider" aria-hidden="true" />}
-        {tags.map((tag) => (
-          <button
-            key={tag.id}
-            className={`filter-chip tag${selectedTagIds.includes(tag.id) ? " active" : ""}`}
-            style={{ "--c": tag.color }}
-            aria-pressed={selectedTagIds.includes(tag.id)}
-            onClick={() => onToggleTag(tag.id)}
-          >
-            <span className="filter-dot" aria-hidden="true" />{tag.name}
-          </button>
-        ))}
-        {activeScenario && (
-          <button
-            className="filter-chip active"
-            onClick={onClearScenario}
-            title={t("scenarioFilter.title", { name: activeScenario.name })}
-            aria-label={t("scenarioFilter.clear")}
-          >
-            <Icon name="scenarios" size={13} />
-            {activeScenario.name}
-            <span>{activeScenario.skill_ids.length}</span>
-            <Icon name="x" size={12} />
-          </button>
-        )}
-        {selectedTagCount > 0 && onClearTags && <button className="btn btn-ghost btn-sm" onClick={onClearTags}>{t("common.clear")}</button>}
-        <span className="filter-spacer" aria-hidden="true" />
-        {onManageTags && <button className="btn btn-ghost btn-sm" onClick={onManageTags}><Icon name="tag" size={14} />{t("tags.manage")}</button>}
-      </div>
-      {pendingRows.length === 0 ? (
-        <div className="empty-state">
-          <div className="empty-icon"><Icon name="updates" size={22} /></div>
-          <h3>{t("updates.empty")}</h3>
-          <p>{t("updates.emptyHint")}</p>
-        </div>
-      ) : visibleSkills.length === 0 ? (
-        <div className="empty-state">
-          <div className="empty-icon"><Icon name="search" size={22} /></div>
-          <h3>{t("skills.noMatch")}</h3>
-          <p>{t("skills.noMatchHint")}</p>
-          <div className="empty-actions">
-            <button className="btn btn-secondary btn-sm" onClick={() => setStatusFilter("all")}>{t("skills.clearFilters")}</button>
-          </div>
-        </div>
-      ) : (
-        <div className="skill-list" role="table" aria-label={t("nav.updates")}>
-          {visibleSkills.map((skill) => (
-            <UpdateRow
-              key={skill.path}
-              skill={skill}
-              getSyncInfo={getSyncInfo}
-              t={t}
-              language={language}
-              checkOne={checkOne}
-              updateOne={updateOne}
-            />
-          ))}
-        </div>
-      )}
-    </div>
   );
 }

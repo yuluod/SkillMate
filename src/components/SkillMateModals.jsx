@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import Icon from "./Icon.jsx";
 import ModalShell from "./ModalShell.jsx";
 import {
@@ -102,11 +102,36 @@ export function DriftSyncModal({ group, onClose, onComplete }) {
   );
 }
 
+function InlineInstallShell({ title, onClose, children }) {
+  const { t } = useI18n();
+  const panelRef = useRef(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    const previous = document.activeElement;
+    panelRef.current?.focus({ preventScroll: true });
+    const close = (event) => {
+      if (event.key === "Escape" && !document.querySelector('[role="dialog"], [role="alertdialog"]')) closeRef.current();
+    };
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("keydown", close);
+      if (previous?.isConnected) previous.focus();
+    };
+  }, []);
+  return <aside ref={panelRef} className="skill-pane library-enable-panel" tabIndex={-1} aria-label={title}>
+    <button className="btn btn-ghost btn-sm library-enable-back" onClick={onClose}><Icon name="undo" size={15} />{t("skills.backToDetails")}</button>
+    <h2>{title}</h2>
+    {children}
+  </aside>;
+}
+
 export function InstallModal({
   flow,
   assistants,
   loading,
   onClose,
+  inline = false,
 }) {
   const { t } = useI18n();
   const workflow = flow.workflow || "add";
@@ -153,8 +178,9 @@ export function InstallModal({
     },
     commandPreview: cmd,
   } = flow;
+  const Shell = inline ? InlineInstallShell : ModalShell;
   return (
-    <ModalShell title={t(workflow === "enable" ? "enable.title" : "install.title")} icon={workflow === "enable" ? "check" : "plus"} className="install-modal" onClose={onClose}>
+    <Shell title={t(workflow === "enable" ? "enable.title" : "install.title")} icon={workflow === "enable" ? "check" : "plus"} className="install-modal" onClose={onClose}>
       {workflow === "add" ? (
         <div className="form">
           <label htmlFor="install-source">{t("install.source")}</label>
@@ -363,7 +389,7 @@ export function InstallModal({
           )}
         </div>
       )}
-    </ModalShell>
+    </Shell>
   );
 }
 
@@ -491,6 +517,7 @@ export function PreviewModal({ preview, getSyncInfo, onClose, onCheckUpdate, onO
           <div className="skill-detail-title"><Icon name="shield" size={17} /><strong>{t("preview.security")}</strong></div>
           <p>{card.securityWarningCount > 0 ? t("preview.staticRisks", { count: card.securityWarningCount }) : t("preview.staticSafe")}</p>
           {card.securityWarningSummary && <small>{card.securityWarningSummary}</small>}
+          {card.advisoryWarningCount > 0 && <small title={card.advisoryWarningSummary}>{t("preview.advisoryNotes", { count: card.advisoryWarningCount })}</small>}
           {card.hasManagedDrift && <small className="danger-text">{t("preview.managedChanged")}</small>}
         </section>
         <section className="skill-detail-section">
