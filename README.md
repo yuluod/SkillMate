@@ -32,6 +32,8 @@ Claude Code、Codex、Gemini CLI、Cursor 等工具使用不同的全局目录�
 
 SkillMate 用一份受管主副本和显式启用关系整理这些内容，同时保留对外部安装内容的可见性。
 
+它与 `npx skills` 不是竞争关系：安装可以继续交给 skills CLI，SkillMate 负责识别这些内容、展示归属和启用位置。指向 `.agents/skills` 主副本的链接会被标记为外部安装器管理；项目根目录存在 `skills-lock.json`，或同一作用域内的平台发现目录存在指向主副本的链接时，`.agents/skills` 下的实体副本也会被识别。全局探测包含平台兼容目录，项目探测只使用项目目录约定。更新仍使用原命令。
+
 ## 核心模型
 
 SkillMate 将 Skill 的生命周期拆成几个含义明确的动作：
@@ -79,7 +81,7 @@ Git / 本地目录 / Claude Marketplace
 | ZCode | `~/.zcode/skills` | `~/.agents/skills` | `.zcode/skills` |
 | Kimi Code | `~/.kimi-code/skills` | `~/.agents/skills` | `.kimi-code/skills` |
 
-SkillMate 会同时扫描平台声明的发现目录。项目核验功能会把项目级与全局内容合并，并按项目优先原则展示推断可见的 Skills 和被同名内容覆盖的数量。这是基于目录约定的推断，不代表 Agent 运行时已加载这些内容。
+SkillMate 会同时扫描平台声明的发现目录。项目核验功能会把项目级与全局内容合并，并按项目优先原则展示推断可见的 Skills 和被同名内容覆盖的数量。这是基于目录约定的推断，不代表 Agent 运行时已加载这些内容。Cursor、Gemini CLI、GitHub Copilot、OpenCode 与 Kimi Code 的项目核验还会额外扫描共享的 `.agents/skills` 目录（上游 Agent Skills 目录约定），启用写入仍以表中的项目目录为准。
 
 Windows 创建受管目录连接需要开启开发者模式，或让 SkillMate 进程具备创建符号链接的权限。启用和接管预览会在独立临时目录中探测目录符号链接能力；不可用时以 `directory_symlink_unavailable` 阻止执行，不修改已有 Skill 内容。检测成功缓存 30 秒，失败缓存 2 秒；修复权限后请稍等并重新预览，若仍失败请检查系统临时目录权限。探针不验证实际启用目录的文件系统和访问权限，执行时仍会实际创建链接并在失败时回滚。仅添加到统一库不需要此权限。
 
@@ -91,6 +93,7 @@ Windows 创建受管目录连接需要开启开发者模式，或让 SkillMate �
 | --- | --- | --- | --- |
 | SkillMate 添加的 Git Skill | GitHub / Git | SkillMate | SkillMate 检查并更新 |
 | SkillMate 添加的本地 Skill | 本地目录 | SkillMate | 手工维护 |
+| `npx skills` 安装的 Skill | 外部 CLI | skills CLI | 使用 `npx skills update` 更新 |
 | npm / pip 等外部工具安装的 Skill | 外部 CLI | 原安装器 | 使用原安装器更新 |
 | Agent、插件或用户手工放置的 Skill | Git / 本地 / 未知 | 外部或手工管理 | 外部工具或手工维护 |
 | 用户显式接管后的 Skill | 保留原来源 | SkillMate | 按可重建来源决定 |

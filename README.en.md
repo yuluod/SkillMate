@@ -32,6 +32,8 @@ Claude Code, Codex, Gemini CLI, Cursor, and other tools use different global and
 
 SkillMate organizes these files around one managed master copy and explicit enablement links, while keeping externally installed content visible.
 
+It does not compete with `npx skills`: installation can stay with the skills CLI, while SkillMate identifies that content and shows its ownership and deployment locations. Links pointing to primary copies in `.agents/skills` are marked as managed by an external installer. Physical copies there are recognized too when the project contains `skills-lock.json` or a platform discovery directory in the same scope contains a link to the primary copy. Global detection includes platform compatibility directories; project detection uses only project directory conventions. Updates still use the original command.
+
 ## Core model
 
 SkillMate divides the Skill lifecycle into explicit operations:
@@ -79,7 +81,7 @@ The library owns content, provenance, and update state. Agent directories only d
 | ZCode | `~/.zcode/skills` | `~/.agents/skills` | `.zcode/skills` |
 | Kimi Code | `~/.kimi-code/skills` | `~/.agents/skills` | `.kimi-code/skills` |
 
-SkillMate scans every discovery directory declared for a platform. Project inspection merges project-level and global content, applies project-first precedence, and shows inferred visible Skills and the number shadowed by a same-named project Skill. This is inferred from directory conventions; it does not verify what an Agent has loaded at runtime.
+SkillMate scans every discovery directory declared for a platform. Project inspection merges project-level and global content, applies project-first precedence, and shows inferred visible Skills and the number shadowed by a same-named project Skill. This is inferred from directory conventions; it does not verify what an Agent has loaded at runtime. For Cursor, Gemini CLI, GitHub Copilot, OpenCode, and Kimi Code, project inspection additionally scans the shared `.agents/skills` directory (the upstream Agent Skills convention); enablement still writes to the project directory listed in the table.
 
 Creating managed directory links on Windows requires Developer Mode or symbolic-link creation privileges for the SkillMate process. Enable and adoption previews probe directory symlink support in an isolated temporary directory; if unavailable, `directory_symlink_unavailable` blocks the operation without changing existing Skill content. Successful checks are cached for 30 seconds and failures for 2 seconds. After fixing permissions, wait briefly and preview again; if it still fails, check access to the system temporary directory. The probe does not validate the actual deployment directory's filesystem or permissions: applying still creates the real link and rolls back on failure. Adding a Skill to the library alone does not require this privilege.
 
@@ -91,6 +93,7 @@ Content source, current manager, and update mechanism are separate concepts in S
 | --- | --- | --- | --- |
 | Git Skill added by SkillMate | GitHub / Git | SkillMate | Checked and updated by SkillMate |
 | Local Skill added by SkillMate | Local directory | SkillMate | Maintained manually |
+| Skill installed by `npx skills` | External CLI | skills CLI | Updated with `npx skills update` |
 | Skill installed by npm, pip, or another CLI | External CLI | Original installer | Updated with the original installer |
 | Skill placed by an agent, plugin, or user | Git / local / unknown | External or manual | External tool or manual maintenance |
 | Skill explicitly adopted by the user | Original source retained | SkillMate | Depends on whether the source can be reconstructed |

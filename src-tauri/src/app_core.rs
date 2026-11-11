@@ -15,6 +15,7 @@ pub struct AssistantDefinition {
     global_install_path: &'static str,
     global_discovery_paths: &'static [&'static str],
     project_install_path: Option<&'static str>,
+    project_discovery_paths: &'static [&'static str],
     recursive_discovery_depth: usize,
 }
 
@@ -29,9 +30,27 @@ impl AssistantDefinition {
             .map(|path| expand_path(path))
     }
 
+    pub(crate) fn global_discovery_roots_in(
+        self,
+        home: &Path,
+    ) -> impl Iterator<Item = PathBuf> + '_ {
+        self.global_discovery_paths
+            .iter()
+            .map(move |path| expand_path_with_home(path, Some(home)))
+    }
+
     pub fn project_install_root(self, project_path: &Path) -> Option<PathBuf> {
         self.project_install_path
             .map(|path| project_path.join(path))
+    }
+
+    pub fn project_discovery_roots(
+        self,
+        project_path: &Path,
+    ) -> impl Iterator<Item = PathBuf> + '_ {
+        self.project_discovery_paths
+            .iter()
+            .map(move |path| project_path.join(path))
     }
 
     pub fn supports_project_skills(self) -> bool {
@@ -55,13 +74,17 @@ pub fn generate_id() -> String {
 }
 
 pub fn expand_path(path: &str) -> PathBuf {
+    expand_path_with_home(path, dirs::home_dir().as_deref())
+}
+
+fn expand_path_with_home(path: &str, home: Option<&Path>) -> PathBuf {
     // 只展开 `~` 与 `~/…`（含 Windows 的 `~\…`）；`~other/x` 这类其他用户的写法
     // 本就无法解析，按原样保留，避免错误地拼到当前用户家目录下。
     let rest = match path.strip_prefix('~') {
         Some(rest) if rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\') => rest,
         _ => return PathBuf::from(path),
     };
-    match dirs::home_dir() {
+    match home {
         Some(home) => home.join(rest.trim_start_matches(['/', '\\'])),
         // 家目录不可用时保留原始写法，避免拼出随进程工作目录漂移的相对路径。
         None => PathBuf::from(path),
@@ -197,6 +220,7 @@ pub fn assistant_definitions() -> &'static [AssistantDefinition] {
             global_install_path: "~/.claude/skills",
             global_discovery_paths: &["~/.claude/skills"],
             project_install_path: Some(".claude/skills"),
+            project_discovery_paths: &[".claude/skills"],
             recursive_discovery_depth: 2,
         },
         AssistantDefinition {
@@ -206,6 +230,7 @@ pub fn assistant_definitions() -> &'static [AssistantDefinition] {
             global_install_path: "~/.agents/skills",
             global_discovery_paths: &["~/.agents/skills", "~/.codex/skills"],
             project_install_path: Some(".agents/skills"),
+            project_discovery_paths: &[".agents/skills"],
             recursive_discovery_depth: 6,
         },
         AssistantDefinition {
@@ -215,6 +240,7 @@ pub fn assistant_definitions() -> &'static [AssistantDefinition] {
             global_install_path: "~/.openclaw/skills",
             global_discovery_paths: &["~/.openclaw/skills", "~/.agents/skills"],
             project_install_path: Some("skills"),
+            project_discovery_paths: &["skills"],
             recursive_discovery_depth: 6,
         },
         AssistantDefinition {
@@ -225,6 +251,7 @@ pub fn assistant_definitions() -> &'static [AssistantDefinition] {
             // Gemini 在同一层级中优先采用共享别名，再回退原生目录。
             global_discovery_paths: &["~/.agents/skills", "~/.gemini/skills"],
             project_install_path: Some(".gemini/skills"),
+            project_discovery_paths: &[".agents/skills", ".gemini/skills"],
             recursive_discovery_depth: 2,
         },
         AssistantDefinition {
@@ -234,6 +261,7 @@ pub fn assistant_definitions() -> &'static [AssistantDefinition] {
             global_install_path: "~/.cursor/skills",
             global_discovery_paths: &["~/.cursor/skills"],
             project_install_path: Some(".cursor/skills"),
+            project_discovery_paths: &[".agents/skills", ".cursor/skills"],
             recursive_discovery_depth: 2,
         },
         AssistantDefinition {
@@ -243,6 +271,7 @@ pub fn assistant_definitions() -> &'static [AssistantDefinition] {
             global_install_path: "~/.config/opencode/skills",
             global_discovery_paths: &["~/.config/opencode/skills"],
             project_install_path: Some(".opencode/skills"),
+            project_discovery_paths: &[".agents/skills", ".opencode/skills"],
             recursive_discovery_depth: 2,
         },
         AssistantDefinition {
@@ -252,6 +281,7 @@ pub fn assistant_definitions() -> &'static [AssistantDefinition] {
             global_install_path: "~/.copilot/skills",
             global_discovery_paths: &["~/.copilot/skills"],
             project_install_path: Some(".github/skills"),
+            project_discovery_paths: &[".agents/skills", ".github/skills"],
             recursive_discovery_depth: 2,
         },
         AssistantDefinition {
@@ -268,6 +298,7 @@ pub fn assistant_definitions() -> &'static [AssistantDefinition] {
                 "~/.agents/skills",
             ],
             project_install_path: Some(".devin/skills"),
+            project_discovery_paths: &[".devin/skills"],
             recursive_discovery_depth: 2,
         },
         AssistantDefinition {
@@ -278,6 +309,7 @@ pub fn assistant_definitions() -> &'static [AssistantDefinition] {
             // DeepSeek Harness 原生目录优先，再回退共享的 ~/.agents/skills。
             global_discovery_paths: &["~/.dsh/skills", "~/.agents/skills"],
             project_install_path: Some(".dsh/skills"),
+            project_discovery_paths: &[".dsh/skills"],
             recursive_discovery_depth: 2,
         },
         AssistantDefinition {
@@ -287,6 +319,7 @@ pub fn assistant_definitions() -> &'static [AssistantDefinition] {
             global_install_path: "~/.zcode/skills",
             global_discovery_paths: &["~/.zcode/skills", "~/.agents/skills"],
             project_install_path: Some(".zcode/skills"),
+            project_discovery_paths: &[".zcode/skills"],
             recursive_discovery_depth: 2,
         },
         AssistantDefinition {
@@ -298,6 +331,7 @@ pub fn assistant_definitions() -> &'static [AssistantDefinition] {
             // KIMI_CODE_HOME 等环境变量），另读跨工具共享的 ~/.agents/skills。
             global_discovery_paths: &["~/.kimi-code/skills", "~/.agents/skills"],
             project_install_path: Some(".kimi-code/skills"),
+            project_discovery_paths: &[".agents/skills", ".kimi-code/skills"],
             recursive_discovery_depth: 2,
         },
     ]
@@ -673,6 +707,7 @@ mod tests {
             global_install: &'static str,
             global_discovery: &'static [&'static str],
             project_install: &'static str,
+            project_discovery: &'static [&'static str],
         }
 
         let project = Path::new("/tmp/example-project");
@@ -683,6 +718,7 @@ mod tests {
                 global_install: ".claude/skills",
                 global_discovery: &[".claude/skills"],
                 project_install: ".claude/skills",
+                project_discovery: &[".claude/skills"],
             },
             ExpectedPaths {
                 name: "Codex",
@@ -690,6 +726,7 @@ mod tests {
                 global_install: ".agents/skills",
                 global_discovery: &[".agents/skills", ".codex/skills"],
                 project_install: ".agents/skills",
+                project_discovery: &[".agents/skills"],
             },
             ExpectedPaths {
                 name: "OpenClaw",
@@ -697,6 +734,7 @@ mod tests {
                 global_install: ".openclaw/skills",
                 global_discovery: &[".openclaw/skills", ".agents/skills"],
                 project_install: "skills",
+                project_discovery: &["skills"],
             },
             ExpectedPaths {
                 name: "Gemini CLI",
@@ -704,6 +742,7 @@ mod tests {
                 global_install: ".gemini/skills",
                 global_discovery: &[".gemini/skills", ".agents/skills"],
                 project_install: ".gemini/skills",
+                project_discovery: &[".agents/skills", ".gemini/skills"],
             },
             ExpectedPaths {
                 name: "Cursor",
@@ -711,6 +750,7 @@ mod tests {
                 global_install: ".cursor/skills",
                 global_discovery: &[".cursor/skills"],
                 project_install: ".cursor/skills",
+                project_discovery: &[".agents/skills", ".cursor/skills"],
             },
             ExpectedPaths {
                 name: "OpenCode",
@@ -718,6 +758,7 @@ mod tests {
                 global_install: ".config/opencode/skills",
                 global_discovery: &[".config/opencode/skills"],
                 project_install: ".opencode/skills",
+                project_discovery: &[".agents/skills", ".opencode/skills"],
             },
             ExpectedPaths {
                 name: "GitHub Copilot",
@@ -725,6 +766,7 @@ mod tests {
                 global_install: ".copilot/skills",
                 global_discovery: &[".copilot/skills"],
                 project_install: ".github/skills",
+                project_discovery: &[".agents/skills", ".github/skills"],
             },
             ExpectedPaths {
                 name: "Devin",
@@ -738,6 +780,7 @@ mod tests {
                     ".agents/skills",
                 ],
                 project_install: ".devin/skills",
+                project_discovery: &[".devin/skills"],
             },
             ExpectedPaths {
                 name: "DeepSeek Harness",
@@ -745,6 +788,7 @@ mod tests {
                 global_install: ".dsh/skills",
                 global_discovery: &[".dsh/skills", ".agents/skills"],
                 project_install: ".dsh/skills",
+                project_discovery: &[".dsh/skills"],
             },
             ExpectedPaths {
                 name: "ZCode",
@@ -752,6 +796,7 @@ mod tests {
                 global_install: ".zcode/skills",
                 global_discovery: &[".zcode/skills", ".agents/skills"],
                 project_install: ".zcode/skills",
+                project_discovery: &[".zcode/skills"],
             },
             ExpectedPaths {
                 name: "Kimi Code",
@@ -759,6 +804,7 @@ mod tests {
                 global_install: ".kimi-code/skills",
                 global_discovery: &[".kimi-code/skills", ".agents/skills"],
                 project_install: ".kimi-code/skills",
+                project_discovery: &[".agents/skills", ".kimi-code/skills"],
             },
         ];
 
@@ -783,6 +829,13 @@ mod tests {
                 assistant.project_install_root(project).unwrap(),
                 project.join(expected.project_install)
             );
+            let project_discovery = assistant
+                .project_discovery_roots(project)
+                .collect::<Vec<_>>();
+            assert_eq!(project_discovery.len(), expected.project_discovery.len());
+            for path in expected.project_discovery {
+                assert!(project_discovery.iter().any(|root| root.ends_with(path)));
+            }
         }
     }
 
