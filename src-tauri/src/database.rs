@@ -69,10 +69,14 @@ fn find_windows_path_key(
         .map_err(|error| error.to_string())
 }
 
-pub(crate) fn data_directory() -> Result<PathBuf, String> {
-    let directory = dirs::data_dir()
+fn data_directory_path() -> PathBuf {
+    dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("skillmate");
+        .join("skillmate")
+}
+
+pub(crate) fn data_directory() -> Result<PathBuf, String> {
+    let directory = data_directory_path();
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     Ok(directory)
 }
@@ -98,13 +102,33 @@ pub fn open_db_connection() -> Result<Connection, String> {
 }
 
 fn open_db_connection_unchecked() -> Result<Connection, String> {
-    let connection = Connection::open(database_path()?).map_err(|error| error.to_string())?;
+    prepare_connection(Connection::open(database_path()?).map_err(|error| error.to_string())?)
+}
+
+fn prepare_connection(connection: Connection) -> Result<Connection, String> {
     connection
         .busy_timeout(Duration::from_secs(5))
         .map_err(|error| error.to_string())?;
     connection
         .pragma_update(None, "foreign_keys", "ON")
         .map_err(|error| error.to_string())?;
+    Ok(connection)
+}
+
+/// 只读连接：不创建数据目录、不做 schema 迁移、不改 journal 模式。
+/// 库文件已存在时按原样打开；尚不存在时返回带完整 schema 的内存连接，
+/// 让 doctor 这类诊断入口按「无登记」口径读取而不在磁盘留下任何文件。
+pub fn open_readonly_db_connection() -> Result<Connection, String> {
+    open_readonly_db_connection_at(&data_directory_path().join("data.db"))
+}
+
+pub(crate) fn open_readonly_db_connection_at(path: &Path) -> Result<Connection, String> {
+    if path.is_file() {
+        return prepare_connection(Connection::open(path).map_err(|error| error.to_string())?);
+    }
+    let connection =
+        prepare_connection(Connection::open_in_memory().map_err(|error| error.to_string())?)?;
+    migrate_database(&connection)?;
     Ok(connection)
 }
 

@@ -1,5 +1,5 @@
 use crate::skill_inventory::scan_all_assistants;
-use crate::skill_library::{directory_link_mode, scan_library_skills, DirectoryLinkMode};
+use crate::skill_library::{directory_link_mode, read_library_skills, DirectoryLinkMode};
 use crate::{AIAssistant, Skill};
 use rusqlite::Connection;
 use serde::Serialize;
@@ -50,7 +50,7 @@ impl DoctorReport {
 pub fn collect_doctor_report(db: &Connection) -> Result<DoctorReport, String> {
     // 与 GUI 概览同一批只读扫描结果，保证 doctor 与桌面诊断口径一致。
     let assistants = scan_all_assistants(db)?;
-    let library_skills = scan_library_skills(db)?;
+    let library_skills = read_library_skills(db)?;
     let link_mode = directory_link_mode();
     Ok(build_doctor_report(&assistants, &library_skills, link_mode))
 }

@@ -1,5 +1,7 @@
 use crate::app_core::{assistant_definitions, is_managed_skill_path, managed_skill_roots};
-use crate::database::{create_db_connection, data_directory, open_db_connection};
+use crate::database::{
+    create_db_connection, data_directory, open_db_connection, open_readonly_db_connection,
+};
 use crate::managed_installation::{
     backfill_managed_roots, find_managed_installation, list_managed_roots,
     migrate_managed_installation_fingerprints, prune_missing_managed_installations,
@@ -95,6 +97,33 @@ where
         },
         operation,
     )
+}
+
+/// 只读操作入口：与写操作共用同一把跨进程锁做并发协调，
+/// 但跳过事务恢复、指纹迁移与安装清理等维护写，供 doctor 等诊断命令使用。
+pub(crate) fn run_readonly_operation<T, F>(operation: F) -> Result<T, String>
+where
+    F: FnOnce(&Connection) -> Result<T, String>,
+{
+    run_readonly_operation_with(
+        acquire_operation_lock,
+        open_readonly_db_connection,
+        operation,
+    )
+}
+
+/// 可注入的只读入口：测试替换锁与数据库来源后，仍走与线上一致的组装路径。
+pub(crate) fn run_readonly_operation_with<T, G, L, D, F>(
+    acquire_lock: L,
+    open_db: D,
+    operation: F,
+) -> Result<T, String>
+where
+    L: FnOnce() -> Result<G, String>,
+    D: FnOnce() -> Result<Connection, String>,
+    F: FnOnce(&Connection) -> Result<T, String>,
+{
+    run_exclusive_operation_with(acquire_lock, open_db, |_| Ok(0), operation)
 }
 
 fn run_exclusive_operation_with<T, G, L, D, R, F>(

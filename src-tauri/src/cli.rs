@@ -1,6 +1,7 @@
 use crate::install_policy::load_install_policy;
 use crate::operation_coordinator::{
     check_skill_updates, initialize_managed_database, run_exclusive_operation,
+    run_readonly_operation,
 };
 use crate::project_inspection::inspect_project_skills;
 use crate::skill_adoption;
@@ -53,10 +54,12 @@ pub fn run(args: Vec<String>) -> Result<i32, String> {
         return Ok(0);
     }
     let options = parse_options(&args[1..])?;
-    initialize_database()?;
+    // doctor 全程只读：不走 initialize_database 的恢复、迁移与安装清理，
+    // 否则会在生成报告前先抹掉正要诊断的断链与登记。
     if command == "doctor" {
         return run_doctor(options);
     }
+    initialize_database()?;
     match command {
         "scan" => run_scan(options),
         "list" => run_list(options),
@@ -371,11 +374,20 @@ fn run_maintain(options: CommandOptions) -> Result<(), String> {
     }
 }
 
-/// 只读健康自检：复用 GUI 概览的同一批扫描结果，全程不写文件、不改数据库；
-/// 退出码 0 健康 / 1 有告警 / 2 有错误。
+/// 只读健康自检：与写操作共用并发锁，但不做事务恢复、指纹迁移与
+/// 安装清理等维护写；退出码 0 健康 / 1 有告警 / 2 有错误。
 fn run_doctor(options: CommandOptions) -> Result<i32, String> {
+    run_doctor_with(options, || {
+        run_readonly_operation(crate::skill_doctor::collect_doctor_report)
+    })
+}
+
+fn run_doctor_with<F>(options: CommandOptions, collect: F) -> Result<i32, String>
+where
+    F: FnOnce() -> Result<crate::skill_doctor::DoctorReport, String>,
+{
     ensure_positional_count(&options, 0, "doctor")?;
-    let report = run_exclusive_operation(crate::skill_doctor::collect_doctor_report)?;
+    let report = collect()?;
     if options.json {
         print_json(&report)?;
     } else {
@@ -627,6 +639,164 @@ mod tests {
             options.selected_skills,
             vec!["skills/writer", "skills/reviewer"]
         );
+    }
+
+    #[test]
+    fn doctor_reports_broken_state_without_mutating_registration_or_files() {
+        use crate::managed_installation::{list_managed_installations, record_managed_root};
+        use crate::managed_state::{mark_managed_skill, read_managed_state, LIBRARY_OWNER_NAME};
+
+        let root = std::env::temp_dir().join(format!(
+            "skillmate-doctor-readonly-{}-{}",
+            std::process::id(),
+            crate::app_core::generate_id()
+        ));
+        let library_root = root.join("a-library");
+        let deployment_root = root.join("z-deployments");
+        let library_path = library_root.join("writer");
+        let deployment_path = deployment_root.join("writer");
+        let db_file = root.join("data.db");
+        std::fs::create_dir_all(&library_path).unwrap();
+        std::fs::create_dir_all(&deployment_root).unwrap();
+        std::fs::write(library_path.join("SKILL.md"), "writer").unwrap();
+        if !crate::app_core::create_test_directory_symlink_or_skip(&library_path, &deployment_path)
+        {
+            let _ = std::fs::remove_dir_all(root);
+            return;
+        }
+        {
+            let db = rusqlite::Connection::open(&db_file).unwrap();
+            db.execute_batch(
+                "CREATE TABLE managed_installations (
+                    skill_path TEXT PRIMARY KEY, assistant TEXT NOT NULL, source TEXT NOT NULL,
+                    source_kind TEXT NOT NULL, target_name TEXT NOT NULL, scope TEXT NOT NULL,
+                    install_mode TEXT NOT NULL, project_path TEXT, tracking_ref TEXT, subdir TEXT,
+                    resolved_ref TEXT, content_hash TEXT, installed_at TEXT NOT NULL
+                );
+                CREATE TABLE skill_origin_meta (
+                    skill_path TEXT PRIMARY KEY, origin_kind TEXT NOT NULL, origin_locator TEXT NOT NULL,
+                    resolved_locator TEXT NOT NULL, tracking_ref TEXT NOT NULL, installed_ref TEXT NOT NULL,
+                    latest_ref TEXT NOT NULL, sync_state TEXT NOT NULL, sync_message TEXT NOT NULL,
+                    lag_count INTEGER NOT NULL, last_probe_at INTEGER, last_sync_at INTEGER,
+                    managed_by_app INTEGER NOT NULL
+                );
+                CREATE TABLE skill_tags (
+                    skill_path TEXT PRIMARY KEY, tags TEXT, tags_json TEXT NOT NULL DEFAULT '[]'
+                );
+                CREATE TABLE managed_roots (
+                    root_path TEXT PRIMARY KEY, scope TEXT NOT NULL,
+                    project_path TEXT, updated_at TEXT NOT NULL
+                );
+                CREATE TABLE library_skills (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, library_path TEXT NOT NULL UNIQUE,
+                    source TEXT NOT NULL, source_kind TEXT NOT NULL, resolved_ref TEXT,
+                    content_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
+                CREATE TABLE skill_deployments (
+                    target_path TEXT PRIMARY KEY, skill_id TEXT NOT NULL, library_path TEXT NOT NULL,
+                    assistant TEXT NOT NULL, scope TEXT NOT NULL, project_path TEXT,
+                    deploy_mode TEXT NOT NULL, deployed_at TEXT NOT NULL,
+                    FOREIGN KEY(skill_id) REFERENCES library_skills(id) ON DELETE RESTRICT
+                );",
+            )
+            .unwrap();
+            mark_managed_skill(
+                &library_root,
+                LIBRARY_OWNER_NAME,
+                &library_path,
+                "local:/tmp/writer",
+            )
+            .unwrap();
+            mark_managed_skill(
+                &deployment_root,
+                "Codex",
+                &deployment_path,
+                &format!("symlink:{}", library_path.to_string_lossy()),
+            )
+            .unwrap();
+            record_managed_root(&db, &library_root, "library", None).unwrap();
+            record_managed_root(&db, &deployment_root, "global", None).unwrap();
+            db.execute(
+                "INSERT INTO library_skills VALUES (?, 'writer', ?, 'local:/tmp/writer', 'local',
+                 NULL, 'hash', 'now', 'now')",
+                rusqlite::params!["skill-1", library_path.to_string_lossy().to_string()],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO skill_deployments VALUES (?, 'skill-1', ?, 'Codex', 'global', NULL,
+                 'symlink', 'now')",
+                rusqlite::params![
+                    deployment_path.to_string_lossy().to_string(),
+                    library_path.to_string_lossy().to_string()
+                ],
+            )
+            .unwrap();
+        }
+        // 用户删掉库主副本后：部署链接悬挂、登记保持原样——正是 doctor 要报告的状态。
+        std::fs::remove_dir_all(&library_path).unwrap();
+
+        let db_path = db_file.clone();
+        let seen = std::cell::RefCell::new(Vec::<(String, String)>::new());
+        let code = run_doctor_with(
+            CommandOptions {
+                positional: vec![],
+                json: true,
+                plan_token: None,
+                source: None,
+                assistant: None,
+                project: None,
+                set: None,
+                install: None,
+                selected_skills: vec![],
+            },
+            || {
+                let report = crate::operation_coordinator::run_readonly_operation_with(
+                    || Ok(()),
+                    move || crate::database::open_readonly_db_connection_at(&db_path),
+                    crate::skill_doctor::collect_doctor_report,
+                )?;
+                *seen.borrow_mut() = report
+                    .findings
+                    .iter()
+                    .map(|finding| (finding.category.clone(), finding.path.clone()))
+                    .collect();
+                Ok(report)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(code, 2);
+        let findings = seen.borrow();
+        for broken in [&deployment_path, &library_path] {
+            assert!(
+                findings.iter().any(|(category, path)| {
+                    category == "broken_deployment" && path == &broken.to_string_lossy()
+                }),
+                "缺少 {} 的断链 finding",
+                broken.to_string_lossy()
+            );
+        }
+        // 断链、数据库登记和 sidecar 全部保持原样：doctor 不做恢复、迁移与清理。
+        assert_eq!(std::fs::read_link(&deployment_path).unwrap(), library_path);
+        let verify = rusqlite::Connection::open(&db_file).unwrap();
+        assert_eq!(list_managed_installations(&verify).unwrap().len(), 2);
+        for (table, expected) in [("library_skills", 1i64), ("skill_deployments", 1)] {
+            assert_eq!(
+                verify
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            read_managed_state(&deployment_root)
+                .unwrap()
+                .managed_skills
+                .len(),
+            1
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
