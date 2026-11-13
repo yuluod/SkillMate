@@ -23,12 +23,14 @@
     "frontend:test:ui": "vitest run",
     "frontend:test": "pnpm frontend:test:pure && pnpm frontend:test:ui",
     "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "platforms:check": "node scripts/sync-platforms.mjs",
     "rust:sweep": "cargo sweep --time 14 src-tauri",
     "test": "pnpm frontend:test && pnpm rust:test",
     "dev": "tauri dev",
     "build": "tauri build"
   },
   "dependencies": {
+    "@phosphor-icons/react": "2.1.10",
     "@tauri-apps/api": "^2.12.4",
     "@tauri-apps/plugin-dialog": "^2.8.4",
     "@tauri-apps/plugin-process": "^2.4.0",

@@ -22,7 +22,7 @@ export function useUpdateFlow({ updatable, showToast, loadData }) {
   const getSyncInfo = useCallback((skill) =>
     getUpdateInfo(skill, updateState[skill.path], t("updates.state.unknown")), [t, updateState]);
 
-  // 行组件（UpdateRow）用 React.memo 依赖这些回调的引用稳定性，内部链条全部包 useCallback。
+  // 技能行与详情栏依赖这些回调的引用稳定性，内部链条全部包 useCallback。
   const isCurrent = useCallback(
     (operation) => operation.generation === generation.current, []);
   const change = useCallback((operation, paths, transform) => {

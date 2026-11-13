@@ -24,6 +24,7 @@ import {
   buildScenarioSkillInventory,
   buildSkillCardView,
   buildUniqueSkillInventory,
+  buildUnifiedSkillInventory,
   buildDriftGroups,
   buildDashboardStats,
   getMarketInstallRequest,
@@ -74,14 +75,85 @@ test("工作台统计汇总风险、更新、诊断和内容漂移", () => {
     [
       {
         name: "Codex", exists: true, diagnostics: [{ code: "x" }], skills: [
-          { name: "writer", path: "/a/writer", content_hash: "one", sync_state: "behind", managed_by_app: true, structure_status: "partial", structure_warnings: ["contains_scripts", "managed_content_changed"] },
+          { name: "writer", path: "/a/writer", content_hash: "one", sync_state: "behind", managed_by_app: true, structure_status: "nonstandard", structure_warnings: ["contains_scripts", "managed_content_changed"] },
         ],
       },
       { name: "Cursor", exists: true, diagnostics: [], skills: [{ name: "writer", path: "/b/writer", content_hash: "two", managed_by_app: true, structure_status: "complete", structure_warnings: [] }] },
     ],
-    [{ name: "reader", path: "/library/reader", structure_status: "complete", structure_warnings: [] }]
+    [{ name: "reader", path: "/library/reader", manager: "skillmate", managed_by_app: true, structure_status: "complete", structure_warnings: [] }]
   );
-  assert.deepEqual(stats, { skills: 3, assistants: 2, updates: 1, structureIssues: 1, securityRisks: 1, localChanges: 1, driftGroups: 1, diagnostics: 1 });
+  assert.deepEqual(stats, { skills: 3, assistants: 2, updates: 1, structureIssues: 1, securityRisks: 1, localChanges: 1, external: 0, stale: 0, driftGroups: 1, diagnostics: 1 });
+});
+
+test("工作台区分外部管理与失联来源", () => {
+  const stats = buildDashboardStats([
+    {
+      name: "Claude Code", exists: true, skills: [
+        { name: "vendor", path: "/claude/vendor", manager: "external", sync_state: "unprobed", structure_status: "complete", structure_warnings: [] },
+        { name: "gone", path: "/claude/gone", manager: "skillmate", managed_by_app: true, sync_state: "source_missing", structure_status: "complete", structure_warnings: [] },
+      ],
+    },
+  ]);
+  assert.equal(stats.external, 1);
+  assert.equal(stats.stale, 1);
+});
+
+test("需处理口径只含错误级事件，结构不完整不算需处理", () => {
+  const partialOnly = buildSkillCardView({
+    name: "hint", structure_status: "partial", structure_warnings: ["missing_license"],
+    sync_state: "current", managed_by_app: true, structure_features: [],
+  }, (key) => key);
+  assert.equal(partialOnly.needsAttention, false);
+
+  const nonstandard = buildSkillCardView({
+    name: "broken", structure_status: "nonstandard", structure_warnings: ["missing_skill_md"],
+    sync_state: "current", managed_by_app: true, structure_features: [],
+  }, (key) => key);
+  assert.equal(nonstandard.needsAttention, true);
+
+  const stale = buildSkillCardView({
+    name: "gone", structure_status: "complete", structure_warnings: [],
+    sync_state: "source_missing", managed_by_app: true, structure_features: [],
+  }, (key) => key);
+  assert.equal(stale.needsAttention, true);
+});
+
+test("统一清单把多平台部署合并为一行并保留启用位置", () => {
+  const rows = buildUnifiedSkillInventory([
+    { name: "writer", path: "/claude/writer", symlink_source: "/lib/writer", source_type: "deployment", managed_by_app: true, ai: "Claude Code", aiIcon: "claude", scope: "global", tags: ["t1"] },
+    { name: "writer", path: "/codex/writer", symlink_source: "/lib/writer", source_type: "deployment", managed_by_app: true, scope: "project", project_path: "/projects/website", ai: "Codex", aiIcon: "codex", tags: ["t1"] },
+    { name: "solo", path: "/lib/solo", in_library: true, source_type: "git", managed_by_app: true, ai: "SkillMate 库", tags: [] },
+    { name: "vendor", path: "/claude/vendor", source_type: "local", managed_by_app: false, ai: "Claude Code", aiIcon: "claude", tags: [] },
+  ]);
+  assert.equal(rows.length, 3);
+
+  const writer = rows.find((row) => row.name === "writer");
+  assert.equal(writer.path, "/lib/writer");
+  assert.equal(writer.in_library, true);
+  assert.equal(writer.deployments.length, 2);
+  assert.deepEqual(writer.deployments.map((item) => item.name), ["Claude Code", "Codex"]);
+  assert.deepEqual(writer.availableIn.map((item) => item.name), ["Claude Code", "Codex"]);
+  assert.deepEqual(writer.deployments.map((item) => item.scope), ["global", "project"]);
+  assert.equal(writer.deployments[1].projectPath, "/projects/website");
+
+  const solo = rows.find((row) => row.name === "solo");
+  assert.equal(solo.path, "/lib/solo");
+  assert.equal(solo.in_library, true);
+  assert.equal(solo.deployments.length, 0);
+
+  const vendor = rows.find((row) => row.name === "vendor");
+  assert.equal(vendor.path, "/claude/vendor");
+  assert.equal(vendor.in_library, false);
+  assert.equal(vendor.deployments.length, 0);
+});
+
+test("统一清单行按路径或库身份匹配场景筛选", () => {
+  const unified = buildUnifiedSkillInventory([
+    { name: "writer", path: "/claude/writer", symlink_source: "/lib/writer", source_type: "deployment", managed_by_app: true, ai: "Claude Code", aiIcon: "claude", scope: "global", tags: [] },
+  ]);
+  assert.equal(filterSkillsByScenario({ skills: unified, activeScenarioPaths: ["/lib/writer"] }).length, 1);
+  assert.equal(filterSkillsByScenario({ skills: unified, activeScenarioPaths: ["/claude/writer"] }).length, 1);
+  assert.equal(filterSkillsByScenario({ skills: unified, activeScenarioPaths: ["/other"] }).length, 0);
 });
 
 test("工作台按 SkillMate 库主副本统计多个启用位置", () => {
@@ -93,7 +165,7 @@ test("工作台按 SkillMate 库主副本统计多个启用位置", () => {
         symlink_source: "/library/writer",
         source_type: "deployment",
         sync_state: "behind",
-        structure_status: "partial",
+        structure_status: "nonstandard",
         structure_warnings: ["contains_scripts"],
       }],
     },
@@ -104,7 +176,7 @@ test("工作台按 SkillMate 库主副本统计多个启用位置", () => {
         symlink_source: "/library/writer",
         source_type: "deployment",
         sync_state: "behind",
-        structure_status: "partial",
+        structure_status: "nonstandard",
         structure_warnings: ["contains_scripts"],
       }],
     },
@@ -270,14 +342,12 @@ test("独立输入框复用统一控件尺寸", () => {
   assert.match(controlRule, /\.project-inspector-input input/);
 });
 
-test("可更新筛选片与引用列保持可读尺寸", () => {
+test("筛选片保持可读尺寸", () => {
   const styles = readStylesSource();
-  const chip = styles.match(/\.filter-chip\s*\{([^}]*)\}/s)?.[1] ?? "";
-  const refs = styles.match(/\.skill-row \.registry-refs\s*\{([^}]*)\}/s)?.[1] ?? "";
+  const chip = styles.match(/^\.filter-chip\s*\{([^}]*)\}/ms)?.[1] ?? "";
 
-  assert.match(chip, /height:\s*27px/);
+  assert.match(chip, /min-height:\s*32px/);
   assert.match(chip, /font-size:\s*0\.76rem/);
-  assert.match(refs, /flex-shrink:\s*0/);
 });
 
 test("安装来源保留 Git、本地目录与 Claude Marketplace", () => {
@@ -812,6 +882,8 @@ test("Skill 卡片视图应当优先使用 manifest 标题和说明", () => {
       warningSummary: "缺少必填 description",
       securityWarningCount: 0,
       securityWarningSummary: "",
+      advisoryWarningCount: 0,
+      advisoryWarningSummary: "",
       hasManagedDrift: false,
       sourceLabel: "Git",
       sourceKind: "git",
@@ -824,6 +896,7 @@ test("Skill 卡片视图应当优先使用 manifest 标题和说明", () => {
       hasUpdate: true,
       updateBusy: false,
       updateSummary: "尚未检查来源",
+      needsAttention: false,
       canEnable: false,
       canDelete: true,
       canUnlink: false,
@@ -960,9 +1033,24 @@ test("Skill 卡片应当显式汇总静态风险与受管漂移", () => {
     structure_warnings: ["contains_scripts", "references_network", "managed_content_changed"],
   });
 
-  assert.equal(view.securityWarningCount, 2);
-  assert.equal(view.securityWarningSummary, "包含可执行脚本、可能访问网络");
+  assert.equal(view.securityWarningCount, 1);
+  assert.equal(view.securityWarningSummary, "包含可执行脚本");
+  assert.equal(view.advisoryWarningCount, 1);
+  assert.equal(view.advisoryWarningSummary, "可能访问网络");
   assert.equal(view.hasManagedDrift, true);
+  assert.equal(view.needsAttention, true);
+});
+
+test("知情级风险不触发需处理，也不挂行点", () => {
+  const view = buildSkillCardView({
+    name: "doc-links",
+    structure_status: "complete",
+    structure_warnings: ["references_network", "references_environment", "contains_hidden_files"],
+  });
+
+  assert.equal(view.securityWarningCount, 0);
+  assert.equal(view.advisoryWarningCount, 3);
+  assert.equal(view.needsAttention, false);
 });
 
 test("Skill 卡片动作只应暴露受管删除或软连接解除", () => {
