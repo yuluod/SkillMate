@@ -307,7 +307,7 @@ pub(crate) fn junction_link_supported(path: &Path) -> bool {
         Some(Component::Prefix(prefix))
             if !matches!(
                 prefix.kind(),
-                std::path::Prefix::UNC(_) | std::path::Prefix::VerbatimUNC(_)
+                std::path::Prefix::UNC(..) | std::path::Prefix::VerbatimUNC(..)
             )
     )
 }
