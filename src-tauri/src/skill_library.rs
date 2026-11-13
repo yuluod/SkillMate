@@ -49,7 +49,9 @@ pub fn reuse_library_preview(db: &Connection, mut preview: InstallPreview) -> In
         // 只有实际登记进统一库的目录才能复用；仅凭路径在库根下会
         // 预览承诺成功、应用阶段却报「库记录不存在」并回滚。
         if action.action == "skip"
-            && action.reason == crate::skill_install::REASON_TARGET_EXISTS
+            && preview.conflicts.iter().any(|conflict| {
+                conflict.target == action.target && conflict.reason == "target_exists"
+            })
             && Path::new(&action.target).is_dir()
             && is_registered_library_path(db, Path::new(&action.target))
         {

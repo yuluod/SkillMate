@@ -111,7 +111,7 @@ export default function DashboardView({ stats, tagCount, driftGroups, onNavigate
   const { t } = useI18n();
 
   const attentionCount = stats.updates + stats.structureIssues + stats.securityRisks
-    + stats.localChanges + stats.driftGroups + stats.diagnostics;
+    + stats.localChanges + stats.driftGroups + stats.diagnostics + stats.stale;
 
   return (
     <div className="dashboard view-shell">
@@ -123,35 +123,39 @@ export default function DashboardView({ stats, tagCount, driftGroups, onNavigate
         )}
       />
 
+      {stats.skills === 0 && (
+        <section className="dashboard-section dashboard-first-run">
+          <SurfaceSectionHeader title={t("dashboard.firstRunTitle")} description={t("dashboard.firstRunHint")} />
+          <ol className="first-run-steps">
+            <li><strong>{t("dashboard.firstRunAdd")}</strong><span>{t("dashboard.firstRunAddHint")}</span></li>
+            <li><strong>{t("dashboard.firstRunAdopt")}</strong><span>{t("dashboard.firstRunAdoptHint")}</span></li>
+            <li><strong>{t("dashboard.firstRunEnable")}</strong><span>{t("dashboard.firstRunEnableHint")}</span></li>
+          </ol>
+        </section>
+      )}
+
       <div className="dash-stats" aria-label={t("dashboard.statusSummary")}>
-        <button type="button" className="stat" onClick={() => onNavigate("skills")}><span>{t("dashboard.skills")}</span><b>{stats.skills}</b><Icon name="arrow" size={15} /></button>
+        <button type="button" className="stat" onClick={() => onNavigate("skills")}><span>{stats.external > 0 ? t("dashboard.skillsWithExternal", { count: stats.external }) : t("dashboard.skills")}</span><b>{stats.skills}</b><Icon name="arrow" size={15} /></button>
         <button type="button" className="stat" onClick={() => onNavigate("ai")}><span>{t("dashboard.assistants")}</span><b>{stats.assistants}</b><Icon name="arrow" size={15} /></button>
         <div className="stat"><b>{tagCount}</b><span>{t("dashboard.tags")}</span></div>
-        <button type="button" className="stat" onClick={() => onNavigate("updates")}><span>{t("dashboard.updates")}</span><b>{stats.updates}</b><Icon name="arrow" size={15} /></button>
+        <button type="button" className="stat" onClick={() => onNavigate("skills", "updates")}><span>{t("dashboard.updates")}</span><b>{stats.updates}</b><Icon name="arrow" size={15} /></button>
         <div className={`stat${attentionCount > 0 ? " alert" : ""}`}><b>{attentionCount}</b><span>{t("dashboard.risks")}</span></div>
       </div>
 
-      <div className="dashboard-workspace">
       <section className="dashboard-section dashboard-attention">
         <SurfaceSectionHeader title={t("dashboard.attention")} description={t("dashboard.attentionHint")} meta={attentionCount} />
         <div className="dash-rows">
-          {stats.updates > 0 && <AttentionRow icon="updates" tone="warn" title={t("dashboard.updateTitle", { count: stats.updates })} body={t("dashboard.updateBody")} action={t("dashboard.review")} onClick={() => onNavigate("updates")} />}
+          {stats.updates > 0 && <AttentionRow icon="updates" tone="warn" title={t("dashboard.updateTitle", { count: stats.updates })} body={t("dashboard.updateBody")} action={t("dashboard.review")} onClick={() => onNavigate("skills", "updates")} />}
           {stats.securityRisks > 0 && <AttentionRow icon="shield" tone="error" title={t("dashboard.securityTitle", { count: stats.securityRisks })} body={t("dashboard.securityBody")} action={t("dashboard.review")} onClick={() => onNavigate("skills", "attention")} />}
           {stats.structureIssues > 0 && <AttentionRow icon="skills" tone="warn" title={t("dashboard.structureTitle", { count: stats.structureIssues })} body={t("dashboard.structureBody")} action={t("dashboard.review")} onClick={() => onNavigate("skills", "attention")} />}
           {stats.localChanges > 0 && <AttentionRow icon="edit" tone="error" title={t("dashboard.localTitle", { count: stats.localChanges })} body={t("dashboard.localBody")} action={t("dashboard.review")} onClick={() => onNavigate("skills", "attention")} />}
+          {stats.stale > 0 && <AttentionRow icon="unlink" tone="warn" title={t("dashboard.staleTitle", { count: stats.stale })} body={t("dashboard.staleBody")} action={t("dashboard.review")} onClick={() => onNavigate("skills", "attention")} />}
           {driftGroups.map((group) => <AttentionRow key={group.id} icon="branch" tone="warn" title={`${group.name} · ${t("drift.versions", { count: group.versionCount })}`} body={t("dashboard.driftBody")} action={t("dashboard.review")} onClick={() => onOpenDrift(group)} />)}
           {stats.diagnostics > 0 && <AttentionRow icon="search" title={t("dashboard.diagnosticTitle", { count: stats.diagnostics })} body={t("dashboard.diagnosticBody")} action={t("dashboard.review")} onClick={() => onNavigate("ai")} />}
           {attentionCount === 0 && <div className="dash-empty"><Icon name="check" size={20} /><div><strong>{t("dashboard.allClear")}</strong><p>{t("dashboard.allClearHint")}</p></div></div>}
         </div>
-      </section>
-      <aside className="dashboard-shortcuts" aria-label={t("dashboard.shortcuts")}>
-        <SurfaceSectionHeader title={t("dashboard.shortcuts")} />
-        <AttentionRow icon="skills" title={t("nav.skills")} body={t("dashboard.libraryHint")} onClick={() => onNavigate("skills")} />
-        <AttentionRow icon="power" title={t("nav.assistants")} body={t("dashboard.platformHint")} onClick={() => onNavigate("ai")} />
-        <AttentionRow icon="play" title={t("nav.scenarios")} body={t("dashboard.scenarioHint")} onClick={() => onNavigate("scenarios")} />
         <p className="dashboard-local-note"><Icon name="shield" size={16} />{t("dashboard.localNote")}</p>
-      </aside>
-      </div>
+      </section>
     </div>
   );
 }

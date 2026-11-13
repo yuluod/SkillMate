@@ -53,13 +53,15 @@ pub fn inspect_project_skills(
         let mut diagnostics = Vec::new();
         let mut seen_paths = HashSet::new();
         let mut project_entries = Vec::new();
-        collect_skill_entries(
-            &project_root,
-            assistant.recursive_discovery_depth(),
-            &mut project_entries,
-            &mut seen_paths,
-            &mut diagnostics,
-        );
+        for root in assistant.project_discovery_roots(&project) {
+            collect_skill_entries(
+                &root,
+                assistant.recursive_discovery_depth(),
+                &mut project_entries,
+                &mut seen_paths,
+                &mut diagnostics,
+            );
+        }
 
         let mut global_entries = Vec::new();
         for root in assistant.global_discovery_roots() {
