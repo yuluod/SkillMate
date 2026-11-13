@@ -238,6 +238,7 @@ The repository also includes `skillmate-cli` for inventory, scripted management,
 skillmate-cli scan [--json]
 skillmate-cli list [--json]
 skillmate-cli project <project-directory> [--json]
+skillmate-cli doctor [--json]
 skillmate-cli add <source> [--source git|local|claude_marketplace] [--skill <relative-path>]... [--plan-token <token>] [--json]
 skillmate-cli enable <library-skill-directory> --assistant <Agent> [--project <project-directory>] [--plan-token <token>] [--json]
 skillmate-cli adopt <skill-directory> --assistant <Agent> [--project <project-directory>] [--plan-token <token>] [--json]
@@ -268,6 +269,8 @@ skillmate-cli enable /path/to/library/writer --assistant Codex --project /path/t
 ```
 
 `agent-skill --install` installs the bundled SkillMate Agent Skill into a specified Skills root. If the destination already exists, including as a broken symbolic link, the command refuses to overwrite it.
+
+`doctor` is a read-only health check built on the same scan data as the app overview. It reports categorized findings — broken deployment links, missing origins, nonstandard structure, local drift, externally managed entries, and directory link capability — each with a suggested action. Exit code `0` means healthy, `1` warnings, `2` errors, which suits CI gates and scripting.
 
 ## Reliability and data boundaries
 

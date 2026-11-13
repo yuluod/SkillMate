@@ -15,7 +15,7 @@ use crate::{
 use serde::Serialize;
 use std::path::PathBuf;
 
-const USAGE: &str = "SkillMate CLI\n\n用法:\n  skillmate-cli scan [--json]\n  skillmate-cli list [--json]\n  skillmate-cli project <项目目录> [--json]\n  skillmate-cli add <来源> [--source git|local|claude_marketplace] [--skill <相对路径>]... [--plan-token <令牌>] [--json]\n  skillmate-cli enable <统一库Skill目录> --assistant <Agent> [--project <项目目录>] [--plan-token <令牌>] [--json]\n  skillmate-cli adopt <Skill目录> --assistant <Agent> [--project <项目目录>] [--plan-token <令牌>] [--json]\n  skillmate-cli maintain [--json]\n  skillmate-cli library [--set <绝对路径>] [--json]\n  skillmate-cli agent-skill [--install <目录>]\n  skillmate-cli plan <skillmate.toml> [--json]\n  skillmate-cli verify <skillmate.toml> [--json]\n  skillmate-cli apply <skillmate.toml> --plan-token <令牌> [--json]\n\nadd、enable、adopt 和 apply 不带 --plan-token 时只输出计划。确认后使用计划令牌重新执行。";
+const USAGE: &str = "SkillMate CLI\n\n用法:\n  skillmate-cli scan [--json]\n  skillmate-cli list [--json]\n  skillmate-cli project <项目目录> [--json]\n  skillmate-cli doctor [--json]\n  skillmate-cli add <来源> [--source git|local|claude_marketplace] [--skill <相对路径>]... [--plan-token <令牌>] [--json]\n  skillmate-cli enable <统一库Skill目录> --assistant <Agent> [--project <项目目录>] [--plan-token <令牌>] [--json]\n  skillmate-cli adopt <Skill目录> --assistant <Agent> [--project <项目目录>] [--plan-token <令牌>] [--json]\n  skillmate-cli maintain [--json]\n  skillmate-cli library [--set <绝对路径>] [--json]\n  skillmate-cli agent-skill [--install <目录>]\n  skillmate-cli plan <skillmate.toml> [--json]\n  skillmate-cli verify <skillmate.toml> [--json]\n  skillmate-cli apply <skillmate.toml> --plan-token <令牌> [--json]\n\nadd、enable、adopt 和 apply 不带 --plan-token 时只输出计划。确认后使用计划令牌重新执行。\ndoctor 只读自检：退出码 0 健康、1 有告警、2 有错误。";
 
 #[derive(Debug)]
 struct CommandOptions {
@@ -41,17 +41,22 @@ struct ApplyOutput {
     message: String,
 }
 
-pub fn run(args: Vec<String>) -> Result<(), String> {
+/// 返回进程退出码：正常命令恒为 0，doctor 按健康度返回 0/1/2；
+/// Err 由入口统一映射为退出码 1。
+pub fn run(args: Vec<String>) -> Result<i32, String> {
     let Some(command) = args.first().map(String::as_str) else {
         println!("{USAGE}");
-        return Ok(());
+        return Ok(0);
     };
     if matches!(command, "help" | "--help" | "-h") {
         println!("{USAGE}");
-        return Ok(());
+        return Ok(0);
     }
     let options = parse_options(&args[1..])?;
     initialize_database()?;
+    if command == "doctor" {
+        return run_doctor(options);
+    }
     match command {
         "scan" => run_scan(options),
         "list" => run_list(options),
@@ -67,6 +72,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         "apply" => run_apply(options),
         _ => Err(format!("未知命令: {command}\n\n{USAGE}")),
     }
+    .map(|_| 0)
 }
 
 fn parse_options(args: &[String]) -> Result<CommandOptions, String> {
@@ -363,6 +369,46 @@ fn run_maintain(options: CommandOptions) -> Result<(), String> {
         println!("发现 {updates} 个可用更新，{failures} 个检查失败");
         Ok(())
     }
+}
+
+/// 只读健康自检：复用 GUI 概览的同一批扫描结果，全程不写文件、不改数据库；
+/// 退出码 0 健康 / 1 有告警 / 2 有错误。
+fn run_doctor(options: CommandOptions) -> Result<i32, String> {
+    ensure_positional_count(&options, 0, "doctor")?;
+    let report = run_exclusive_operation(crate::skill_doctor::collect_doctor_report)?;
+    if options.json {
+        print_json(&report)?;
+    } else {
+        println!(
+            "体检：{} 个平台、{} 个启用条目、{} 个库内 Skill；链接能力 {}；{} 个错误、{} 个告警",
+            report.summary.assistants,
+            report.summary.skills,
+            report.summary.library_skills,
+            report.summary.link_mode,
+            report.summary.errors,
+            report.summary.warnings,
+        );
+        for finding in &report.findings {
+            let severity = if finding.severity == "error" {
+                "错误"
+            } else {
+                "告警"
+            };
+            let where_ = if finding.path.is_empty() {
+                "-".to_string()
+            } else {
+                finding.path.clone()
+            };
+            println!(
+                "- [{severity}] {} {}：{} → {}",
+                finding.category, where_, finding.message, finding.suggestion
+            );
+        }
+        if report.findings.is_empty() {
+            println!("未发现问题");
+        }
+    }
+    Ok(report.exit_code())
 }
 
 fn run_library(options: CommandOptions) -> Result<(), String> {

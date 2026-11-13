@@ -237,6 +237,7 @@ SkillMate 可以通过 GitHub Releases 和 Tauri updater 检查、验证并安�
 skillmate-cli scan [--json]
 skillmate-cli list [--json]
 skillmate-cli project <项目目录> [--json]
+skillmate-cli doctor [--json]
 skillmate-cli add <来源> [--source git|local|claude_marketplace] [--skill <相对路径>]... [--plan-token <令牌>] [--json]
 skillmate-cli enable <统一库Skill目录> --assistant <Agent> [--project <项目目录>] [--plan-token <令牌>] [--json]
 skillmate-cli adopt <Skill目录> --assistant <Agent> [--project <项目目录>] [--plan-token <令牌>] [--json]
@@ -267,6 +268,8 @@ skillmate-cli enable /path/to/library/writer --assistant Codex --project /path/t
 ```
 
 `agent-skill --install` 可以把随应用提供的 SkillMate Agent Skill 安装到指定 Skills 根目录；如果目标已经存在，包括断开的软连接，命令会拒绝覆盖。
+
+`doctor` 是只读健康自检，复用与应用概览同一批扫描结果：输出断链启用位置、失联来源、结构不合格、本地修改、外部管理条目、目录链接能力等分类清单，每条附建议动作；退出码 `0` 表示健康、`1` 表示有告警、`2` 表示有错误，适合 CI 前置检查与脚本集成。
 
 ## 可靠性与数据边界
 
