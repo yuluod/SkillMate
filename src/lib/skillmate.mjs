@@ -704,6 +704,18 @@ export function isStaleSkill(skill) {
   return isSkillManaged(skill) && (skill?.sync_state === "source_missing" || skill?.sync_state === "failed");
 }
 
+// 库搜索：名称/描述四字段即时匹配，正文匹配由后端实时读取主副本补充，
+// 超过阈值自动退化以避免大规模库下逐次扫盘。
+export const BODY_SEARCH_SKILL_LIMIT = 1000;
+
+export function skillMatchesQuery(skill, query, bodyHitPaths) {
+  const needle = String(query || "").trim().toLowerCase();
+  if (!needle) return true;
+  const fields = [skill.name, skill.manifest_title, skill.manifest_description, skill.description];
+  if (fields.some((field) => String(field || "").toLowerCase().includes(needle))) return true;
+  return Boolean(bodyHitPaths?.has?.(skill.path));
+}
+
 // 把同一逻辑 Skill 的多平台部署与库内主副本合并为一行：
 // 身份 = symlink_source（库主副本路径）或实体路径；每行携带 deployments（各启用位置的路径与范围），
 // 供详情栏按位置停用和「未启用」筛选使用。

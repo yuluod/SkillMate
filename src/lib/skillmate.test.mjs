@@ -25,6 +25,7 @@ import {
   buildSkillCardView,
   buildUniqueSkillInventory,
   buildUnifiedSkillInventory,
+  skillMatchesQuery,
   buildDriftGroups,
   buildDashboardStats,
   getMarketInstallRequest,
@@ -145,6 +146,18 @@ test("统一清单把多平台部署合并为一行并保留启用位置", () =>
   assert.equal(vendor.path, "/claude/vendor");
   assert.equal(vendor.in_library, false);
   assert.equal(vendor.deployments.length, 0);
+});
+
+test("库搜索匹配名称描述四字段或正文命中路径", () => {
+  const writer = { name: "writer", path: "/lib/writer", manifest_title: "Writer", manifest_description: "写作辅助", description: "weekly" };
+  assert.equal(skillMatchesQuery(writer, "writer", null), true);
+  assert.equal(skillMatchesQuery(writer, "写作", null), true);
+  assert.equal(skillMatchesQuery(writer, "WEEK", null), true);
+  assert.equal(skillMatchesQuery(writer, "release", null), false);
+  assert.equal(skillMatchesQuery(writer, "release", new Set(["/lib/writer"])), true);
+  assert.equal(skillMatchesQuery(writer, "release", new Set(["/other"])), false);
+  assert.equal(skillMatchesQuery(writer, "", null), true);
+  assert.equal(skillMatchesQuery(writer, "  ", null), true);
 });
 
 test("统一清单行按路径或库身份匹配场景筛选", () => {

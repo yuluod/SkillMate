@@ -259,6 +259,76 @@ pub fn read_skill_preview(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+const MAX_BODY_SNIPPET_CHARS: usize = 160;
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct SkillBodyMatch {
+    pub path: String,
+    pub file: String,
+    pub line: usize,
+    pub snippet: String,
+    pub matches: usize,
+}
+
+/// 入口文档正文的实时子串检索：每次查询都读当前文件，无索引一致性问题。
+/// 逐行匹配，返回首个命中行的有界摘录与总行数，供前端展示「为什么命中」。
+pub fn search_skill_body(path: &Path, query: &str) -> Option<SkillBodyMatch> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return None;
+    }
+    let (file, content, _) =
+        read_named_file(path, &["SKILL.md", "skill.md", "README.md", "readme.md"])?;
+    let mut first: Option<(usize, String)> = None;
+    let mut matches = 0usize;
+    for (index, line) in content.lines().enumerate() {
+        if line.to_lowercase().contains(&needle) {
+            matches += 1;
+            if first.is_none() {
+                first = Some((index + 1, body_match_snippet(line, &needle)));
+            }
+        }
+    }
+    first.map(|(line, snippet)| SkillBodyMatch {
+        path: path.to_string_lossy().into_owned(),
+        file,
+        line,
+        snippet,
+        matches,
+    })
+}
+
+fn body_match_snippet(line: &str, needle_lower: &str) -> String {
+    let trimmed = line.trim();
+    let total = trimmed.chars().count();
+    if total <= MAX_BODY_SNIPPET_CHARS {
+        return trimmed.to_string();
+    }
+    // Unicode 小写化可能改变 UTF-8 字节长度（如 Ⱥ→ⱥ），lower 的字节偏移
+    // 不能直接切片原串；按每个原字符的小写展开数把命中位置映射回字符边界。
+    let lower = trimmed.to_lowercase();
+    let match_lower_chars = lower[..lower.find(needle_lower).unwrap_or(0)]
+        .chars()
+        .count();
+    let mut consumed = 0usize;
+    let mut match_char = total;
+    for (index, ch) in trimmed.chars().enumerate() {
+        if match_lower_chars < consumed + ch.to_lowercase().count() {
+            match_char = index;
+            break;
+        }
+        consumed += ch.to_lowercase().count();
+    }
+    let start = match_char.saturating_sub(60);
+    let end = (start + MAX_BODY_SNIPPET_CHARS).min(total);
+    let snippet: String = trimmed.chars().skip(start).take(end - start).collect();
+    format!(
+        "{}{snippet}{}",
+        if start > 0 { "…" } else { "" },
+        if end < total { "…" } else { "" }
+    )
+}
+
 #[cfg(test)]
 pub fn read_skill_manifest_version(path: &Path) -> Option<String> {
     let (_, content, _) = read_named_file(path, &["SKILL.md"])?;
@@ -1416,6 +1486,83 @@ mod tests {
             .structure_warnings
             .contains(&"missing_skill_md".to_string()));
         assert_eq!(read_skill_preview(&base), "# 旧格式 Skill\n\n说明内容。");
+
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn body_search_reports_first_hit_line_count_and_snippet() {
+        let base = test_dir("body-search");
+        write_text(
+            &base.join("SKILL.md"),
+            "---\nname: writer\ndescription: 写作\n---\n\n## 用法\n\n支持生成周报与 Release Notes。\n再次生成周报时复用模板。\n",
+        );
+
+        let found = search_skill_body(&base, "周报").unwrap();
+
+        assert_eq!(found.file, "SKILL.md");
+        assert_eq!(found.line, 8);
+        assert_eq!(found.matches, 2);
+        assert!(found.snippet.contains("生成周报"));
+        assert!(search_skill_body(&base, "  ").is_none());
+        assert!(search_skill_body(&base, "不存在的词").is_none());
+
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn body_search_is_case_insensitive_and_bounds_long_lines() {
+        let base = test_dir("body-search-case");
+        let padding = "x".repeat(200);
+        write_text(
+            &base.join("SKILL.md"),
+            &format!("---\nname: w\ndescription: d\n---\n\n{padding}Deploy Token{padding}\n"),
+        );
+
+        let found = search_skill_body(&base, "deploy token").unwrap();
+
+        assert_eq!(found.line, 6);
+        assert!(found.snippet.chars().count() <= MAX_BODY_SNIPPET_CHARS + 2);
+        assert!(found.snippet.starts_with('…'));
+        assert!(found.snippet.ends_with('…'));
+        assert!(found.snippet.contains("Deploy Token"));
+
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn body_search_snippet_survives_lowercase_byte_expansion() {
+        // Ⱥ（2 字节）小写化为 ⱥ（3 字节）：lower 串中的命中偏移
+        // 不能直接切片原串，否则在非字符边界处 panic。
+        let base = test_dir("body-search-unicode");
+        let line = format!("Ⱥ中{}", "x".repeat(200));
+        write_text(
+            &base.join("SKILL.md"),
+            &format!("---\nname: w\ndescription: d\n---\n\n{line}\n"),
+        );
+
+        let found = search_skill_body(&base, "中").unwrap();
+
+        assert!(found.snippet.contains('中'));
+        assert!(found.snippet.chars().count() <= MAX_BODY_SNIPPET_CHARS + 2);
+
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn body_search_reads_live_content_without_index() {
+        let base = test_dir("body-search-live");
+        write_text(
+            &base.join("SKILL.md"),
+            "---\nname: w\ndescription: d\n---\n\n旧内容\n",
+        );
+        assert!(search_skill_body(&base, "新内容").is_none());
+
+        write_text(
+            &base.join("SKILL.md"),
+            "---\nname: w\ndescription: d\n---\n\n新内容已更新\n",
+        );
+        assert!(search_skill_body(&base, "新内容").is_some());
 
         std::fs::remove_dir_all(base).ok();
     }
