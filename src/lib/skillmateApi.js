@@ -130,6 +130,9 @@ export const skillmateApi = Object.freeze({
     get: () => invoke("get_install_policy"),
     set: (config) => invoke("set_install_policy", { config }),
   }),
+  findings: Object.freeze({
+    review: (finding) => invoke("review_suspicious_finding", finding),
+  }),
   library: Object.freeze({
     settings: () => invoke("get_library_settings"),
     setRoot: (path) => invoke("set_library_root", { path }),

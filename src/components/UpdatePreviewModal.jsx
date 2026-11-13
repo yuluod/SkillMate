@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import ModalShell from "./ModalShell.jsx";
+import SuspiciousFindings from "./SuspiciousFindings.jsx";
 import { useI18n } from "../lib/i18n.jsx";
 import { toUserErrorMessage } from "../lib/errorMessage.mjs";
 import { skillmateApi } from "../lib/skillmateApi.js";
@@ -59,6 +60,7 @@ export default function UpdatePreviewModal({ path, onClose, onConfirm }) {
         </details>)}
         {preview.omittedFiles > 0 && <p>{t("updatePreview.omitted", { count: preview.omittedFiles })}</p>}
         {!!preview.warnings.length && <p className="stamp warn">{t("updatePreview.warnings")}: {preview.warnings.map(code => t(`structure.warning.${code}`)).join(t("common.listSeparator"))}</p>}
+        <SuspiciousFindings findings={preview.suspiciousInstructions} onReviewed={() => setRevision(value => value + 1)} />
         {!preview.canApply && <p role="status">{t(preview.blockedReason ? `updatePreview.blocked.${preview.blockedReason}` : "updatePreview.blocked")}</p>}
       </>}
     </div>
