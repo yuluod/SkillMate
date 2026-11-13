@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import Icon from "./Icon.jsx";
 import ModalShell from "./ModalShell.jsx";
+import SuspiciousFindings from "./SuspiciousFindings.jsx";
 import {
   SUPPORTED_INSTALL_SOURCES,
   buildInstallPreviewView,
@@ -162,6 +163,7 @@ export function InstallModal({
       current: installPreviewCurrent,
       primaryAction: installPrimaryAction,
       runPrimaryAction: runInstallPrimaryAction,
+      refresh: refreshInstallPreview,
     },
     selection = {
       availableSkills: [],
@@ -349,6 +351,7 @@ export function InstallModal({
           {installStructurePreview && (
             <>
               <p>{buildStructureWarningSummary(installStructurePreview, t)}</p>
+              <SuspiciousFindings findings={installStructurePreview.suspicious_instructions} onReviewed={refreshInstallPreview} />
               {installPreviewView?.packageWarnings && <p>{installPreviewView.packageWarnings}</p>}
               {installPreviewView?.needsModel && <p>{t("install.modelHint")}</p>}
               {installPreviewView?.policy?.message && (

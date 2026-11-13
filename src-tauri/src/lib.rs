@@ -4,6 +4,7 @@ mod app_core;
 mod claude_marketplace;
 pub mod cli;
 mod database;
+mod finding_review;
 mod git_backup;
 mod install_policy;
 mod library_config;
@@ -617,6 +618,29 @@ pub(crate) fn install_result(
 }
 
 #[tauri::command]
+async fn review_suspicious_finding(
+    kind: String,
+    file: String,
+    line: usize,
+    excerpt: String,
+    fingerprint: String,
+) -> Result<(), String> {
+    run_exclusive_operation(|db| {
+        crate::finding_review::mark_finding_reviewed(
+            db,
+            &crate::skill_structure::SuspiciousFinding {
+                kind,
+                file,
+                line,
+                excerpt,
+                fingerprint,
+                reviewed: true,
+            },
+        )
+    })
+}
+
+#[tauri::command]
 async fn preview_install_skill(
     package: String,
     source: String,
@@ -762,7 +786,10 @@ fn build_install_request_preview_with_prepared(
             }
             Err(error) => {
                 return finalize_install_request_preview(
-                    install_preview_error(error, source.to_string(), String::new()),
+                    mark_reviewed_findings(
+                        db,
+                        install_preview_error(error, source.to_string(), String::new()),
+                    ),
                     package,
                     source,
                     assistant_name,
@@ -782,7 +809,10 @@ fn build_install_request_preview_with_prepared(
             Ok(path) => Some(path),
             Err(err) => {
                 return finalize_install_request_preview(
-                    install_preview_error(err, source.to_string(), String::new()),
+                    mark_reviewed_findings(
+                        db,
+                        install_preview_error(err, source.to_string(), String::new()),
+                    ),
                     package,
                     source,
                     assistant_name,
@@ -797,7 +827,10 @@ fn build_install_request_preview_with_prepared(
         Ok(path) => path,
         Err(error) => {
             return finalize_install_request_preview(
-                install_preview_error(error, source.to_string(), String::new()),
+                mark_reviewed_findings(
+                    db,
+                    install_preview_error(error, source.to_string(), String::new()),
+                ),
                 package,
                 source,
                 assistant_name,
@@ -849,7 +882,7 @@ fn build_install_request_preview_with_prepared(
         library_only_preview(preview)
     };
     finalize_install_request_preview(
-        preview,
+        mark_reviewed_findings(db, preview),
         package,
         source,
         assistant_name,
@@ -865,6 +898,23 @@ fn library_only_preview(mut preview: InstallPreview) -> InstallPreview {
             "将 {} 个 Skill 添加到 SkillMate 库",
             preview.package_detection.detected_skills.len()
         );
+    }
+    preview
+}
+
+/// 「已审阅」是展示态：逐条标记 findings，全部审阅后摘除提醒代码，
+/// 减少重复打扰。findings 本身不进计划令牌（见 seal_install_preview）。
+fn mark_reviewed_findings(db: &Connection, mut preview: InstallPreview) -> InstallPreview {
+    for skill in &mut preview.package_detection.detected_skills {
+        let _ = crate::finding_review::apply_review_state(db, &mut skill.suspicious_instructions);
+    }
+    if crate::finding_review::apply_review_state(db, &mut preview.suspicious_instructions)
+        .map(|pending| !pending)
+        .unwrap_or(false)
+    {
+        preview
+            .structure_warnings
+            .retain(|code| code != "suspicious_instructions");
     }
     preview
 }
@@ -1038,7 +1088,7 @@ fn install_skill_exclusive(db: &Connection, request: InstallSkillRequest) -> Ins
                 (
                     Some(prepared),
                     finalize_install_request_preview(
-                        preview,
+                        mark_reviewed_findings(db, preview),
                         &package,
                         &source,
                         &assistant_name,
@@ -1058,7 +1108,7 @@ fn install_skill_exclusive(db: &Connection, request: InstallSkillRequest) -> Ins
                 (
                     None,
                     finalize_install_request_preview(
-                        preview,
+                        mark_reviewed_findings(db, preview),
                         &package,
                         &source,
                         &assistant_name,
@@ -1402,6 +1452,7 @@ fn install_preview_error(
         resolved_ref: String::new(),
         available_skills: vec![],
         selection_required: false,
+        suspicious_instructions: vec![],
     }
 }
 
@@ -1547,7 +1598,7 @@ async fn unlink_symlink_skill(path: String) -> Result<String, String> {
                 return Err("路径不存在".to_string());
             }
             let metadata = fs::symlink_metadata(&p).map_err(|e| e.to_string())?;
-            if !metadata.file_type().is_symlink() {
+            if !crate::app_core::metadata_is_directory_link(&metadata) {
                 return Err("当前启用位置不是可解除的连接".to_string());
             }
             let registry_managed = find_managed_installation(db, &p)?.filter(|installation| {
@@ -1824,10 +1875,10 @@ fn is_openable_registered_folder(path: &Path, managed_paths: &[PathBuf]) -> bool
         if parent_matches {
             return true;
         }
-        let is_symlink = fs::symlink_metadata(managed_path)
-            .map(|metadata| metadata.file_type().is_symlink())
+        let is_link = fs::symlink_metadata(managed_path)
+            .map(|metadata| crate::app_core::metadata_is_directory_link(&metadata))
             .unwrap_or(false);
-        !is_symlink && is_same_path(path, managed_path)
+        !is_link && is_same_path(path, managed_path)
     })
 }
 
@@ -1948,7 +1999,8 @@ pub fn run() {
             apply_skill_profile,
             rollback_skill_profile,
             open_external_url,
-            open_folder
+            open_folder,
+            review_suspicious_finding
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

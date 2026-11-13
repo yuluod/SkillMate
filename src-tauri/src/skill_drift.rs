@@ -52,7 +52,7 @@ pub fn preview_sync_skill_copies(
         return Err("基准 Skill 不在当前盘点范围内".to_string());
     }
     let source_metadata = fs::symlink_metadata(&source).map_err(|error| error.to_string())?;
-    if source_metadata.file_type().is_symlink() || !source_metadata.is_dir() {
+    if crate::app_core::metadata_is_directory_link(&source_metadata) || !source_metadata.is_dir() {
         return Err("基准 Skill 必须是实体目录".to_string());
     }
     let validation = validate_skill_structure(&source);
@@ -108,7 +108,7 @@ pub fn preview_sync_skill_copies(
             continue;
         }
         if fs::symlink_metadata(target)
-            .map(|metadata| metadata.file_type().is_symlink())
+            .map(|metadata| crate::app_core::metadata_is_directory_link(&metadata))
             .unwrap_or(false)
         {
             conflicts.push(conflict("目标是项目软连接，不能替换为副本".to_string()));
@@ -212,7 +212,7 @@ fn copy_skill_tree(source: &Path, target: &Path) -> Result<(), String> {
         let source_path = entry.path();
         let target_path = target.join(&name);
         let metadata = fs::symlink_metadata(&source_path).map_err(|error| error.to_string())?;
-        if metadata.file_type().is_symlink() {
+        if crate::app_core::metadata_is_directory_link(&metadata) {
             return Err(format!(
                 "同步来源包含软连接: {}",
                 source_path.to_string_lossy()

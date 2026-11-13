@@ -26,6 +26,8 @@ pub struct DetectedSkill {
     pub description: Option<String>,
     pub features: Vec<String>,
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub suspicious_instructions: Vec<crate::skill_structure::SuspiciousFinding>,
 }
 
 #[derive(Debug, Clone)]
@@ -42,7 +44,7 @@ impl SkillPackageSource {
                 source_root.to_string_lossy()
             )
         })?;
-        if metadata.file_type().is_symlink() {
+        if crate::app_core::metadata_is_directory_link(&metadata) {
             return Err(format!(
                 "Skill 来源目录不能是软连接: {}",
                 source_root.to_string_lossy()
@@ -97,7 +99,7 @@ impl SkillPackageSource {
                 candidate.to_string_lossy()
             )
         })?;
-        if metadata.file_type().is_symlink() {
+        if crate::app_core::metadata_is_directory_link(&metadata) {
             return Err(format!(
                 "Skill 候选目录不能是软连接: {}",
                 candidate.to_string_lossy()
@@ -430,6 +432,11 @@ fn detected_skill(
             structure.structure_warnings.push(warning);
         }
     }
+    if relative_path != "." {
+        for finding in &mut structure.suspicious_instructions {
+            finding.file = format!("{}/{}", relative_path, finding.file);
+        }
+    }
     DetectedSkill {
         relative_path,
         structure_status: structure.structure_status,
@@ -437,6 +444,7 @@ fn detected_skill(
         description: structure.manifest_description,
         features: structure.structure_features,
         warnings: structure.structure_warnings,
+        suspicious_instructions: structure.suspicious_instructions,
     }
 }
 

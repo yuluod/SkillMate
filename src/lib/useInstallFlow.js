@@ -570,6 +570,7 @@ export function useInstallFlow({ installOpen, assistants, setInstallOpen, showTo
       current: installPreviewCurrent,
       primaryAction: installPrimaryAction,
       runPrimaryAction: runInstallPrimaryAction,
+      refresh: previewInstall,
     },
     selection: {
       availableSkills: installPreviewView?.availableSkills || [],

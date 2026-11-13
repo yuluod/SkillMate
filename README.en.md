@@ -83,7 +83,7 @@ The library owns content, provenance, and update state. Agent directories only d
 
 SkillMate scans every discovery directory declared for a platform. Project inspection merges project-level and global content, applies project-first precedence, and shows inferred visible Skills and the number shadowed by a same-named project Skill. This is inferred from directory conventions; it does not verify what an Agent has loaded at runtime. For Cursor, Gemini CLI, GitHub Copilot, OpenCode, and Kimi Code, project inspection additionally scans the shared `.agents/skills` directory (the upstream Agent Skills convention); enablement still writes to the project directory listed in the table.
 
-Creating managed directory links on Windows requires Developer Mode or symbolic-link creation privileges for the SkillMate process. Enable and adoption previews probe directory symlink support in an isolated temporary directory; if unavailable, `directory_symlink_unavailable` blocks the operation without changing existing Skill content. Successful checks are cached for 30 seconds and failures for 2 seconds. After fixing permissions, wait briefly and preview again; if it still fails, check access to the system temporary directory. The probe does not validate the actual deployment directory's filesystem or permissions: applying still creates the real link and rolls back on failure. Adding a Skill to the library alone does not require this privilege.
+Creating managed directory links on Windows requires Developer Mode or symbolic-link creation privileges for the SkillMate process. Enable and adoption previews probe directory symlink support in an isolated temporary directory; when symlinks are unavailable, SkillMate probes NTFS junction as a fallback (no privilege required, but the deployment location and the library must both sit on a local volume — no network paths — and some tools traverse junctions as their target). When neither mechanism works, `directory_symlink_unavailable` blocks the operation without changing existing Skill content; junction fallback is explicitly marked in preview actions. Successful checks are cached for 30 seconds and failures for 2 seconds. After fixing permissions, wait briefly and preview again; if it still fails, check access to the system temporary directory. The probe does not validate the actual deployment directory's filesystem or permissions: applying still creates the real link and rolls back on failure. Adding a Skill to the library alone does not require this privilege.
 
 ## Source, manager, and update responsibility
 
@@ -123,9 +123,10 @@ Choose a project folder from Overview, Deployments, or Scenarios. Successful ins
 - Read optional fields such as `compatibility`, `license`, `metadata`, and `allowed-tools`.
 - Recognize resource directories such as `references/`, `scripts/`, and `assets/`.
 - Inspect scripts, dependency manifests, symbolic links, hidden files, network access, and environment-variable references.
+- Run a low-confidence prompt-injection heuristic over the `SKILL.md` body (excluding frontmatter): instruction overrides, possible data exfiltration, requests to disable safety checks, and possible encoded payloads.
 - Classify structures as `Conformant`, `Needs attention`, or `Not a Skill`.
 
-Static checks are used only for previews and installation decisions. SkillMate never executes scripts inside a Skill or runs third-party installation commands to infer provenance.
+Static checks are used only for previews and installation decisions. The injection heuristic is advisory and never enters the blocking policy list; install and update previews list each matched line, and a line can be marked as reviewed once confirmed harmless. Review state is registered by content fingerprint, so the same wording prompts only once across any Skill, and a content change prompts again. SkillMate never executes scripts inside a Skill or runs third-party installation commands to infer provenance.
 
 ### Add sources
 
@@ -159,7 +160,7 @@ plugin@marketplace
 
 SkillMate reads the local Claude Marketplace manifest, resolves a plugin to a local directory or Git source, and passes it through the same structure preview, risk checks, and write plan. Marketplace plugins sourced from npm are explicitly delegated to their original installer; SkillMate does not execute npm installation.
 
-The [skills.sh](https://skills.sh/) catalog and GitHub Repository Search are discovery channels only. Adding a result still goes through the complete inspection flow.
+The [skills.sh](https://skills.sh/) catalog and GitHub Repository Search are discovery channels only. Adding a result still goes through the complete inspection flow. A result shows "Added" when the unified library already holds a managed registration from the same Git source (including origins preserved by adoption): GitHub results match at repository granularity, while skills.sh results also compare the skill subdirectory; external read-only entries found by scanning do not count as added.
 
 ### Adopt external Skills
 

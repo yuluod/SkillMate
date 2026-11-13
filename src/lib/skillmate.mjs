@@ -77,6 +77,7 @@ const ADVISORY_RISK_CODES = new Set([
   "references_network",
   "references_environment",
   "safety_scan_incomplete",
+  "suspicious_instructions",
 ]);
 
 const INSTALL_SOURCE_LABELS = {

@@ -211,6 +211,7 @@ fn migrate_database(connection: &Connection) -> Result<(), String> {
              );",
         )
         .map_err(|error| error.to_string())?;
+    crate::finding_review::ensure_review_table(&transaction)?;
 
     let scenario_json_added = !table_has_column(&transaction, "scenarios", "skill_ids_json")?;
     if scenario_json_added {
