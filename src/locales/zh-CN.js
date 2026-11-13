@@ -282,6 +282,7 @@ const zhCN = {
   "skills.bodyMatch": "正文命中",
   "skills.bodyMatchMore": "另有 {count} 处",
   "skills.bodySearchLimited": "库内条目较多，正文搜索已停用，仅匹配名称与描述",
+  "skills.bodySearchTruncated": "正文搜索覆盖范围已达上限，部分仅正文命中的条目可能未显示",
   "skills.sort": "技能排序",
   "skills.backToDetails": "返回技能详情",
   "skills.title": "技能库",

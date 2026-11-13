@@ -304,9 +304,21 @@ fn body_match_snippet(line: &str, needle_lower: &str) -> String {
     if total <= MAX_BODY_SNIPPET_CHARS {
         return trimmed.to_string();
     }
+    // Unicode 小写化可能改变 UTF-8 字节长度（如 Ⱥ→ⱥ），lower 的字节偏移
+    // 不能直接切片原串；按每个原字符的小写展开数把命中位置映射回字符边界。
     let lower = trimmed.to_lowercase();
-    let match_byte = lower.find(needle_lower).unwrap_or(0);
-    let match_char = trimmed[..match_byte.min(trimmed.len())].chars().count();
+    let match_lower_chars = lower[..lower.find(needle_lower).unwrap_or(0)]
+        .chars()
+        .count();
+    let mut consumed = 0usize;
+    let mut match_char = total;
+    for (index, ch) in trimmed.chars().enumerate() {
+        if match_lower_chars < consumed + ch.to_lowercase().count() {
+            match_char = index;
+            break;
+        }
+        consumed += ch.to_lowercase().count();
+    }
     let start = match_char.saturating_sub(60);
     let end = (start + MAX_BODY_SNIPPET_CHARS).min(total);
     let snippet: String = trimmed.chars().skip(start).take(end - start).collect();
@@ -1514,6 +1526,25 @@ mod tests {
         assert!(found.snippet.starts_with('…'));
         assert!(found.snippet.ends_with('…'));
         assert!(found.snippet.contains("Deploy Token"));
+
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn body_search_snippet_survives_lowercase_byte_expansion() {
+        // Ⱥ（2 字节）小写化为 ⱥ（3 字节）：lower 串中的命中偏移
+        // 不能直接切片原串，否则在非字符边界处 panic。
+        let base = test_dir("body-search-unicode");
+        let line = format!("Ⱥ中{}", "x".repeat(200));
+        write_text(
+            &base.join("SKILL.md"),
+            &format!("---\nname: w\ndescription: d\n---\n\n{line}\n"),
+        );
+
+        let found = search_skill_body(&base, "中").unwrap();
+
+        assert!(found.snippet.contains('中'));
+        assert!(found.snippet.chars().count() <= MAX_BODY_SNIPPET_CHARS + 2);
 
         std::fs::remove_dir_all(base).ok();
     }

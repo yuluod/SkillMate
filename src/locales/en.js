@@ -281,6 +281,7 @@ const en = {
   "skills.bodyMatch": "Body match",
   "skills.bodyMatchMore": "{count} more",
   "skills.bodySearchLimited": "Library is too large for body search; matching names and descriptions only",
+  "skills.bodySearchTruncated": "Body search reached its coverage limit; some body-only matches may be hidden",
   "skills.sort": "Sort Skills",
   "skills.backToDetails": "Back to Skill details",
   "skills.title": "Skill library",

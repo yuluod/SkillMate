@@ -288,6 +288,7 @@ export function SkillsView({
   sortControl,
   searchSnippets = null,
   bodySearchLimited = false,
+  bodySearchTruncated = false,
   enablePanel,
   onCloseEnable,
 }) {
@@ -381,6 +382,7 @@ export function SkillsView({
           </div>
           {(searchControl || sortControl) && <div className="library-search-row">{searchControl}{sortControl}</div>}
           {bodySearchLimited && <p className="library-search-note"><Icon name="search" size={13} />{t("skills.bodySearchLimited")}</p>}
+          {bodySearchTruncated && <p className="library-search-note"><Icon name="search" size={13} />{t("skills.bodySearchTruncated")}</p>}
           {(tags.length > 0 || activeScenario || selectedTagCount > 0) && <div className="skills-tag-filters">
             {tags.map((tag) => (
               <button

@@ -439,16 +439,17 @@ function App() {
     }
     let cancelled = false;
     skillmateApi.inventory.searchBodies(skillInventory.map((skill) => skill.path), needle)
-      .then((results) => {
+      .then((result) => {
         if (cancelled) return;
         setBodySearch({
           query: needle,
-          snippets: new Map(results.map((match) => [match.path, match])),
-          paths: new Set(results.map((match) => match.path)),
+          snippets: new Map(result.matches.map((match) => [match.path, match])),
+          paths: new Set(result.matches.map((match) => match.path)),
+          truncated: Boolean(result.truncated),
         });
       })
       .catch(() => {
-        if (!cancelled) setBodySearch({ query: needle, snippets: new Map(), paths: new Set() });
+        if (!cancelled) setBodySearch({ query: needle, snippets: new Map(), paths: new Set(), truncated: false });
       });
     return () => { cancelled = true; };
   }, [search, skillInventory, bodySearchEnabled]);
@@ -905,6 +906,7 @@ function App() {
               </div>}
               searchSnippets={bodySnippets}
               bodySearchLimited={Boolean(search.trim()) && !bodySearchEnabled}
+              bodySearchTruncated={Boolean(search.trim()) && bodySearch.truncated}
               sortControl={<label className="library-sort"><span className="visually-hidden">{t("skills.sort")}</span><select value={sort} onChange={e => setSort(e.target.value)}><option value="name">{t("sort.name")}</option><option value="date">{t("sort.time")}</option></select></label>}
               enablePanel={installOpen && installFlow.workflow === "enable" ? <InstallModal inline flow={installFlow} assistants={data.assistants} loading={loading} onClose={() => setInstallOpen(false)} /> : null}
               onCloseEnable={() => setInstallOpen(false)}
