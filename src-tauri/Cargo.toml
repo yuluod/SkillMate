@@ -30,6 +30,9 @@ rusqlite = { version = "0.41", features = ["bundled"] }
 toml = "1.1"
 ureq = { version = "3.4", features = ["json"] }
 
+[target.'cfg(windows)'.dependencies]
+junction = "2.1"
+
 [[bin]]
 name = "skillmate-cli"
 path = "src/bin/skillmate-cli.rs"

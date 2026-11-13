@@ -163,14 +163,36 @@ pub fn atomic_write(path: &Path, content: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// Windows 目录重解析点（junction / mount point）在 std 中表现为普通目录
+///（file_type().is_symlink() 为 false），必须结合 FILE_ATTRIBUTE_REPARSE_POINT
+/// 识别为链接，否则遍历会进入链接目标、删除会递归清空目标内容。
+#[cfg(windows)]
+pub fn metadata_is_directory_link(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    metadata.file_type().is_symlink()
+        || (metadata.is_dir() && metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+}
+
+#[cfg(not(windows))]
+pub fn metadata_is_directory_link(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
+pub fn path_is_directory_link(path: &Path) -> std::io::Result<bool> {
+    fs::symlink_metadata(path).map(|metadata| metadata_is_directory_link(&metadata))
+}
+
 pub fn remove_path(path: &Path) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
-    if metadata.file_type().is_symlink() {
+    if metadata_is_directory_link(&metadata) {
         #[cfg(windows)]
         {
             use std::os::windows::fs::FileTypeExt;
 
-            if metadata.file_type().is_symlink_dir() {
+            // 目录符号链接与 junction 都只删除链接本身，不进入目标。
+            if metadata.file_type().is_symlink_dir() || metadata.is_dir() {
                 return fs::remove_dir(path).map_err(|error| error.to_string());
             }
         }

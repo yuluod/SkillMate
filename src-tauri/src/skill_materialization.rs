@@ -59,10 +59,8 @@ fn materialization_context(
             .file_name()
             .ok_or_else(|| "Skill 目录名无效".to_string())?,
     );
-    if !fs::symlink_metadata(&target)
+    if !crate::app_core::path_is_directory_link(&target)
         .map_err(|error| format!("Skill 链接无法访问: {error}"))?
-        .file_type()
-        .is_symlink()
     {
         return Err("当前 Skill 不是软链接，无需转换".to_string());
     }

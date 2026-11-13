@@ -44,7 +44,7 @@ impl SkillPackageSource {
                 source_root.to_string_lossy()
             )
         })?;
-        if metadata.file_type().is_symlink() {
+        if crate::app_core::metadata_is_directory_link(&metadata) {
             return Err(format!(
                 "Skill 来源目录不能是软连接: {}",
                 source_root.to_string_lossy()
@@ -99,7 +99,7 @@ impl SkillPackageSource {
                 candidate.to_string_lossy()
             )
         })?;
-        if metadata.file_type().is_symlink() {
+        if crate::app_core::metadata_is_directory_link(&metadata) {
             return Err(format!(
                 "Skill 候选目录不能是软连接: {}",
                 candidate.to_string_lossy()
