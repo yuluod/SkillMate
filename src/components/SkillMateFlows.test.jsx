@@ -226,6 +226,7 @@ describe("Dashboard 数据加载", () => {
         installedSkills={[{
           name: "writer",
           origin_kind: "git",
+          managed_by_app: true,
           origin_locator: "https://github.com/owner/repo.git#main:skills/writer",
         }]}
       />,
@@ -236,6 +237,142 @@ describe("Dashboard 数据加载", () => {
     const added = await screen.findByRole("button", { name: "已添加" });
     expect(added.disabled).toBe(true);
     expect(screen.queryByRole("button", { name: "检查并添加" })).toBeNull();
+  });
+
+  it("GitHub 市场结果在库内存在整仓受管来源时显示已添加", async () => {
+    invoke.mockResolvedValue({
+      source: "github",
+      total: 1,
+      items: [{
+        id: "github:owner/repo",
+        source: "github",
+        name: "repo",
+        description: "测试 Skill",
+        repository: "owner/repo",
+        skillId: "",
+        installs: 0,
+        stars: 0,
+        url: "https://github.com/owner/repo",
+        installSource: "https://github.com/owner/repo.git",
+      }],
+    });
+
+    render(
+      <MarketDiscovery
+        onInstall={vi.fn()}
+        installedSkills={[{
+          name: "repo",
+          origin_kind: "git",
+          managed_by_app: true,
+          origin_locator: "https://github.com/owner/repo.git",
+        }]}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("查找来源"), { target: { value: "github" } });
+    fireEvent.change(screen.getByPlaceholderText("搜索写作、测试、PDF..."), { target: { value: "repo" } });
+    fireEvent.click(screen.getByRole("button", { name: "查找" }));
+
+    const added = await screen.findByRole("button", { name: "已添加" });
+    expect(added.disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "检查并添加" })).toBeNull();
+  });
+
+  it("GitHub 市场结果不匹配仅子目录登记或外部只读条目", async () => {
+    invoke.mockResolvedValue({
+      source: "github",
+      total: 2,
+      items: [
+        {
+          id: "github:owner/repo",
+          source: "github",
+          name: "repo",
+          description: "测试 Skill",
+          repository: "owner/repo",
+          skillId: "",
+          installs: 0,
+          stars: 0,
+          url: "https://github.com/owner/repo",
+          installSource: "https://github.com/owner/repo.git",
+        },
+        {
+          id: "github:other/external",
+          source: "github",
+          name: "external",
+          description: "外部条目",
+          repository: "other/external",
+          skillId: "",
+          installs: 0,
+          stars: 0,
+          url: "https://github.com/other/external",
+          installSource: "https://github.com/other/external.git",
+        },
+      ],
+    });
+
+    render(
+      <MarketDiscovery
+        onInstall={vi.fn()}
+        installedSkills={[
+          {
+            name: "writer",
+            origin_kind: "git",
+            managed_by_app: true,
+            origin_locator: "https://github.com/owner/repo.git#HEAD:skills/writer",
+          },
+          {
+            name: "external",
+            origin_kind: "git",
+            managed_by_app: false,
+            origin_locator: "https://github.com/other/external.git",
+          },
+        ]}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("查找来源"), { target: { value: "github" } });
+    fireEvent.change(screen.getByPlaceholderText("搜索写作、测试、PDF..."), { target: { value: "repo" } });
+    fireEvent.click(screen.getByRole("button", { name: "查找" }));
+
+    await screen.findByText("owner/repo");
+    const installButtons = await screen.findAllByRole("button", { name: "检查并添加" });
+    expect(installButtons).toHaveLength(2);
+    for (const button of installButtons) expect(button.disabled).toBe(false);
+    expect(screen.queryByRole("button", { name: "已添加" })).toBeNull();
+  });
+
+  it("skills.sh 市场结果不匹配同仓库的不同子目录", async () => {
+    invoke.mockResolvedValue({
+      source: "skills-sh",
+      total: 1,
+      items: [{
+        id: "skills-sh:reader",
+        source: "skills-sh",
+        name: "reader",
+        skillId: "reader",
+        repository: "owner/repo",
+        installs: 1,
+        stars: 0,
+        url: "https://skills.sh/owner/repo/reader",
+        installSource: "https://github.com/owner/repo.git",
+      }],
+    });
+
+    render(
+      <MarketDiscovery
+        onInstall={vi.fn()}
+        installedSkills={[{
+          name: "writer",
+          origin_kind: "git",
+          managed_by_app: true,
+          origin_locator: "https://github.com/owner/repo.git#main:skills/writer",
+        }]}
+      />,
+    );
+    fireEvent.change(screen.getByPlaceholderText("搜索写作、测试、PDF..."), { target: { value: "reader" } });
+    fireEvent.click(screen.getByRole("button", { name: "查找" }));
+
+    const install = await screen.findByRole("button", { name: "检查并添加" });
+    expect(install.disabled).toBe(false);
+    expect(screen.queryByRole("button", { name: "已添加" })).toBeNull();
   });
 
   it("结构验证失败时仍展示 Skill 文档和诊断", async () => {
