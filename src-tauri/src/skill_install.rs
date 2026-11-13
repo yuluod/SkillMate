@@ -25,10 +25,6 @@ use std::process::Command;
 use std::process::Output;
 use std::time::Duration;
 
-/// 「目标目录已存在」动作的稳定匹配键：`reuse_library_preview` 依赖它识别
-/// 可复用的库内目录，属于跨模块契约，不要只改这行文案。
-pub(crate) const REASON_TARGET_EXISTS: &str = "目标目录已存在";
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InstallResult {
     pub success: bool,
@@ -1406,7 +1402,7 @@ fn build_install_preview_with_source(
                 action: "skip".to_string(),
                 source: skill.relative_path.clone(),
                 target: target_string,
-                reason: REASON_TARGET_EXISTS.to_string(),
+                reason: "目标目录已存在".to_string(),
             });
         } else {
             actions.push(PreviewAction {
@@ -1584,7 +1580,7 @@ fn build_symlink_install_preview_with_source(
                 action: "skip".to_string(),
                 source: source_string,
                 target: target_string,
-                reason: REASON_TARGET_EXISTS.to_string(),
+                reason: "目标目录已存在".to_string(),
             });
         } else {
             actions.push(PreviewAction {

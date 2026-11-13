@@ -1,10 +1,9 @@
 import React from "react";
-import { act, render, renderHook, screen } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useUpdateFlow } from "./useUpdateFlow.js";
 import { adaptUpdateResult, getUpdateInfo } from "./updateState.js";
 import { I18nProvider } from "./i18n.jsx";
-import { UpdatesView } from "../components/InventoryViews.jsx";
 
 const api = vi.hoisted(() => ({ checkAll: vi.fn(), checkOne: vi.fn(), applyOne: vi.fn() }));
 vi.mock("./skillmateApi.js", () => ({ skillmateApi: { updates: api } }));
@@ -231,11 +230,4 @@ describe("useUpdateFlow apply and lifecycle", () => {
     expect(api.checkOne).not.toHaveBeenCalled();
     expect(loadData).not.toHaveBeenCalled();
   });
-});
-
-it("disables batch button for an updating path outside the visible filter", () => {
-  render(<UpdatesView skills={[b]} orderedSkills={[]} stats={{ behind: 0, syncable: 0, failed: 0 }}
-    updateState={{ [a.path]: { updating: true } }} getSyncInfo={() => ({})}
-    checkAll={vi.fn()} checkOne={vi.fn()} updateOne={vi.fn()} />);
-  expect(screen.getByRole("button", { name: "检查更新" }).disabled).toBe(true);
 });

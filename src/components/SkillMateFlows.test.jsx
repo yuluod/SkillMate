@@ -3,7 +3,7 @@ import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-li
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AiAvatar, AssistantsView, SkillsView, UpdatesView } from "./InventoryViews.jsx";
+import { AiAvatar, AssistantsView, SkillsView } from "./InventoryViews.jsx";
 import DashboardView, { MarketDiscovery } from "./DashboardView.jsx";
 import { AdoptionModal, InstallModal, PreviewModal, TagManagerModal } from "./SkillMateModals.jsx";
 import SettingsView from "./SettingsView.jsx";
@@ -142,7 +142,7 @@ describe("Dashboard 数据加载", () => {
     const onNavigate = vi.fn();
     const { container } = render(
       <DashboardView
-        stats={{ skills: 21, assistants: 4, updates: 0, structureIssues: 0, securityRisks: 0, localChanges: 0, driftGroups: 0, diagnostics: 0 }}
+        stats={{ skills: 21, assistants: 4, updates: 0, structureIssues: 0, securityRisks: 0, localChanges: 0, external: 0, stale: 0, driftGroups: 0, diagnostics: 0 }}
         tagCount={4}
         driftGroups={[]}
         onNavigate={onNavigate}
@@ -157,13 +157,11 @@ describe("Dashboard 数据加载", () => {
     const statusSummary = screen.getByLabelText("本机 Skill 状态摘要");
     expect(headerActions?.querySelector(".dashboard-status")).toBeNull();
     expect(statusSummary.parentElement).toBe(container.firstElementChild);
+    expect(screen.queryByLabelText("开始工作")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "添加 Skill" }));
     expect(onInstall).toHaveBeenCalledTimes(1);
     for (const button of statusSummary.querySelectorAll("button")) fireEvent.click(button);
-    expect(onNavigate.mock.calls.map(([view]) => view)).toEqual(["skills", "ai", "updates"]);
-    onNavigate.mockClear();
-    for (const button of screen.getByLabelText("开始工作").querySelectorAll("button")) fireEvent.click(button);
-    expect(onNavigate.mock.calls.map(([view]) => view)).toEqual(["skills", "ai", "scenarios"]);
+    expect(onNavigate.mock.calls.map(([view, filter]) => [view, filter])).toEqual([["skills", undefined], ["ai", undefined], ["skills", "updates"]]);
   });
 
   it("市场结果使用系统浏览器打开来源，安装动作只进入检查流程", async () => {
@@ -352,7 +350,7 @@ describe("外观偏好与列表布局", () => {
     expect(storage.setItem).toHaveBeenCalledWith("skillmate-skin", "standard");
   });
 
-  it("Skills 与 Updates 空状态独立成块", () => {
+  it("Skills 空状态独立成块", () => {
     const skillsRender = render(
       <SkillsView
         skills={[]}
@@ -372,20 +370,6 @@ describe("外观偏好与列表布局", () => {
     expect(skillEmpty?.querySelector("h3")).toBeTruthy();
     expect(skillEmpty?.querySelector(".empty-actions button")).toBeTruthy();
     expect(skillsRender.container.querySelector(".skill-list")).toBeNull();
-
-    const updatesRender = render(
-      <UpdatesView
-        orderedSkills={[]}
-        updateState={{}}
-        getSyncInfo={vi.fn()}
-        checkAll={vi.fn()}
-        checkOne={vi.fn()}
-        updateOne={vi.fn()}
-      />
-    );
-    const updateEmpty = updatesRender.container.querySelector(".empty-state");
-    expect(updateEmpty?.querySelector("h3")).toBeTruthy();
-    expect(updatesRender.container.querySelector(".skill-list")).toBeNull();
   });
 
   it("平台空状态与统一页面标题", () => {
@@ -503,6 +487,15 @@ describe("外观偏好与列表布局", () => {
     expect(onAdopt).toHaveBeenCalledWith(expect.objectContaining({ assistant: "Codex", projectPath: "/work/demo" }));
   });
 
+  it("选择工作区后直接展开核验结果", async () => {
+    invoke.mockResolvedValue({ project_path: "/work/demo", assistants: [] });
+    render(<AssistantsView assistants={[]} installedCount={0} workspace={{ path: "/work/demo", remember: vi.fn() }} />);
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("inspect_project", { projectPath: "/work/demo" }));
+    expect(screen.getByRole("button", { name: /项目 Skills 核验/ }).getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("button", { name: "刷新" })).toBeTruthy();
+  });
+
   it("接管必须先展示写入计划再执行", async () => {
     const onComplete = vi.fn();
     invoke.mockImplementation(async (command) => {
@@ -589,7 +582,7 @@ describe("外观偏好与列表布局", () => {
     expect(invoke).not.toHaveBeenCalledWith("materialize_skill", expect.anything());
   });
 
-  it("来源说明由稳定来源类型决定，Updates 登记行保留签章", () => {
+  it("来源说明由稳定来源类型决定", () => {
     const unmanagedRender = render(
       <SkillsView
         skills={[{
@@ -620,27 +613,6 @@ describe("外观偏好与列表布局", () => {
     expect(unmanagedRender.container.querySelector('.skill-row[role="row"] .skill-meta')?.textContent).not.toContain("未知来源");
     expect(unmanagedRender.container.querySelectorAll('.skill-row[role="row"]')).toHaveLength(1);
     unmanagedRender.unmount();
-
-    const skill = { path: "/tmp/.agents/skills/package", name: "package" };
-    const packageRender = render(
-      <UpdatesView
-        orderedSkills={[skill]}
-        updateState={{}}
-        getSyncInfo={() => ({
-          originKind: "legacy_npm",
-          originLocator: "example-package",
-          installedRef: "1.0.0",
-          latestRef: "1.0.1",
-          syncState: "behind",
-          canSync: true,
-        })}
-        checkAll={vi.fn()}
-        checkOne={vi.fn()}
-        updateOne={vi.fn()}
-      />
-    );
-    expect(packageRender.container.querySelector(".stamp-source")?.classList.contains("npm")).toBe(true);
-    expect(packageRender.container.querySelectorAll('.skill-row[role="row"] > [role="cell"]')).toHaveLength(4);
   });
 
   it("库中未启用的 Skill 提供直接启用操作", async () => {
@@ -676,7 +648,7 @@ describe("外观偏好与列表布局", () => {
       />
     );
 
-    await user.click(screen.getByRole("row"));
+    await user.click(screen.getByRole("checkbox", { name: "选择 writer" }).closest(".skill-row"));
     await user.click(screen.getByRole("button", { name: "启用 writer" }));
 
     expect(onEnable).toHaveBeenCalledWith(skill);
@@ -701,7 +673,7 @@ describe("外观偏好与列表布局", () => {
       ...healthy,
       path: "/tmp/skillmate/skills/risky",
       name: "risky",
-      structure_status: "partial",
+      structure_status: "nonstandard",
       structure_warnings: ["missing_entry_document"],
       has_update: true,
       can_sync: true,
@@ -728,65 +700,47 @@ describe("外观偏好与列表布局", () => {
     expect(onUpdate).toHaveBeenCalledWith(risky.path);
     await user.click(screen.getByRole("button", { name: /需处理/ }));
     expect(container.querySelectorAll(".skill-row")).toHaveLength(1);
-    expect(screen.getByText("risky")).toBeTruthy();
+    expect(screen.getByText("risky", { selector: ".skill-title" })).toBeTruthy();
 
-    await user.click(screen.getByText("risky").closest(".skill-row"));
+    await user.click(screen.getByText("risky", { selector: ".skill-title" }).closest(".skill-row"));
     expect(container.querySelector(".skill-pane")?.getAttribute("aria-label")).toBe("risky 详情");
     await user.click(screen.getByRole("button", { name: "关闭详情" }));
-    expect(container.querySelector(".skill-pane")).toBeNull();
+    expect(container.querySelector(".library-detail")).toBeNull();
 
     screen.getByRole("button", { name: "risky 的更多操作" }).focus();
     await user.keyboard("{Enter}");
-    expect(container.querySelector(".skill-pane")).toBeNull();
+    expect(container.querySelector(".library-detail")).toBeNull();
 
     await user.click(screen.getByRole("button", { name: /全部/ }));
-    screen.getByText("healthy").closest(".skill-row").focus();
+    screen.getByText("healthy", { selector: ".skill-title" }).closest(".skill-row").focus();
     await user.keyboard("{Enter}");
     expect(container.querySelector(".skill-pane")?.getAttribute("aria-label")).toBe("healthy 详情");
 
     rerender(<SkillsView {...props} filterRequest={{ filter: "attention", nonce: 1 }} />);
     expect(container.querySelectorAll(".skill-row")).toHaveLength(1);
-    expect(screen.getByText("risky")).toBeTruthy();
-  });
-
-  it("可更新视图只列待处理项，并支持状态与标签筛选", async () => {
-    const user = userEvent.setup();
-    const onToggleTag = vi.fn();
-    const alpha = { path: "/tmp/skillmate/skills/alpha", name: "alpha", managed_by_app: true };
-    const beta = { path: "/tmp/skillmate/skills/beta", name: "beta", managed_by_app: true };
-    const { container } = render(
-      <UpdatesView
-        orderedSkills={[alpha, beta]}
-        updateState={{}}
-        getSyncInfo={(skill) => (skill.name === "alpha"
-          ? { syncState: "behind", originKind: "git", installedRef: "old", latestRef: "new", lagCount: 2, canCheck: true, canSync: true }
-          : { syncState: "current", originKind: "git", installedRef: "same", latestRef: "same", canCheck: true, canSync: true })}
-        checkAll={vi.fn()}
-        checkOne={vi.fn()}
-        updateOne={vi.fn()}
-        tags={[{ id: "t1", name: "写作", color: "#f00" }]}
-        selectedTagIds={[]}
-        onToggleTag={onToggleTag}
-      />
-    );
-
-    expect(container.querySelectorAll(".skill-row")).toHaveLength(1);
-    expect(screen.getByText("alpha")).toBeTruthy();
-    expect(screen.queryByText("beta")).toBeNull();
-
-    await user.click(screen.getByRole("button", { name: /失败/ }));
-    expect(container.querySelectorAll(".skill-row")).toHaveLength(0);
-    expect(screen.getByText("没有匹配的 Skills")).toBeTruthy();
-
-    await user.click(screen.getByRole("button", { name: /全部/ }));
-    expect(container.querySelectorAll(".skill-row")).toHaveLength(1);
-
-    await user.click(screen.getByRole("button", { name: "写作" }));
-    expect(onToggleTag).toHaveBeenCalledWith("t1");
+    expect(screen.getByText("risky", { selector: ".skill-title" })).toBeTruthy();
   });
 });
 
 describe("安装流程交互", () => {
+  it("内联启用复用目标与预览操作，返回详情不执行写入", async () => {
+    const user = userEvent.setup();
+    const base = installFlow();
+    const onClose = vi.fn();
+    const flow = { ...base, workflow: "enable" };
+    render(<InstallModal inline flow={flow} assistants={[{ name: "Codex" }, { name: "Cursor" }]} loading={false} onClose={onClose} />);
+    const panel = screen.getByRole("complementary", { name: "启用 Skill" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(panel);
+    await user.click(screen.getByRole("checkbox", { name: "Cursor" }));
+    expect(flow.target.toggleAssistant).toHaveBeenCalledWith("Cursor");
+    await user.click(screen.getByRole("button", { name: "检查结构" }));
+    expect(flow.preview.runPrimaryAction).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole("button", { name: "返回技能详情" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(flow.preview.runPrimaryAction).toHaveBeenCalledTimes(1);
+  });
+
   beforeEach(() => {
     invoke.mockReset();
   });
@@ -1194,8 +1148,7 @@ describe("安装流程交互", () => {
       />
     );
 
-    await user.click(screen.getByText("writer").closest(".skill-row"));
-    expect(screen.getByText("共享 2")).toBeTruthy();
+    await user.click(screen.getByText("writer", { selector: ".skill-title" }).closest(".skill-row"));
     await user.click(screen.getByRole("button", { name: "writer 的更多操作" }));
     await user.click(screen.getByRole("button", { name: "删除 writer" }));
     expect(onRemove).toHaveBeenCalledWith("/tmp/.agents/skills/writer", "writer", availableIn);
@@ -1253,7 +1206,7 @@ describe("安装流程交互", () => {
       />
     );
 
-    await user.click(screen.getByText("risky").closest(".skill-row"));
+    await user.click(screen.getByText("risky", { selector: ".skill-title" }).closest(".skill-row"));
     await user.click(screen.getByRole("button", { name: "审查 risky" }));
     expect(onPreview).toHaveBeenCalledWith("/tmp/.agents/skills/risky");
 

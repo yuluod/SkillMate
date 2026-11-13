@@ -272,6 +272,9 @@ fn adoption_context(
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err("当前只接管实体 Skill 目录，链接和普通文件保持外部管理".to_string());
     }
+    if crate::skill_inventory::is_skills_cli_store_entry(source_path) {
+        return Err("由 skills CLI 管理的目录请继续使用原安装器维护".to_string());
+    }
     let assistant = assistant_definitions()
         .iter()
         .find(|assistant| assistant.name == assistant_name)
@@ -288,10 +291,10 @@ fn adoption_context(
         let project = project
             .canonicalize()
             .map_err(|error| format!("项目路径不存在或无法访问: {error}"))?;
-        let root = assistant
-            .project_install_root(&project)
-            .ok_or_else(|| format!("{} 不支持项目级 Skills", assistant.name))?;
-        if !path_is_below(source_path, &root) {
+        if !assistant
+            .project_discovery_roots(&project)
+            .any(|root| path_is_below(source_path, &root))
+        {
             return Err("待接管 Skill 不在所选项目的平台目录中".to_string());
         }
         return Ok(AdoptionContext {
@@ -525,5 +528,21 @@ mod tests {
             "https://github.com/example/skills.git#:plugins/writer"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn adoption_rejects_skills_cli_store_entries() {
+        let project = temp_dir("skills-cli-adopt");
+        let skill = project.join(".agents/skills/writer");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), "# writer").unwrap();
+        fs::write(project.join("skills-lock.json"), "{}").unwrap();
+
+        let error = adoption_context(&skill, "Codex", Some(project.to_string_lossy().as_ref()))
+            .err()
+            .unwrap();
+
+        assert!(error.contains("skills CLI"));
+        let _ = fs::remove_dir_all(project);
     }
 }

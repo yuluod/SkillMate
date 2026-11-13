@@ -26,6 +26,103 @@ fn inventory_cache_key(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+fn normalize_relative_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !matches!(
+                    normalized.components().next_back(),
+                    Some(Component::RootDir | Component::Prefix(_)) | None
+                ) {
+                    normalized.pop();
+                }
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn is_agents_skills_root(root: &Path) -> bool {
+    root.file_name().is_some_and(|name| name == "skills")
+        && root
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name == ".agents")
+}
+
+/// `npx skills` 把主副本放在 `.agents/skills/<name>`，再从各 Agent 目录建立链接。
+/// 只认这个稳定结构，避免把 SkillMate 自己的统一库连接误判为外部安装。
+fn skills_cli_link_target(path: &Path) -> Option<PathBuf> {
+    let target = fs::read_link(path).ok()?;
+    let joined = if target.is_absolute() {
+        target
+    } else {
+        path.parent()?.join(target)
+    };
+    let resolved = normalize_relative_path(&joined);
+    is_agents_skills_root(resolved.parent()?).then_some(resolved)
+}
+
+fn has_skills_cli_sibling_link(store_entry: &Path) -> bool {
+    has_skills_cli_sibling_link_with_home(store_entry, dirs::home_dir().as_deref())
+}
+
+fn has_skills_cli_sibling_link_with_home(store_entry: &Path, home: Option<&Path>) -> bool {
+    let Some(name) = store_entry.file_name() else {
+        return false;
+    };
+    let Some(scope_root) = store_entry
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+    else {
+        return false;
+    };
+    let global = home.is_some_and(|home| normalize_relative_path(home) == scope_root);
+    let expected = normalize_relative_path(store_entry);
+    let roots = assistant_definitions().iter().flat_map(|assistant| {
+        if global {
+            assistant
+                .global_discovery_roots_in(scope_root)
+                .collect::<Vec<_>>()
+        } else {
+            assistant
+                .project_discovery_roots(scope_root)
+                .collect::<Vec<_>>()
+        }
+    });
+    let mut seen = HashSet::new();
+    roots.filter(|root| seen.insert(root.clone())).any(|root| {
+        let candidate = root.join(name);
+        skills_cli_link_target(&candidate).is_some_and(|target| target == expected)
+    })
+}
+
+/// `.agents/skills/<name>` 的实体主副本在两类证据下识别为 `skills CLI` 管理：
+/// 项目根有 `skills-lock.json`，或同级 Agent 目录存在指向它的软连接。
+pub(crate) fn is_skills_cli_store_entry(path: &Path) -> bool {
+    let normalized = normalize_relative_path(path);
+    let Some(root) = normalized.parent() else {
+        return false;
+    };
+    if !is_agents_skills_root(root) {
+        return false;
+    }
+    let has_lock = root
+        .parent()
+        .and_then(Path::parent)
+        .is_some_and(|project| project.join("skills-lock.json").is_file());
+    has_lock || has_skills_cli_sibling_link(&normalized)
+}
+
+pub(crate) fn is_skills_cli_path(path: &Path) -> bool {
+    skills_cli_link_target(path).is_some() || is_skills_cli_store_entry(path)
+}
+
 /// Owned by one read-only scan. Never retain across scans or filesystem mutations.
 #[derive(Default)]
 pub(crate) struct InventoryScanCache {
@@ -408,35 +505,47 @@ fn build_skill_with_fingerprints(
         sync_info.meta.origin_locator.clone()
     };
     let is_deployment = deployment.is_some();
+    let managed_by_app = sync_info.meta.managed_by_app || state_managed;
+    let skills_cli_link = !is_deployment && !managed_by_app && skills_cli_link_target(ep).is_some();
+    let skills_cli = !is_deployment && !managed_by_app && is_skills_cli_path(ep);
     let source_type = if is_deployment {
         "deployment".to_string()
-    } else if symlink_source.is_some() {
+    } else if symlink_source.is_some() || skills_cli_link {
         "symlink".to_string()
     } else {
         sync_info.meta.origin_kind.clone()
     };
-    let source = match source_type.as_str() {
-        "deployment" => "SkillMate".to_string(),
-        "symlink" => "项目软连接".to_string(),
-        "git" if upstream_url.contains("github.com") => "GitHub".to_string(),
-        "git" => "Git".to_string(),
-        "legacy_npm" | "npm" => "npm（历史）".to_string(),
-        "legacy_pip" | "pip" => "PyPI（历史）".to_string(),
-        "local" => "Local".to_string(),
-        _ => "未托管".to_string(),
+    let source = if skills_cli {
+        "skills CLI".to_string()
+    } else {
+        match source_type.as_str() {
+            "deployment" => "SkillMate".to_string(),
+            "symlink" => "项目软连接".to_string(),
+            "git" if upstream_url.contains("github.com") => "GitHub".to_string(),
+            "git" => "Git".to_string(),
+            "legacy_npm" | "npm" => "npm（历史）".to_string(),
+            "legacy_pip" | "pip" => "PyPI（历史）".to_string(),
+            "local" => "Local".to_string(),
+            _ => "未托管".to_string(),
+        }
     };
-    let content_source = match sync_info.meta.origin_kind.as_str() {
-        "git" if upstream_url.contains("github.com") => "github",
-        "git" => "git",
-        "legacy_npm" | "npm" => "external_cli",
-        "legacy_pip" | "pip" => "external_cli",
-        "local" => "local",
-        _ => "unknown",
-    }
-    .to_string();
-    let managed_by_app = sync_info.meta.managed_by_app || state_managed;
+    let content_source = if skills_cli {
+        "external_cli".to_string()
+    } else {
+        match sync_info.meta.origin_kind.as_str() {
+            "git" if upstream_url.contains("github.com") => "github",
+            "git" => "git",
+            "legacy_npm" | "npm" => "external_cli",
+            "legacy_pip" | "pip" => "external_cli",
+            "local" => "local",
+            _ => "unknown",
+        }
+        .to_string()
+    };
     let manager = if managed_by_app {
         "skillmate"
+    } else if skills_cli {
+        "skills_cli"
     } else if matches!(
         sync_info.meta.origin_kind.as_str(),
         "legacy_npm" | "npm" | "legacy_pip" | "pip"
@@ -448,10 +557,12 @@ fn build_skill_with_fingerprints(
     .to_string();
     let update_strategy = if managed_by_app && sync_info.meta.origin_kind == "git" {
         "skillmate"
-    } else if matches!(
-        sync_info.meta.origin_kind.as_str(),
-        "legacy_npm" | "npm" | "legacy_pip" | "pip"
-    ) {
+    } else if skills_cli
+        || matches!(
+            sync_info.meta.origin_kind.as_str(),
+            "legacy_npm" | "npm" | "legacy_pip" | "pip"
+        )
+    {
         "external_cli"
     } else if sync_info.meta.origin_kind == "git" {
         "external"
@@ -459,6 +570,8 @@ fn build_skill_with_fingerprints(
         "manual"
     }
     .to_string();
+    let can_check = !skills_cli && sync_info.can_check;
+    let can_sync = !skills_cli && sync_info.can_sync;
     Skill {
         inventory: SkillInventoryFields {
             id: ep.to_string_lossy().to_string(),
@@ -497,8 +610,8 @@ fn build_skill_with_fingerprints(
             last_probe_at: sync_info.meta.last_probe_at,
             last_sync_at: sync_info.meta.last_sync_at,
             managed_by_app,
-            can_check: sync_info.can_check,
-            can_sync: sync_info.can_sync,
+            can_check,
+            can_sync,
             symlink_source,
         },
         structure: SkillStructureFields {
@@ -848,5 +961,168 @@ mod tests {
         assert_ne!(inventory_cache_key(&first), inventory_cache_key(&second));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn agents_skills_root_requires_exact_directory_names() {
+        assert!(is_agents_skills_root(Path::new("/home/u/.agents/skills")));
+        assert!(!is_agents_skills_root(Path::new(
+            "/home/u/.agents/skills/writer"
+        )));
+        assert!(!is_agents_skills_root(Path::new("/home/u/agents/skills")));
+    }
+
+    #[test]
+    fn skills_cli_links_are_marked_as_external_installer() {
+        let root = test_dir("skills-cli-link");
+        let canonical = root.join(".agents/skills/writer");
+        let agent_root = root.join(".claude/skills");
+        fs::create_dir_all(&canonical).unwrap();
+        fs::create_dir_all(&agent_root).unwrap();
+        fs::write(
+            canonical.join("SKILL.md"),
+            "---\nname: writer\ndescription: test skill\n---\n",
+        )
+        .unwrap();
+        let link = agent_root.join("writer");
+        if !crate::app_core::create_test_directory_symlink_or_skip(&canonical, &link) {
+            let _ = fs::remove_dir_all(root);
+            return;
+        }
+
+        let db = Connection::open_in_memory().unwrap();
+        let managed = ManagedSkill {
+            path: link,
+            name: "writer".to_string(),
+        };
+        let mut cache = InventoryScanCache::default();
+        let skill = build_skill_with_cache(&db, &managed, &mut cache);
+
+        assert_eq!(skill.inventory.source, "skills CLI");
+        assert_eq!(skill.inventory.source_type, "symlink");
+        assert_eq!(skill.inventory.content_source, "external_cli");
+        assert_eq!(skill.inventory.manager, "skills_cli");
+        assert_eq!(skill.inventory.update_strategy, "external_cli");
+        assert!(!skill.origin.can_check);
+        assert!(!skill.origin.can_sync);
+
+        // 同级的 .agents/skills 主副本在存在外部链接时也应归属为 skills CLI。
+        let store = build_skill_with_cache(
+            &db,
+            &ManagedSkill {
+                path: canonical,
+                name: "writer".to_string(),
+            },
+            &mut InventoryScanCache::default(),
+        );
+        assert_eq!(store.inventory.manager, "skills_cli");
+        assert_eq!(store.inventory.source_type, "local");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn skills_cli_store_entries_require_project_lock_file() {
+        let root = test_dir("skills-cli-store");
+        let project = root.join("project");
+        let canonical = project.join(".agents/skills/writer");
+        fs::create_dir_all(&canonical).unwrap();
+        fs::write(
+            canonical.join("SKILL.md"),
+            "---\nname: writer\ndescription: test skill\n---\n",
+        )
+        .unwrap();
+
+        let db = Connection::open_in_memory().unwrap();
+        let managed = ManagedSkill {
+            path: canonical.clone(),
+            name: "writer".to_string(),
+        };
+        let mut cache = InventoryScanCache::default();
+        let without_lock = build_skill_with_cache(&db, &managed, &mut cache);
+        assert_eq!(without_lock.inventory.content_source, "local");
+        assert_eq!(without_lock.inventory.manager, "external");
+
+        fs::write(
+            project.join("skills-lock.json"),
+            "{\"version\":1,\"skills\":{}}",
+        )
+        .unwrap();
+        let mut cache = InventoryScanCache::default();
+        let with_lock = build_skill_with_cache(&db, &managed, &mut cache);
+        assert_eq!(with_lock.inventory.source, "skills CLI");
+        assert_eq!(with_lock.inventory.source_type, "local");
+        assert_eq!(with_lock.inventory.content_source, "external_cli");
+        assert_eq!(with_lock.inventory.manager, "skills_cli");
+        assert!(!with_lock.origin.can_check);
+        assert!(!with_lock.origin.can_sync);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn relative_parent_links_to_agents_store_are_normalized() {
+        let normalized = normalize_relative_path(Path::new(
+            "/work/project/.claude/skills/../../.agents/skills/writer",
+        ));
+        assert_eq!(
+            normalized,
+            PathBuf::from("/work/project/.agents/skills/writer")
+        );
+        assert!(is_agents_skills_root(normalized.parent().unwrap()));
+    }
+
+    #[test]
+    fn project_store_ignores_global_only_sibling_directories() {
+        let root = test_dir("project-global-only-link");
+        let store = root.join(".agents/skills/writer");
+        let link = root.join(".config/opencode/skills/writer");
+        fs::create_dir_all(&store).unwrap();
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        if crate::app_core::create_test_directory_symlink_or_skip(&store, &link) {
+            assert!(!is_skills_cli_store_entry(&store));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn global_store_recognizes_compatibility_links_without_project_lock() {
+        for relative in [
+            ".codex/skills",
+            ".codeium/windsurf/skills",
+            ".codeium/windsurf-next/skills",
+            ".codeium/windsurf-insiders/skills",
+        ] {
+            let home = test_dir("global-compatibility-link");
+            let store = home.join(".agents/skills/writer");
+            let link = home.join(relative).join("writer");
+            fs::create_dir_all(&store).unwrap();
+            fs::create_dir_all(link.parent().unwrap()).unwrap();
+            assert!(!has_skills_cli_sibling_link_with_home(&store, Some(&home)));
+            if crate::app_core::create_test_directory_symlink_or_skip(&store, &link) {
+                assert!(has_skills_cli_sibling_link_with_home(&store, Some(&home)));
+                // 同一目录布局作为项目时，不应套用全局兼容路径。
+                assert!(!has_skills_cli_sibling_link_with_home(&store, None));
+            }
+            fs::remove_dir_all(home).unwrap();
+        }
+    }
+
+    #[test]
+    fn project_store_recognizes_project_discovery_links() {
+        for relative in [
+            ".claude/skills",
+            ".github/skills",
+            ".opencode/skills",
+            "skills",
+        ] {
+            let root = test_dir("project-discovery-link");
+            let store = root.join(".agents/skills/writer");
+            let link = root.join(relative).join("writer");
+            fs::create_dir_all(&store).unwrap();
+            fs::create_dir_all(link.parent().unwrap()).unwrap();
+            if crate::app_core::create_test_directory_symlink_or_skip(&store, &link) {
+                assert!(is_skills_cli_store_entry(&store));
+            }
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 }

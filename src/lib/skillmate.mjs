@@ -63,10 +63,16 @@ const STRUCTURE_WARNING_LABELS = {
   policy_unavailable: "安装策略不可用",
 };
 
-const SECURITY_WARNING_CODES = new Set([
+// 静态风险分两级：实质风险计入行点与「需处理」；知情提示只在详情栏列出，
+// 避免"文档里出现 URL"这类普遍现象被当成错误报警（references_network 会命中几乎每个真实 Skill）。
+const SUBSTANTIVE_RISK_CODES = new Set([
   "contains_scripts",
-  "declares_dependencies",
   "contains_symlinks",
+  "unsafe_paths",
+]);
+
+const ADVISORY_RISK_CODES = new Set([
+  "declares_dependencies",
   "contains_hidden_files",
   "references_network",
   "references_environment",
@@ -94,6 +100,7 @@ const CONTENT_SOURCE_LABELS = {
 const MANAGER_LABELS = {
   skillmate: "SkillMate",
   external_cli: "外部安装器",
+  skills_cli: "skills CLI",
   external: "外部或手工管理",
 };
 
@@ -496,7 +503,8 @@ export function buildSkillCardView(skill, t, updateInfo) {
   const structure = normalizeSkillStructure(skill);
   const isSymlink = ["symlink", "deployment"].includes(skill?.source_type);
   const isManaged = Boolean(skill?.managed_by_app);
-  const securityWarnings = structure.warnings.filter((warning) => SECURITY_WARNING_CODES.has(warning));
+  const substantiveWarnings = structure.warnings.filter((warning) => SUBSTANTIVE_RISK_CODES.has(warning));
+  const advisoryWarnings = structure.warnings.filter((warning) => ADVISORY_RISK_CODES.has(warning));
   const originKind = skill?.origin_kind || skill?.source_type || "unknown";
   const inferredSource = skill?.content_source || (["git", "github"].includes(originKind) ? (skill?.upstream_url?.includes("github.com") ? "github" : "git") : "unknown");
   const inferredManager = skill?.manager || (isManaged ? "skillmate" : "external");
@@ -507,6 +515,7 @@ export function buildSkillCardView(skill, t, updateInfo) {
   const canSync = Boolean(updateInfo?.canSync ?? skill?.can_sync);
   const syncState = updateInfo?.syncState ?? skill?.sync_state ?? "unknown";
   const updateSummary = (() => {
+    if (inferredManager === "skills_cli") return localized(t, "preview.updateSkillsCli", "由 skills CLI 管理，请运行 npx skills update 更新");
     if (syncState === "current") return localized(t, "preview.updateCurrent", "已是最新，可随时重新检查");
     if (syncState === "behind") {
       if (canSync) return localized(t, "preview.updateReady", "发现更新，可由 SkillMate 安装");
@@ -543,8 +552,12 @@ export function buildSkillCardView(skill, t, updateInfo) {
     structureLabel: getStructureStatusLabel(structure.status, t),
     structureTone: getStructureStatusTone(structure.status),
     warningSummary: buildStructureWarningSummary(skill, t),
-    securityWarningCount: securityWarnings.length,
-    securityWarningSummary: securityWarnings
+    securityWarningCount: substantiveWarnings.length,
+    securityWarningSummary: substantiveWarnings
+      .map((warning) => localized(t, `structure.warning.${warning}`, STRUCTURE_WARNING_LABELS[warning] || warning))
+      .join(localized(t, "common.listSeparator", "、")),
+    advisoryWarningCount: advisoryWarnings.length,
+    advisoryWarningSummary: advisoryWarnings
       .map((warning) => localized(t, `structure.warning.${warning}`, STRUCTURE_WARNING_LABELS[warning] || warning))
       .join(localized(t, "common.listSeparator", "、")),
     hasManagedDrift: structure.warnings.includes("managed_content_changed"),
@@ -559,10 +572,16 @@ export function buildSkillCardView(skill, t, updateInfo) {
     hasUpdate: Boolean(updateInfo?.hasUpdate ?? skill?.has_update),
     updateBusy: Boolean(updateInfo?.checking || updateInfo?.updating),
     updateSummary,
+    // 需处理与行点共用同一口径：只数错误级事件（实质风险、内容漂移、来源失联、结构不合规）；
+    // 「结构不完整」与知情级风险提示只在详情栏呈现。
+    needsAttention: substantiveWarnings.length > 0
+      || structure.warnings.includes("managed_content_changed")
+      || isStaleSkill(skill)
+      || structure.status === "nonstandard",
     canEnable: Boolean(skill?.in_library || skill?.source_type === "deployment"),
     canDelete: isManaged && !isSymlink,
     canUnlink: isManaged && isSymlink,
-    canAdopt: !isManaged && !isSymlink && skill?.skill_type === "skill-folder",
+    canAdopt: !isManaged && !isSymlink && inferredManager !== "skills_cli" && skill?.skill_type === "skill-folder",
     canMaterialize: isManaged && skill?.source_type === "deployment" && skill?.scope === "project",
     availableIn,
     availabilityLabel: availableIn.map((assistant) => assistant.name).join(localized(t, "common.listSeparator", "、")),
@@ -671,6 +690,67 @@ export function buildDriftGroups(assistants, t) {
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
+export function isSkillManaged(skill) {
+  return Boolean(
+    skill?.managed_by_app
+      || skill?.manager === "skillmate"
+      || skill?.source_type === "deployment"
+      || skill?.symlink_source
+  );
+}
+
+export function isStaleSkill(skill) {
+  return isSkillManaged(skill) && (skill?.sync_state === "source_missing" || skill?.sync_state === "failed");
+}
+
+// 把同一逻辑 Skill 的多平台部署与库内主副本合并为一行：
+// 身份 = symlink_source（库主副本路径）或实体路径；每行携带 deployments（各启用位置的路径与范围），
+// 供详情栏按位置停用和「未启用」筛选使用。
+export function buildUnifiedSkillInventory(skills) {
+  const groups = new Map();
+  for (const skill of Array.isArray(skills) ? skills : []) {
+    if (!skill) continue;
+    const identity = skill.symlink_source || skill.path;
+    if (!identity) continue;
+    const group = groups.get(identity);
+    if (group) group.rows.push(skill);
+    else groups.set(identity, { identity, rows: [skill] });
+  }
+  const unified = [];
+  for (const { identity, rows } of groups.values()) {
+    const base = rows.find((row) => row.path === identity)
+      ?? rows.find((row) => row.scope !== "project")
+      ?? rows[0];
+    const deployments = rows
+      .filter((row) => row.path !== identity)
+      .map((row) => ({
+        name: row.ai || "",
+        icon: row.aiIcon || "",
+        path: row.path,
+        scope: row.scope || "global",
+        projectPath: row.project_path || "",
+        managed: Boolean(row.managed_by_app),
+        isSymlink: ["symlink", "deployment"].includes(row.source_type),
+      }));
+    const availability = [];
+    for (const deployment of deployments) {
+      if (!availability.some((item) => item.name === deployment.name)) {
+        availability.push({ name: deployment.name, icon: deployment.icon });
+      }
+    }
+    const inLibrary = Boolean(base.in_library)
+      || (identity !== base.path && Boolean(base.managed_by_app));
+    unified.push({
+      ...base,
+      path: identity,
+      in_library: inLibrary,
+      deployments,
+      availableIn: availability,
+    });
+  }
+  return unified;
+}
+
 export function buildDashboardStats(assistants, librarySkills = [], t) {
   const skills = buildScenarioSkillInventory([
     ...buildUniqueSkillInventory(assistants, t),
@@ -681,12 +761,16 @@ export function buildDashboardStats(assistants, librarySkills = [], t) {
   let structureIssues = 0;
   let securityRisks = 0;
   let localChanges = 0;
+  let external = 0;
+  let stale = 0;
   for (const skill of skills) {
     const card = buildSkillCardView(skill, t);
     if (skill?.sync_state === "behind" || skill?.has_update) updates += 1;
-    if (skill?.structure_status !== "complete") structureIssues += 1;
+    if (skill?.structure_status === "nonstandard") structureIssues += 1;
     if (card.securityWarningCount > 0) securityRisks += 1;
     if (card.hasManagedDrift) localChanges += 1;
+    if (!isSkillManaged(skill)) external += 1;
+    if (isStaleSkill(skill)) stale += 1;
   }
   return {
     skills: skills.length,
@@ -695,6 +779,8 @@ export function buildDashboardStats(assistants, librarySkills = [], t) {
     structureIssues,
     securityRisks,
     localChanges,
+    external,
+    stale,
     driftGroups: driftGroups.length,
     diagnostics: (Array.isArray(assistants) ? assistants : [])
       .reduce((count, assistant) => count + (Array.isArray(assistant?.diagnostics) ? assistant.diagnostics.length : 0), 0),
@@ -1055,9 +1141,8 @@ export function formatScenarioCopyText(paths) {
 
 export function filterSkillsByScenario({ skills, activeScenarioPaths }) {
   const allowed = new Set(activeScenarioPaths);
-  return skills.filter((skill) => allowed.has(
-    skill?.source_type === "deployment" && skill?.symlink_source
-      ? skill.symlink_source
-      : skill.path
-  ));
+  // 容忍双向匹配：历史场景保存的是部署路径，统一清单行的 path 是库主副本身份。
+  return skills.filter((skill) => allowed.has(skill?.path)
+    || (skill?.symlink_source && allowed.has(skill.symlink_source))
+    || (Array.isArray(skill?.deployments) && skill.deployments.some((deployment) => allowed.has(deployment.path))));
 }
