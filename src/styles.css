@@ -3565,6 +3565,12 @@ body[data-theme="dark"] .skill-logo { color: hsl(var(--hue) 55% 68%); }
 .library-row.previewed .library-skill-icon { color: var(--accent); }
 .library-row .skill-title { font-size: 0.86rem; font-weight: 620; }
 .library-row .skill-meta { font-size: 0.76rem; mask-image: none; -webkit-mask-image: none; }
+.library-search-note { display: flex; align-items: center; gap: 6px; margin: -8px 0 14px; color: var(--text3); font-size: 0.75rem; }
+.skill-search-hit { display: flex; align-items: baseline; gap: 6px; margin-top: 3px; min-width: 0; font-size: 0.74rem; color: var(--text3); }
+.skill-search-hit code { color: var(--text3); font-size: 0.7rem; flex-shrink: 0; }
+.skill-search-hit .stamp { flex-shrink: 0; }
+.skill-search-snippet { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-search-hit small { flex-shrink: 0; color: var(--text3); }
 .library-location { display: grid; min-width: 0; gap: 3px; color: var(--text2); font-size: 0.76rem; }
 .library-location small { color: var(--text3); font-size: 0.7rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .library-location.empty { color: var(--text3); }

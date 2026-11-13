@@ -74,6 +74,7 @@ export const skillmateApi = Object.freeze({
     unlinkSkill: (path) => invoke("unlink_symlink_skill", { path }),
     openFolder: (path) => invoke("open_folder", { path }),
     inspectProject: (projectPath) => invoke("inspect_project", { projectPath }),
+    searchBodies: (paths, query) => invoke("search_skill_bodies", { paths, query }),
   }),
   adoption: Object.freeze({
     preview: ({ path, assistantName, projectPath }) => invoke("preview_adopt_skill", { path, assistantName, projectPath }),

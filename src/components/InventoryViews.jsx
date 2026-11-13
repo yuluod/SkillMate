@@ -80,6 +80,7 @@ const SkillRow = React.memo(function SkillRow({
   card,
   checked,
   previewed,
+  searchSnippet,
   t,
   onToggleSelection,
   onOpenPreview,
@@ -126,6 +127,14 @@ const SkillRow = React.memo(function SkillRow({
           <span className="skill-title">{card.title}</span>
         </div>
         <div className="skill-meta" title={card.description}>{card.description}</div>
+        {searchSnippet && (
+          <div className="skill-search-hit" title={searchSnippet.snippet}>
+            <span className="stamp warn">{t("skills.bodyMatch")}</span>
+            <code>{searchSnippet.file}:{searchSnippet.line}</code>
+            <span className="skill-search-snippet">{searchSnippet.snippet}</span>
+            {searchSnippet.matches > 1 && <small>{t("skills.bodyMatchMore", { count: searchSnippet.matches - 1 })}</small>}
+          </div>
+        )}
       </div>
       <div className={`library-location${locations.length === 0 ? " empty" : ""}`} role="cell" title={locations.map((location) => `${location.name} · ${locationScope(location, t)}`).join("\n")}>
         <span>{locations.length > 1 ? t("skills.locationCount", { count: locations.length }) : locations[0]?.name || t("skills.filterNotEnabled")}</span>
@@ -277,6 +286,8 @@ export function SkillsView({
   getSyncInfo,
   searchControl,
   sortControl,
+  searchSnippets = null,
+  bodySearchLimited = false,
   enablePanel,
   onCloseEnable,
 }) {
@@ -369,6 +380,7 @@ export function SkillsView({
             </div>
           </div>
           {(searchControl || sortControl) && <div className="library-search-row">{searchControl}{sortControl}</div>}
+          {bodySearchLimited && <p className="library-search-note"><Icon name="search" size={13} />{t("skills.bodySearchLimited")}</p>}
           {(tags.length > 0 || activeScenario || selectedTagCount > 0) && <div className="skills-tag-filters">
             {tags.map((tag) => (
               <button
@@ -427,6 +439,7 @@ export function SkillsView({
                     card={skillCards[index]}
                     checked={selectedSkillPaths.includes(skill.path)}
                     previewed={skill.path === previewSkill?.path}
+                    searchSnippet={searchSnippets?.get?.(skill.path)}
                     t={t}
                     onToggleSelection={onToggleSelection}
                     onOpenPreview={(path) => { onCloseEnable?.(); setPreviewPath(path); setDetailOpen(true); }}

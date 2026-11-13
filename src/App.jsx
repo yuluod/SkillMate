@@ -16,6 +16,7 @@ import ScenarioView from "./components/ScenarioView.jsx";
 import { AssistantsView, SkillsView } from "./components/InventoryViews.jsx";
 import DashboardView, { MarketDiscovery } from "./components/DashboardView.jsx";
 import {
+  BODY_SEARCH_SKILL_LIMIT,
   buildAppUpdateView,
   buildDashboardStats,
   buildDriftGroups,
@@ -24,6 +25,7 @@ import {
   buildUnifiedSkillInventory,
   filterSkillsByScenario,
   getMarketInstallRequest,
+  skillMatchesQuery,
 } from "./lib/skillmate.mjs";
 import { useI18n } from "./lib/i18n.jsx";
 import { useAppUpdateFlow } from "./lib/useAppUpdateFlow.js";
@@ -425,27 +427,55 @@ function App() {
   const gitBackupFlow = useGitBackupFlow({ saved: data.git, showToast, loadData });
   gitHydrateRef.current = gitBackupFlow.hydrate;
 
+  // 正文全文匹配：按防抖后的查询实时读主副本，结果只在 query 与当前
+  // 输入一致时生效，避免旧响应覆盖新输入；超过阈值自动退化。
+  const bodySearchEnabled = skillInventory.length <= BODY_SEARCH_SKILL_LIMIT;
+  const [bodySearch, setBodySearch] = useState({ query: "", snippets: new Map(), paths: new Set() });
+  useEffect(() => {
+    const needle = search.trim().toLowerCase();
+    if (!needle || !bodySearchEnabled) {
+      setBodySearch({ query: needle, snippets: new Map(), paths: new Set() });
+      return undefined;
+    }
+    let cancelled = false;
+    skillmateApi.inventory.searchBodies(skillInventory.map((skill) => skill.path), needle)
+      .then((results) => {
+        if (cancelled) return;
+        setBodySearch({
+          query: needle,
+          snippets: new Map(results.map((match) => [match.path, match])),
+          paths: new Set(results.map((match) => match.path)),
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setBodySearch({ query: needle, snippets: new Map(), paths: new Set() });
+      });
+    return () => { cancelled = true; };
+  }, [search, skillInventory, bodySearchEnabled]);
+  const bodyHitPaths = bodySearch.query === search.trim().toLowerCase() ? bodySearch.paths : null;
+  const bodySnippets = bodyHitPaths ? bodySearch.snippets : null;
+
   const skills = useMemo(() => {
     let list = [...skillInventory];
-    if (search) list = list.filter(s => [s.name, s.manifest_title, s.manifest_description, s.description].filter(Boolean).join(" ").toLowerCase().includes(search.toLowerCase()));
+    if (search) list = list.filter(s => skillMatchesQuery(s, search, bodyHitPaths));
     if (selectedTags.length > 0) list = list.filter(s => selectedTags.some(t => s.tags.includes(t)));
     if (activeScenario) {
       list = filterSkillsByScenario({ skills: list, activeScenarioPaths: activeScenario.skill_ids });
     }
     list.sort((a, b) => sort === "date" ? Number(b.modified||0) - Number(a.modified||0) : a.name.localeCompare(b.name, "zh-CN"));
     return list;
-  }, [activeScenario, skillInventory, search, selectedTags, sort]);
+  }, [activeScenario, skillInventory, search, selectedTags, sort, bodyHitPaths]);
 
   const updatable = useMemo(() => {
     let list = [...skillInventory];
-    if (search) list = list.filter(s => [s.name, s.manifest_title, s.manifest_description, s.description].filter(Boolean).join(" ").toLowerCase().includes(search.toLowerCase()));
+    if (search) list = list.filter(s => skillMatchesQuery(s, search, bodyHitPaths));
     if (selectedTags.length > 0) list = list.filter(s => selectedTags.some(t => s.tags.includes(t)));
     if (activeScenario) {
       list = filterSkillsByScenario({ skills: list, activeScenarioPaths: activeScenario.skill_ids });
     }
     list.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
     return list;
-  }, [activeScenario, skillInventory, search, selectedTags]);
+  }, [activeScenario, skillInventory, search, selectedTags, bodyHitPaths]);
 
   const {
     updateState,
@@ -873,6 +903,8 @@ function App() {
                 <input ref={searchRef} type="search" aria-label={t("skills.search")} placeholder={t("skills.searchPlaceholder")} value={searchInput} onChange={e => handleSearchInput(e.target.value)} />
                 {searchInput && <button className="search-x" aria-label={t("header.clearSearch")} onClick={clearSearch}><Icon name="x" size={14} /></button>}
               </div>}
+              searchSnippets={bodySnippets}
+              bodySearchLimited={Boolean(search.trim()) && !bodySearchEnabled}
               sortControl={<label className="library-sort"><span className="visually-hidden">{t("skills.sort")}</span><select value={sort} onChange={e => setSort(e.target.value)}><option value="name">{t("sort.name")}</option><option value="date">{t("sort.time")}</option></select></label>}
               enablePanel={installOpen && installFlow.workflow === "enable" ? <InstallModal inline flow={installFlow} assistants={data.assistants} loading={loading} onClose={() => setInstallOpen(false)} /> : null}
               onCloseEnable={() => setInstallOpen(false)}

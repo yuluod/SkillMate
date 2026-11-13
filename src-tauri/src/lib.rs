@@ -99,7 +99,7 @@ use skill_origin::{
 use skill_package::PackageDetection;
 use skill_profile::{read_skill_profiles, SkillSetProfilePreview, SkillSetProfileStore};
 use skill_reconcile::ReconcileTransaction;
-use skill_structure::{read_skill_preview, SkillStructureInfo};
+use skill_structure::{read_skill_preview, search_skill_body, SkillBodyMatch, SkillStructureInfo};
 use skill_structure::{validate_skill_structure, SkillValidationReport};
 use skillmate_manifest::{
     read_skillmate_manifest, write_skillmate_manifest, SkillMateManifestPreview,
@@ -1643,6 +1643,37 @@ fn get_skill_readme(state: tauri::State<'_, AppState>, path: String) -> Result<S
     Ok(read_skill_preview(&target))
 }
 
+const MAX_BODY_SEARCH_PATHS: usize = 2000;
+const MAX_BODY_SEARCH_RESULTS: usize = 200;
+
+/// 库搜索的正文匹配：只对已发现或受管路径开放，实时读取入口文档，
+/// 与 get_skill_readme 同一访问边界；路径与结果数量都有界。
+#[tauri::command]
+fn search_skill_bodies(
+    state: tauri::State<'_, AppState>,
+    paths: Vec<String>,
+    query: String,
+) -> Result<Vec<SkillBodyMatch>, String> {
+    let db = lock_app_db(&state)?;
+    let mut results = Vec::new();
+    for path in paths.into_iter().take(MAX_BODY_SEARCH_PATHS) {
+        let target = expand_path(path.trim());
+        if !is_known_skill_path(&db, &target)? {
+            continue;
+        }
+        if let Some(found) = search_skill_body(&target, &query) {
+            results.push(SkillBodyMatch {
+                path: path.trim().to_string(),
+                ..found
+            });
+            if results.len() >= MAX_BODY_SEARCH_RESULTS {
+                break;
+            }
+        }
+    }
+    Ok(results)
+}
+
 #[tauri::command(async)]
 fn inspect_skill_validation(
     state: tauri::State<'_, AppState>,
@@ -1973,6 +2004,7 @@ pub fn run() {
             purge_trashed_skill,
             unlink_symlink_skill,
             get_skill_readme,
+            search_skill_bodies,
             inspect_skill_validation,
             detect_install_source,
             preview_project_skill_targets,
