@@ -641,10 +641,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn doctor_reports_broken_state_without_mutating_registration_or_files() {
-        use crate::managed_installation::{list_managed_installations, record_managed_root};
-        use crate::managed_state::{mark_managed_skill, read_managed_state, LIBRARY_OWNER_NAME};
+    struct DoctorFixture {
+        root: PathBuf,
+        deployment_root: PathBuf,
+        library_path: PathBuf,
+        deployment_path: PathBuf,
+        db_file: PathBuf,
+    }
+
+    /// 登记完好的库 + 部署链接，删掉任意一边后即 doctor 要诊断的原始坏态。
+    fn doctor_readonly_fixture() -> Option<DoctorFixture> {
+        use crate::managed_installation::record_managed_root;
+        use crate::managed_state::{mark_managed_skill, LIBRARY_OWNER_NAME};
 
         let root = std::env::temp_dir().join(format!(
             "skillmate-doctor-readonly-{}-{}",
@@ -662,7 +670,7 @@ mod tests {
         if !crate::app_core::create_test_directory_symlink_or_skip(&library_path, &deployment_path)
         {
             let _ = std::fs::remove_dir_all(root);
-            return;
+            return None;
         }
         {
             let db = rusqlite::Connection::open(&db_file).unwrap();
@@ -732,10 +740,18 @@ mod tests {
             )
             .unwrap();
         }
-        // 用户删掉库主副本后：部署链接悬挂、登记保持原样——正是 doctor 要报告的状态。
-        std::fs::remove_dir_all(&library_path).unwrap();
+        Some(DoctorFixture {
+            root,
+            deployment_root,
+            library_path,
+            deployment_path,
+            db_file,
+        })
+    }
 
-        let db_path = db_file.clone();
+    /// 走与线上一致的只读组装路径（锁与库来源注入为测试替身），返回退出码与 findings。
+    fn run_doctor_collecting(db_file: &std::path::Path) -> (i32, Vec<(String, String)>) {
+        let db_path = db_file.to_path_buf();
         let seen = std::cell::RefCell::new(Vec::<(String, String)>::new());
         let code = run_doctor_with(
             CommandOptions {
@@ -764,21 +780,20 @@ mod tests {
             },
         )
         .unwrap();
+        (code, seen.into_inner())
+    }
 
-        assert_eq!(code, 2);
-        let findings = seen.borrow();
-        for broken in [&deployment_path, &library_path] {
-            assert!(
-                findings.iter().any(|(category, path)| {
-                    category == "broken_deployment" && path == &broken.to_string_lossy()
-                }),
-                "缺少 {} 的断链 finding",
-                broken.to_string_lossy()
-            );
-        }
-        // 断链、数据库登记和 sidecar 全部保持原样：doctor 不做恢复、迁移与清理。
-        assert_eq!(std::fs::read_link(&deployment_path).unwrap(), library_path);
-        let verify = rusqlite::Connection::open(&db_file).unwrap();
+    /// 数据库文件字节、登记表行数与 sidecar 全部原样：doctor 不做恢复、迁移与清理。
+    fn assert_doctor_left_no_trace(fixture: &DoctorFixture, db_bytes_before: &[u8]) {
+        use crate::managed_installation::list_managed_installations;
+        use crate::managed_state::read_managed_state;
+
+        assert_eq!(
+            std::fs::read(&fixture.db_file).unwrap(),
+            db_bytes_before,
+            "data.db 内容被改动"
+        );
+        let verify = rusqlite::Connection::open(&fixture.db_file).unwrap();
         assert_eq!(list_managed_installations(&verify).unwrap().len(), 2);
         for (table, expected) in [("library_skills", 1i64), ("skill_deployments", 1)] {
             assert_eq!(
@@ -790,13 +805,85 @@ mod tests {
             );
         }
         assert_eq!(
-            read_managed_state(&deployment_root)
+            read_managed_state(&fixture.deployment_root)
                 .unwrap()
                 .managed_skills
                 .len(),
             1
         );
-        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn doctor_reports_broken_state_without_mutating_registration_or_files() {
+        let Some(fixture) = doctor_readonly_fixture() else {
+            return;
+        };
+        // 用户删掉库主副本后：部署链接悬挂、登记保持原样——正是 doctor 要报告的状态。
+        std::fs::remove_dir_all(&fixture.library_path).unwrap();
+        let db_bytes_before = std::fs::read(&fixture.db_file).unwrap();
+
+        let (code, findings) = run_doctor_collecting(&fixture.db_file);
+
+        assert_eq!(code, 2);
+        for broken in [&fixture.deployment_path, &fixture.library_path] {
+            assert!(
+                findings.iter().any(|(category, path)| {
+                    category == "broken_deployment" && path == &broken.to_string_lossy()
+                }),
+                "缺少 {} 的断链 finding",
+                broken.to_string_lossy()
+            );
+        }
+        assert_eq!(
+            std::fs::read_link(&fixture.deployment_path).unwrap(),
+            fixture.library_path
+        );
+        assert_doctor_left_no_trace(&fixture, &db_bytes_before);
+        let _ = std::fs::remove_dir_all(fixture.root);
+    }
+
+    #[test]
+    fn doctor_reports_removed_deployment_target() {
+        let Some(fixture) = doctor_readonly_fixture() else {
+            return;
+        };
+        // 只删启用链接、主副本完好：路径整个消失，扫描按 exists/symlink 过滤收不到它，
+        // 必须靠原始登记核验出来。
+        std::fs::remove_file(&fixture.deployment_path).unwrap();
+        let db_bytes_before = std::fs::read(&fixture.db_file).unwrap();
+
+        let (code, findings) = run_doctor_collecting(&fixture.db_file);
+
+        assert_eq!(code, 2);
+        assert!(findings.iter().any(|(category, path)| {
+            category == "broken_deployment" && path == &fixture.deployment_path.to_string_lossy()
+        }));
+        assert!(!findings.iter().any(|(category, path)| {
+            category == "broken_deployment" && path == &fixture.library_path.to_string_lossy()
+        }));
+        assert!(fixture.library_path.join("SKILL.md").is_file());
+        assert_doctor_left_no_trace(&fixture, &db_bytes_before);
+        let _ = std::fs::remove_dir_all(fixture.root);
+    }
+
+    #[test]
+    fn readonly_entry_points_leave_no_files_on_first_run() {
+        let root = std::env::temp_dir().join(format!(
+            "skillmate-doctor-first-run-{}-{}",
+            std::process::id(),
+            crate::app_core::generate_id()
+        ));
+        let lock =
+            crate::operation_coordinator::acquire_readonly_lock_at(&root.join("operations.lock"))
+                .unwrap();
+        assert!(lock.is_none());
+        let db = crate::database::open_readonly_db_connection_at(&root.join("data.db")).unwrap();
+        db.query_row("SELECT COUNT(*) FROM managed_installations", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap();
+        drop(db);
+        assert!(!root.exists(), "首次运行不应在磁盘留下任何文件");
     }
 
     #[test]

@@ -1,9 +1,12 @@
-use crate::skill_inventory::scan_all_assistants;
+use crate::managed_installation::list_managed_installations;
+use crate::skill_inventory::scan_all_assistants_readonly;
 use crate::skill_library::{directory_link_mode, read_library_skills, DirectoryLinkMode};
 use crate::{AIAssistant, Skill};
 use rusqlite::Connection;
 use serde::Serialize;
 use std::collections::BTreeSet;
+use std::fs;
+use std::path::PathBuf;
 
 /// `doctor` 的分类与 GUI 概览的「需处理事项」同源：同一批 scan 数据按
 /// 类别重新归纳，只读、不写文件也不改数据库。
@@ -49,15 +52,45 @@ impl DoctorReport {
 
 pub fn collect_doctor_report(db: &Connection) -> Result<DoctorReport, String> {
     // 与 GUI 概览同一批只读扫描结果，保证 doctor 与桌面诊断口径一致。
-    let assistants = scan_all_assistants(db)?;
+    let assistants = scan_all_assistants_readonly(db)?;
     let library_skills = read_library_skills(db)?;
+    let missing_targets = missing_registered_targets(db)?;
     let link_mode = directory_link_mode();
-    Ok(build_doctor_report(&assistants, &library_skills, link_mode))
+    Ok(build_doctor_report(
+        &assistants,
+        &library_skills,
+        &missing_targets,
+        link_mode,
+    ))
+}
+
+/// 登记在册但磁盘上彻底消失的目标路径：扫描按 exists/symlink 过滤，
+/// 这类路径不会进入扫描结果，必须按登记单独核验。
+fn missing_registered_targets(db: &Connection) -> Result<Vec<PathBuf>, String> {
+    let mut registered = BTreeSet::new();
+    for installation in list_managed_installations(db)? {
+        registered.insert(installation.path);
+    }
+    let mut statement = db
+        .prepare("SELECT target_path FROM skill_deployments")
+        .map_err(|error| error.to_string())?;
+    let targets = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    drop(statement);
+    registered.extend(targets.into_iter().map(PathBuf::from));
+    Ok(registered
+        .into_iter()
+        .filter(|path| !path.exists() && fs::symlink_metadata(path).is_err())
+        .collect())
 }
 
 fn build_doctor_report(
     assistants: &[AIAssistant],
     library_skills: &[Skill],
+    missing_targets: &[PathBuf],
     link_mode: DirectoryLinkMode,
 ) -> DoctorReport {
     let mut findings = Vec::new();
@@ -89,6 +122,16 @@ fn build_doctor_report(
     }
     for skill in library_skills {
         collect_skill_findings(skill, true, &mut push);
+    }
+    for path in missing_targets {
+        push(DoctorFinding {
+            severity: "error".into(),
+            category: "broken_deployment".into(),
+            code: "path_missing".into(),
+            path: path.to_string_lossy().into_owned(),
+            message: "登记的启用位置已不存在".into(),
+            suggestion: "用 skillmate-cli enable 重新启用，或在应用中停用该位置".into(),
+        });
     }
 
     if let DirectoryLinkMode::Unavailable = link_mode {
@@ -290,6 +333,7 @@ mod tests {
         let report = build_doctor_report(
             &[assistant(vec![skill("/lib/writer")])],
             &[skill("/lib/writer")],
+            &[],
             DirectoryLinkMode::Symlink,
         );
         // 受管且结构完整的条目不产生任何 finding
@@ -306,6 +350,7 @@ mod tests {
         let report = build_doctor_report(
             &[assistant(vec![broken, lost])],
             &[],
+            &[PathBuf::from("/gone/deployed-writer")],
             DirectoryLinkMode::Symlink,
         );
         assert_eq!(report.status, "errors");
@@ -313,7 +358,8 @@ mod tests {
         assert!(report
             .findings
             .iter()
-            .any(|finding| finding.category == "broken_deployment"));
+            .any(|finding| finding.category == "broken_deployment"
+                && finding.path == "/gone/deployed-writer"));
         assert!(report
             .findings
             .iter()
@@ -336,7 +382,7 @@ mod tests {
             code: "unreadable".into(),
             message: "目录不可读".into(),
         });
-        let report = build_doctor_report(&[host], &[external], DirectoryLinkMode::Unavailable);
+        let report = build_doctor_report(&[host], &[external], &[], DirectoryLinkMode::Unavailable);
         assert_eq!(report.status, "warnings");
         assert_eq!(report.exit_code(), 1);
         for category in [

@@ -69,7 +69,7 @@ fn find_windows_path_key(
         .map_err(|error| error.to_string())
 }
 
-fn data_directory_path() -> PathBuf {
+pub(crate) fn data_directory_path() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("skillmate")

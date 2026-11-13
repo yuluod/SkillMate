@@ -7,7 +7,7 @@ use crate::managed_installation::{
 use crate::managed_state::content_fingerprint;
 use crate::managed_state::refresh_managed_skill_fingerprint;
 use crate::skill_install::{InstallPreview, PreviewAction, PreviewConflict};
-use crate::skill_inventory::{build_skill, ManagedSkill};
+use crate::skill_inventory::{build_skill, build_skill_readonly, ManagedSkill};
 use crate::skill_origin::OriginInferenceCache;
 use crate::Skill;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -751,11 +751,13 @@ fn list_registered_library_skills(
         if existing_only && (!path.is_dir() || !is_library_skill_path(&path)) {
             continue;
         }
-        skills.push(build_skill(
-            db,
-            &ManagedSkill { path, name },
-            &mut origin_cache,
-        ));
+        let managed = ManagedSkill { path, name };
+        let skill = if existing_only {
+            build_skill(db, &managed, &mut origin_cache)
+        } else {
+            build_skill_readonly(db, &managed, &mut origin_cache)
+        };
+        skills.push(skill);
     }
     Ok(skills)
 }
