@@ -1,6 +1,6 @@
 #[cfg(any(windows, test))]
 use rusqlite::OptionalExtension;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OpenFlags};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -123,12 +123,30 @@ pub fn open_readonly_db_connection() -> Result<Connection, String> {
 }
 
 pub(crate) fn open_readonly_db_connection_at(path: &Path) -> Result<Connection, String> {
-    if path.is_file() {
-        return prepare_connection(Connection::open(path).map_err(|error| error.to_string())?);
+    if !path.is_file() {
+        let connection =
+            prepare_connection(Connection::open_in_memory().map_err(|error| error.to_string())?)?;
+        migrate_database(&connection)?;
+        return Ok(connection);
     }
-    let connection =
-        prepare_connection(Connection::open_in_memory().map_err(|error| error.to_string())?)?;
-    migrate_database(&connection)?;
+    // SQLITE_OPEN_READ_ONLY：不触发 SQLite 自身的日志恢复与 WAL checkpoint 写操作；
+    // WAL 模式下 -shm 缺失时由 SQLite 在堆内重建 wal-index，已提交数据仍可读。
+    let connection = prepare_connection(
+        Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| error.to_string())?,
+    )?;
+    // 需要写入恢复的库（遗留热日志等）只读连接无法自行恢复，
+    // 探针读把该状态报成明确的诊断错误，而不是悄悄回滚改写。
+    connection
+        .query_row("SELECT COUNT(*) FROM sqlite_master", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(|error| {
+            format!(
+                "数据库需要写入恢复（可能存在遗留日志或损坏），\
+                 请先运行 skillmate-cli scan 或打开应用完成恢复后重试: {error}"
+            )
+        })?;
     Ok(connection)
 }
 
@@ -552,5 +570,124 @@ mod tests {
         assert!(message.contains("database is locked"));
         assert!(message.contains("受限模式"));
         assert!(message.contains("重启应用"));
+    }
+
+    #[test]
+    fn readonly_open_refuses_database_with_hot_journal() {
+        if let Some(db) = std::env::var_os("SKILLMATE_READONLY_HOT_JOURNAL_DB").map(PathBuf::from) {
+            let connection = Connection::open(&db).unwrap();
+            connection
+                .pragma_update(None, "journal_mode", "DELETE")
+                .unwrap();
+            connection
+                .execute("CREATE TABLE IF NOT EXISTS t (x)", [])
+                .unwrap();
+            // 极小页缓存 + 批量写入迫使 journal 在提交前 spill，留下有效热头
+            connection.pragma_update(None, "cache_size", 10).unwrap();
+            connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+            connection
+                .execute(
+                    "INSERT INTO t WITH RECURSIVE c(x) AS \
+                     (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 20000) SELECT x FROM c",
+                    [],
+                )
+                .unwrap();
+            // 不提交直接退出：hot journal 等待写入恢复
+            std::process::exit(0);
+        }
+        let root = std::env::temp_dir().join(format!(
+            "skillmate-readonly-hot-journal-{}-{}",
+            std::process::id(),
+            crate::app_core::generate_id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let db_file = root.join("data.db");
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "database::tests::readonly_open_refuses_database_with_hot_journal",
+            ])
+            .env("SKILLMATE_READONLY_HOT_JOURNAL_DB", &db_file)
+            .output()
+            .unwrap();
+        assert!(child.status.success());
+        let journal = root.join("data.db-journal");
+        assert!(journal.is_file(), "子进程应遗留 hot journal");
+        let db_bytes = fs::read(&db_file).unwrap();
+        let journal_bytes = fs::read(&journal).unwrap();
+
+        let Err(error) = open_readonly_db_connection_at(&db_file) else {
+            panic!("带遗留热日志的数据库应拒绝只读打开");
+        };
+        assert!(error.contains("恢复"), "错误应提示先完成恢复: {error}");
+
+        // 只读入口没有替 SQLite 做恢复：主库与 journal 原样保留。
+        assert_eq!(fs::read(&db_file).unwrap(), db_bytes);
+        assert_eq!(fs::read(&journal).unwrap(), journal_bytes);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn readonly_open_reads_committed_wal_data_without_checkpoint() {
+        let root = std::env::temp_dir().join(format!(
+            "skillmate-readonly-wal-{}-{}",
+            std::process::id(),
+            crate::app_core::generate_id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let db_file = root.join("data.db");
+        // writer 保持打开：-wal/-shm 存在且未 checkpoint，模拟崩溃后的现场。
+        let writer = Connection::open(&db_file).unwrap();
+        writer.pragma_update(None, "journal_mode", "WAL").unwrap();
+        writer.execute("CREATE TABLE t (x TEXT)", []).unwrap();
+        writer
+            .execute("INSERT INTO t VALUES ('committed')", [])
+            .unwrap();
+
+        let reader = open_readonly_db_connection_at(&db_file).unwrap();
+        assert_eq!(
+            reader
+                .query_row("SELECT x FROM t", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            "committed"
+        );
+        let db_bytes = fs::read(&db_file).unwrap();
+        drop(reader);
+        // 只读连接关闭不触发 checkpoint，主库字节不变。
+        assert_eq!(fs::read(&db_file).unwrap(), db_bytes);
+        drop(writer);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readonly_open_recovers_wal_index_when_shm_missing() {
+        let root = std::env::temp_dir().join(format!(
+            "skillmate-readonly-wal-noshm-{}-{}",
+            std::process::id(),
+            crate::app_core::generate_id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let db_file = root.join("data.db");
+        let writer = Connection::open(&db_file).unwrap();
+        writer.pragma_update(None, "journal_mode", "WAL").unwrap();
+        writer.execute("CREATE TABLE t (x TEXT)", []).unwrap();
+        writer
+            .execute("INSERT INTO t VALUES ('committed')", [])
+            .unwrap();
+        // -shm 缺失（崩溃后被清理）：SQLite 3.22+ 在堆内重建 wal-index。
+        fs::remove_file(root.join("data.db-shm")).unwrap();
+
+        let reader = open_readonly_db_connection_at(&db_file).unwrap();
+        assert_eq!(
+            reader
+                .query_row("SELECT x FROM t", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            "committed"
+        );
+
+        drop(reader);
+        drop(writer);
+        let _ = fs::remove_dir_all(&root);
     }
 }
