@@ -123,9 +123,10 @@ Choose a project folder from Overview, Deployments, or Scenarios. Successful ins
 - Read optional fields such as `compatibility`, `license`, `metadata`, and `allowed-tools`.
 - Recognize resource directories such as `references/`, `scripts/`, and `assets/`.
 - Inspect scripts, dependency manifests, symbolic links, hidden files, network access, and environment-variable references.
+- Run a low-confidence prompt-injection heuristic over the `SKILL.md` body (excluding frontmatter): instruction overrides, possible data exfiltration, requests to disable safety checks, and possible encoded payloads.
 - Classify structures as `Conformant`, `Needs attention`, or `Not a Skill`.
 
-Static checks are used only for previews and installation decisions. SkillMate never executes scripts inside a Skill or runs third-party installation commands to infer provenance.
+Static checks are used only for previews and installation decisions. The injection heuristic is advisory and never enters the blocking policy list; install and update previews list each matched line, and a line can be marked as reviewed once confirmed harmless. Review state is registered by content fingerprint, so the same wording prompts only once across any Skill, and a content change prompts again. SkillMate never executes scripts inside a Skill or runs third-party installation commands to infer provenance.
 
 ### Add sources
 

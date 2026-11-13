@@ -1690,6 +1690,38 @@ body {
   font-size: 0.82rem;
 }
 
+.suspicious-findings {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: var(--border-w) solid var(--warn);
+  border-radius: var(--radius-md);
+  background: var(--surface2);
+}
+.suspicious-findings ul {
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  list-style: none;
+}
+.suspicious-findings li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+}
+.suspicious-findings li.reviewed { opacity: 0.6; }
+.suspicious-findings .suspicious-excerpt {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .tag-form { display: flex; gap: 8px; align-items: center; }
 .tag-form input:not([type="color"]) {
   flex: 1;

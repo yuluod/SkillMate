@@ -26,6 +26,8 @@ pub struct DetectedSkill {
     pub description: Option<String>,
     pub features: Vec<String>,
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub suspicious_instructions: Vec<crate::skill_structure::SuspiciousFinding>,
 }
 
 #[derive(Debug, Clone)]
@@ -430,6 +432,11 @@ fn detected_skill(
             structure.structure_warnings.push(warning);
         }
     }
+    if relative_path != "." {
+        for finding in &mut structure.suspicious_instructions {
+            finding.file = format!("{}/{}", relative_path, finding.file);
+        }
+    }
     DetectedSkill {
         relative_path,
         structure_status: structure.structure_status,
@@ -437,6 +444,7 @@ fn detected_skill(
         description: structure.manifest_description,
         features: structure.structure_features,
         warnings: structure.structure_warnings,
+        suspicious_instructions: structure.suspicious_instructions,
     }
 }
 

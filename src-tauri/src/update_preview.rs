@@ -46,6 +46,8 @@ pub struct UpdatePreview {
     pub can_apply: bool,
     pub blocked_reason: Option<String>,
     pub warnings: Vec<String>,
+    #[serde(rename = "suspiciousInstructions")]
+    pub suspicious_instructions: Vec<crate::skill_structure::SuspiciousFinding>,
     pub impacts: Vec<UpdateImpact>,
     pub files: Vec<FileChange>,
     pub omitted_files: usize,
@@ -104,7 +106,17 @@ fn with_update_preview<T>(
             // 下载可能耗时较长，使用完成后的策略和真实连接状态生成计划。
             let policy = load_install_policy(db)?;
             let impacts = collect_update_impacts(db, &path)?;
-            let structure = inspect_skill_for_inventory(source).structure;
+            let mut structure = inspect_skill_for_inventory(source).structure;
+            // 「已审阅」只影响展示：全部审阅后摘除提醒代码，findings 仍随
+            // 预览返回供详情展示。
+            if crate::finding_review::apply_review_state(db, &mut structure.suspicious_instructions)
+                .map(|pending| !pending)
+                .unwrap_or(false)
+            {
+                structure
+                    .structure_warnings
+                    .retain(|code| code != "suspicious_instructions");
+            }
             let decision = evaluate_install_policy(
                 &policy,
                 InstallPolicyInput {
@@ -171,6 +183,7 @@ fn with_update_preview<T>(
                         .collect::<BTreeSet<_>>()
                         .into_iter()
                         .collect(),
+                    suspicious_instructions: structure.suspicious_instructions,
                     impacts,
                     files,
                     omitted_files,
