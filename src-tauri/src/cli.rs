@@ -848,8 +848,8 @@ mod tests {
             return;
         };
         // 只删启用链接、主副本完好：路径整个消失，扫描按 exists/symlink 过滤收不到它，
-        // 必须靠原始登记核验出来。
-        std::fs::remove_file(&fixture.deployment_path).unwrap();
+        // 必须靠原始登记核验出来。Windows 上目录链接须用 remove_dir，走跨平台删除工具。
+        crate::app_core::remove_path(&fixture.deployment_path).unwrap();
         let db_bytes_before = std::fs::read(&fixture.db_file).unwrap();
 
         let (code, findings) = run_doctor_collecting(&fixture.db_file);
