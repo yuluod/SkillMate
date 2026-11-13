@@ -194,12 +194,30 @@ pub fn add_deployment_to_preview(
             });
         }
     }
-    if deployment_actions
-        .iter()
-        .any(|action| matches!(action.action.as_str(), "symlink" | "replace"))
-        && !directory_symlink_available()
-    {
-        block_directory_symlink_preview(&mut preview, deployment_root);
+    fn is_link_action(action: &PreviewAction) -> bool {
+        matches!(action.action.as_str(), "symlink" | "replace")
+    }
+    if deployment_actions.iter().any(is_link_action) {
+        match directory_link_mode() {
+            DirectoryLinkMode::Symlink => {}
+            DirectoryLinkMode::Junction
+                if junction_link_supported(deployment_root)
+                    && deployment_actions
+                        .iter()
+                        .filter(|action| is_link_action(action))
+                        .all(|action| junction_link_supported(Path::new(&action.source))) =>
+            {
+                // junction 不支持相对目标与网络路径，且部分工具遍历时表现为跟随
+                // 目标；在预览动作中显式标注回退方式，随预览内容一起进入计划校验。
+                for action in &mut deployment_actions {
+                    if is_link_action(action) {
+                        action.reason =
+                            format!("{}（符号链接不可用，改用 NTFS junction）", action.reason);
+                    }
+                }
+            }
+            _ => block_directory_symlink_preview(&mut preview, deployment_root),
+        }
     }
     preview.target_actions.extend(deployment_actions);
     if preview.can_apply {
@@ -238,10 +256,7 @@ pub(crate) fn connected_managed_deployment(
     if installation.skill.assistant != assistant
         || installation.skill.scope.as_deref() != Some(scope)
         || state.assistant != assistant
-        || !fs::symlink_metadata(target)
-            .map_err(|error| error.to_string())?
-            .file_type()
-            .is_symlink()
+        || !crate::app_core::path_is_directory_link(target).map_err(|error| error.to_string())?
     {
         return Ok(false);
     }
@@ -261,21 +276,51 @@ pub(crate) fn connected_managed_deployment(
         && canonical_existing(&deployment.library_path)? == Some(source_path))
 }
 
-pub(crate) fn directory_symlink_available() -> bool {
+/// 受管目录连接的创建方式：符号链接为首选；Windows 上符号链接权限缺失时
+/// 回退到不需要特权的 NTFS junction（要求链接位置与统一库都在本地卷上）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) enum DirectoryLinkMode {
+    Symlink,
+    Junction,
+    Unavailable,
+}
+
+pub(crate) fn directory_link_mode() -> DirectoryLinkMode {
     #[cfg(windows)]
     {
-        directory_symlink_capability::available()
+        directory_symlink_capability::mode()
     }
     #[cfg(not(windows))]
     {
-        true
+        DirectoryLinkMode::Symlink
     }
+}
+
+/// junction 只能指向本地卷上的绝对路径（不支持 UNC / 相对目标）。
+#[cfg(windows)]
+pub(crate) fn junction_link_supported(path: &Path) -> bool {
+    use std::path::Component;
+
+    matches!(
+        path.components().next(),
+        Some(Component::Prefix(prefix))
+            if !matches!(
+                prefix.kind(),
+                std::path::Prefix::UNC(_) | std::path::Prefix::VerbatimUNC(_)
+            )
+    )
+}
+
+#[cfg(not(windows))]
+pub(crate) fn junction_link_supported(_path: &Path) -> bool {
+    false
 }
 
 pub(crate) fn block_directory_symlink_preview(preview: &mut InstallPreview, target: &Path) {
     preview.can_install = false;
     preview.can_apply = false;
-    preview.message = "Windows 无法创建目录符号链接，请开启开发者模式或使用具备创建符号链接权限的进程，稍后重新预览；若仍失败，请检查临时目录权限".to_string();
+    preview.message = "Windows 无法创建目录符号链接，且启用位置或统一库不满足 NTFS junction 回退条件（需位于本地卷）；请开启开发者模式、使用具备创建符号链接权限的进程或将相关目录移动到本地卷后重新预览；若仍失败，请检查临时目录权限".to_string();
     preview.conflicts.push(PreviewConflict {
         target: target.to_string_lossy().into_owned(),
         reason: "directory_symlink_unavailable".to_string(),
@@ -291,38 +336,57 @@ pub(crate) mod directory_symlink_capability {
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
-    static CACHE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+    static CACHE: Mutex<Option<(Instant, DirectoryLinkMode)>> = Mutex::new(None);
 
     #[cfg(test)]
     thread_local! {
-        static TEST_AVAILABLE: std::cell::Cell<Option<bool>> = const {
+        static TEST_MODE: std::cell::Cell<Option<DirectoryLinkMode>> = const {
             std::cell::Cell::new(None)
         };
     }
 
     #[cfg(test)]
-    pub(crate) struct TestCapabilityGuard(Option<bool>);
+    pub(crate) struct TestCapabilityGuard(Option<DirectoryLinkMode>);
 
     #[cfg(test)]
     impl Drop for TestCapabilityGuard {
         fn drop(&mut self) {
-            TEST_AVAILABLE.with(|value| value.set(self.0));
+            TEST_MODE.with(|value| value.set(self.0));
         }
     }
 
     #[cfg(test)]
     pub(crate) fn use_test_capability(available: bool) -> TestCapabilityGuard {
-        TestCapabilityGuard(TEST_AVAILABLE.with(|value| value.replace(Some(available))))
+        use_test_link_mode(if available {
+            DirectoryLinkMode::Symlink
+        } else {
+            DirectoryLinkMode::Unavailable
+        })
     }
 
-    pub(super) fn available() -> bool {
+    #[cfg(test)]
+    pub(crate) fn use_test_link_mode(mode: DirectoryLinkMode) -> TestCapabilityGuard {
+        TestCapabilityGuard(TEST_MODE.with(|value| value.replace(Some(mode))))
+    }
+
+    pub(super) fn mode() -> DirectoryLinkMode {
         #[cfg(test)]
-        if let Some(value) = TEST_AVAILABLE.with(|value| value.get()) {
-            return value;
+        if let Some(mode) = TEST_MODE.with(|value| value.get()) {
+            return mode;
         }
         // Keep the lock during the probe so concurrent previews share one result.
         let mut cache = CACHE.lock().unwrap_or_else(|error| error.into_inner());
-        cached_probe(&mut cache, Instant::now(), || probe().is_ok())
+        cached_mode(&mut cache, Instant::now(), detect_mode)
+    }
+
+    fn detect_mode() -> DirectoryLinkMode {
+        if probe().is_ok() {
+            return DirectoryLinkMode::Symlink;
+        }
+        if junction_probe().is_ok() {
+            return DirectoryLinkMode::Junction;
+        }
+        DirectoryLinkMode::Unavailable
     }
 
     /// Always probes the OS, bypassing the preview cache and test override.
@@ -337,20 +401,33 @@ pub(crate) mod directory_symlink_capability {
         })
     }
 
-    fn cached_probe(
-        cache: &mut Option<(Instant, bool)>,
+    /// NTFS junction 创建不需要符号链接特权，是符号链接不可用时的回退方式。
+    pub(crate) fn junction_probe() -> io::Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "skillmate-directory-junction-probe-{}",
+            generate_id()
+        ));
+        probe_at(&root, |source, link| junction::create(source, link))
+    }
+
+    fn cached_mode(
+        cache: &mut Option<(Instant, DirectoryLinkMode)>,
         now: Instant,
-        probe: impl FnOnce() -> bool,
-    ) -> bool {
-        if let Some((checked_at, available)) = *cache {
-            let ttl = Duration::from_secs(if available { 30 } else { 2 });
+        probe: impl FnOnce() -> DirectoryLinkMode,
+    ) -> DirectoryLinkMode {
+        if let Some((checked_at, mode)) = *cache {
+            let ttl = Duration::from_secs(if mode == DirectoryLinkMode::Unavailable {
+                2
+            } else {
+                30
+            });
             if now.duration_since(checked_at) < ttl {
-                return available;
+                return mode;
             }
         }
-        let available = probe();
-        *cache = Some((now, available));
-        available
+        let mode = probe();
+        *cache = Some((now, mode));
+        mode
     }
 
     struct ProbeDirectory(PathBuf);
@@ -397,27 +474,34 @@ pub(crate) mod directory_symlink_capability {
         fn directory_symlink_cache_retries_failure_and_expires_success() {
             let now = Instant::now();
             let mut cache = None;
-            assert!(!cached_probe(&mut cache, now, || false));
-            assert!(!cached_probe(
-                &mut cache,
-                now + Duration::from_secs(1),
-                || panic!("cached")
-            ));
-            assert!(cached_probe(
-                &mut cache,
-                now + Duration::from_secs(2),
-                || true
-            ));
-            assert!(cached_probe(
-                &mut cache,
-                now + Duration::from_secs(31),
-                || panic!("cached")
-            ));
-            assert!(!cached_probe(
-                &mut cache,
-                now + Duration::from_secs(32),
-                || false
-            ));
+            assert_eq!(
+                cached_mode(&mut cache, now, || DirectoryLinkMode::Unavailable),
+                DirectoryLinkMode::Unavailable
+            );
+            assert_eq!(
+                cached_mode(&mut cache, now + Duration::from_secs(1), || panic!(
+                    "cached"
+                )),
+                DirectoryLinkMode::Unavailable
+            );
+            assert_eq!(
+                cached_mode(&mut cache, now + Duration::from_secs(2), || {
+                    DirectoryLinkMode::Junction
+                }),
+                DirectoryLinkMode::Junction
+            );
+            assert_eq!(
+                cached_mode(&mut cache, now + Duration::from_secs(31), || panic!(
+                    "cached"
+                )),
+                DirectoryLinkMode::Junction
+            );
+            assert_eq!(
+                cached_mode(&mut cache, now + Duration::from_secs(32), || {
+                    DirectoryLinkMode::Unavailable
+                }),
+                DirectoryLinkMode::Unavailable
+            );
         }
 
         #[test]
@@ -476,6 +560,35 @@ pub(crate) fn find_existing_alternate_target(
     })
 }
 
+/// 按探测到的链接模式创建受管目录连接：符号链接优先，Windows 上回退 junction。
+/// junction 模式下若目标不在本地卷则直接落入符号链接分支并给出权限提示。
+pub(crate) fn create_directory_link(
+    source: &Path,
+    target: &Path,
+) -> Result<DirectoryLinkMode, String> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(source, target).map_err(|error| error.to_string())?;
+        Ok(DirectoryLinkMode::Symlink)
+    }
+    #[cfg(windows)]
+    {
+        match directory_symlink_capability::mode() {
+            DirectoryLinkMode::Junction if junction_link_supported(source) => {
+                junction::create(source, target)
+                    .map_err(|error| format!("Windows 无法创建 Skill 启用 junction: {error}"))?;
+                Ok(DirectoryLinkMode::Junction)
+            }
+            _ => {
+                std::os::windows::fs::symlink_dir(source, target).map_err(|error| {
+                    format!("Windows 无法创建 Skill 启用链接，请开启开发者模式后重试: {error}")
+                })?;
+                Ok(DirectoryLinkMode::Symlink)
+            }
+        }
+    }
+}
+
 pub fn deploy_library_skill(source: &Path, target: &Path) -> Result<String, String> {
     if target.exists() || fs::symlink_metadata(target).is_ok() {
         return Err(format!(
@@ -487,18 +600,12 @@ pub fn deploy_library_skill(source: &Path, target: &Path) -> Result<String, Stri
         .parent()
         .ok_or_else(|| "启用位置缺少父目录".to_string())?;
     fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(source, target).map_err(|error| error.to_string())?;
-        Ok("symlink".to_string())
+    let mode = create_directory_link(source, target)?;
+    Ok(match mode {
+        DirectoryLinkMode::Junction => "junction",
+        _ => "symlink",
     }
-    #[cfg(windows)]
-    {
-        std::os::windows::fs::symlink_dir(source, target).map_err(|error| {
-            format!("Windows 无法创建 Skill 启用链接，请开启开发者模式后重试: {error}")
-        })?;
-        Ok("symlink".to_string())
-    }
+    .to_string())
 }
 
 pub fn resolve_library_path(db: &Connection, path: &Path) -> Result<PathBuf, String> {
@@ -959,6 +1066,57 @@ mod windows_tests {
             }
         }
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn junction_fallback_preview_marks_link_actions_without_blocking() {
+        use crate::skill_install::preview_selected_local_install_source;
+        use directory_symlink_capability::use_test_link_mode;
+
+        let root = std::env::temp_dir().join(format!("skillmate-junction-test-{}", generate_id()));
+        let source = root.join("source/writer");
+        let library = root.join("library");
+        let deployment = root.join("project/.agents/skills");
+        fs::create_dir_all(&source).unwrap();
+        let content = "---\nname: writer\ndescription: Writing\n---\n";
+        fs::write(source.join("SKILL.md"), content).unwrap();
+        let _capability = use_test_link_mode(DirectoryLinkMode::Junction);
+        let preview =
+            preview_selected_local_install_source(&source.to_string_lossy(), &library, None);
+        let db = Connection::open_in_memory().unwrap();
+        let preview =
+            add_deployment_to_preview(&db, preview, &deployment, "Codex", "project", false);
+        assert!(preview.can_apply, "{}", preview.message);
+        assert!(preview.can_install);
+        assert!(!preview
+            .conflicts
+            .iter()
+            .any(|conflict| conflict.reason == "directory_symlink_unavailable"));
+        let link = preview
+            .target_actions
+            .iter()
+            .find(|action| action.action == "symlink")
+            .expect("junction 预览仍应包含链接动作");
+        assert!(link.reason.contains("junction"), "{}", link.reason);
+        assert_eq!(
+            fs::read_to_string(source.join("SKILL.md")).unwrap(),
+            content
+        );
+        assert!(!library.exists());
+        assert!(!deployment.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn junction_link_support_requires_local_volume() {
+        assert!(junction_link_supported(Path::new("C:\\SkillMate\\writer")));
+        assert!(!junction_link_supported(Path::new(
+            "\\\\server\\share\\writer"
+        )));
+        assert!(!junction_link_supported(Path::new(
+            "\\\\?\\server\\share\\writer"
+        )));
+        assert!(!junction_link_supported(Path::new("relative\\writer")));
     }
 
     #[test]

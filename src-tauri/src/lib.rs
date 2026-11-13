@@ -1547,7 +1547,7 @@ async fn unlink_symlink_skill(path: String) -> Result<String, String> {
                 return Err("路径不存在".to_string());
             }
             let metadata = fs::symlink_metadata(&p).map_err(|e| e.to_string())?;
-            if !metadata.file_type().is_symlink() {
+            if !crate::app_core::metadata_is_directory_link(&metadata) {
                 return Err("当前启用位置不是可解除的连接".to_string());
             }
             let registry_managed = find_managed_installation(db, &p)?.filter(|installation| {
@@ -1824,10 +1824,10 @@ fn is_openable_registered_folder(path: &Path, managed_paths: &[PathBuf]) -> bool
         if parent_matches {
             return true;
         }
-        let is_symlink = fs::symlink_metadata(managed_path)
-            .map(|metadata| metadata.file_type().is_symlink())
+        let is_link = fs::symlink_metadata(managed_path)
+            .map(|metadata| crate::app_core::metadata_is_directory_link(&metadata))
             .unwrap_or(false);
-        !is_symlink && is_same_path(path, managed_path)
+        !is_link && is_same_path(path, managed_path)
     })
 }
 

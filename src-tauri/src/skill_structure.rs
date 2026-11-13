@@ -514,7 +514,7 @@ fn scan_safety(path: &Path, report: &mut SafetyScan, depth: usize) {
         if name.starts_with('.') {
             report.hidden_files = true;
         }
-        if metadata.file_type().is_symlink() {
+        if crate::app_core::metadata_is_directory_link(&metadata) {
             report.symlinks = true;
             continue;
         }
@@ -703,7 +703,7 @@ fn path_has_unsafe_symlink(path: &Path, root: &Path, depth: usize) -> bool {
         let Ok(metadata) = fs::symlink_metadata(&entry_path) else {
             continue;
         };
-        if metadata.file_type().is_symlink() {
+        if crate::app_core::metadata_is_directory_link(&metadata) {
             match entry_path.canonicalize() {
                 Ok(target) if target.starts_with(root) => {}
                 _ => return true,

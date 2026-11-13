@@ -1159,10 +1159,7 @@ fn prune_missing_managed_installations_with(
     let mut removed_links = Vec::new();
     let cleanup_result = (|| {
         for path in &missing {
-            if std::fs::symlink_metadata(path)
-                .map(|metadata| metadata.file_type().is_symlink())
-                .unwrap_or(false)
-            {
+            if crate::app_core::path_is_directory_link(path).unwrap_or(false) {
                 let target = std::fs::read_link(path).map_err(|error| error.to_string())?;
                 removed_links.push((path.clone(), target));
                 unlink(path)?;
@@ -1212,13 +1209,9 @@ fn restore_directory_symlink(path: &Path, target: &Path) -> Result<(), String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(format!("无法检查待恢复目录链接: {error}")),
     }
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(target, path)
-        .map_err(|error| format!("恢复目录链接失败 {}: {error}", path.to_string_lossy()))?;
-    #[cfg(windows)]
-    std::os::windows::fs::symlink_dir(target, path)
-        .map_err(|error| format!("恢复目录链接失败 {}: {error}", path.to_string_lossy()))?;
-    Ok(())
+    crate::skill_library::create_directory_link(target, path)
+        .map(|_| ())
+        .map_err(|error| format!("恢复目录链接失败 {}: {error}", path.to_string_lossy()))
 }
 
 fn managed_path_is_missing(path: &Path) -> bool {
@@ -1226,7 +1219,7 @@ fn managed_path_is_missing(path: &Path) -> bool {
         return false;
     }
     match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata.file_type().is_symlink(),
+        Ok(metadata) => crate::app_core::metadata_is_directory_link(&metadata),
         Err(_) => true,
     }
 }

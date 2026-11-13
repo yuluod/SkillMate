@@ -7,7 +7,8 @@ use crate::skill_install::{
 };
 use crate::skill_install_source::parse_git_install_spec;
 use crate::skill_library::{
-    block_directory_symlink_preview, directory_symlink_available, library_root,
+    block_directory_symlink_preview, directory_link_mode, junction_link_supported, library_root,
+    DirectoryLinkMode,
 };
 use crate::skill_origin::{infer_origin_meta, load_origin_meta, save_origin_meta, SkillOriginMeta};
 use crate::skill_reconcile::ReconcileTransaction;
@@ -28,7 +29,7 @@ pub fn preview_adopt_skill(
     let source_path = expand_path(path.trim());
     let policy = load_install_policy(db);
     let mut preview = match adoption_context(&source_path, assistant_name, project_path) {
-        Ok(_) if !directory_symlink_available() => {
+        Ok(_) if !adoption_link_supported(&source_path) => {
             // Check before library_root(), which can create the library directory.
             let mut preview = adoption_error("", &source_path);
             block_directory_symlink_preview(&mut preview, &source_path);
@@ -47,11 +48,17 @@ pub fn preview_adopt_skill(
             .find(|action| matches!(action.action.as_str(), "copy" | "keep"))
             .map(|action| action.target.clone())
             .unwrap_or_default();
+        let junction = directory_link_mode() == DirectoryLinkMode::Junction;
         preview.target_actions.push(PreviewAction {
             action: "replace".to_string(),
             source: library_path,
             target: source_path.to_string_lossy().to_string(),
-            reason: "将现有实体目录替换为 SkillMate 受管链接".to_string(),
+            reason: if junction {
+                "将现有实体目录替换为 SkillMate 受管链接（符号链接不可用，改用 NTFS junction）"
+            } else {
+                "将现有实体目录替换为 SkillMate 受管链接"
+            }
+            .to_string(),
         });
         preview.message = "将现有 Skill 加入统一库，并把当前位置切换为受管链接".to_string();
     }
@@ -256,6 +263,22 @@ fn origin_for_adoption(
     retarget_origin(origin, library_path)
 }
 
+/// 接管会把实体目录替换为指向统一库的受管链接：符号链接优先，Windows 上
+/// 符号链接不可用时回退 NTFS junction（链接位置与统一库都须在本地卷上）。
+/// 只读检查，不触发 library_root() 的建目录副作用。
+fn adoption_link_supported(source_path: &Path) -> bool {
+    match directory_link_mode() {
+        DirectoryLinkMode::Symlink => true,
+        DirectoryLinkMode::Junction => {
+            junction_link_supported(source_path)
+                && crate::library_config::configured_library_root()
+                    .map(|root| junction_link_supported(&root))
+                    .unwrap_or(false)
+        }
+        DirectoryLinkMode::Unavailable => false,
+    }
+}
+
 struct AdoptionContext {
     scope: &'static str,
     project_path: Option<String>,
@@ -269,7 +292,7 @@ fn adoption_context(
 ) -> Result<AdoptionContext, String> {
     let metadata = fs::symlink_metadata(source_path)
         .map_err(|error| format!("无法读取待接管 Skill: {error}"))?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+    if crate::app_core::metadata_is_directory_link(&metadata) || !metadata.is_dir() {
         return Err("当前只接管实体 Skill 目录，链接和普通文件保持外部管理".to_string());
     }
     if crate::skill_inventory::is_skills_cli_store_entry(source_path) {

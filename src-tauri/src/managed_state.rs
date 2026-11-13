@@ -320,7 +320,9 @@ where
     } else {
         update(relative.to_string_lossy().as_bytes());
     }
-    if metadata.file_type().is_symlink() {
+    // Windows junction 同样是目录链接（std 视其为目录），按链接处理避免
+    // 指纹递归进入统一库内容，保证两种链接模式的登记语义一致。
+    if crate::app_core::metadata_is_directory_link(&metadata) {
         update(if framed { b"L" } else { b"symlink" });
         let target = fs::read_link(path).map_err(|error| error.to_string())?;
         if framed {
