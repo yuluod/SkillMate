@@ -7,7 +7,7 @@ use crate::managed_installation::{
 use crate::managed_state::content_fingerprint;
 use crate::managed_state::refresh_managed_skill_fingerprint;
 use crate::skill_install::{InstallPreview, PreviewAction, PreviewConflict};
-use crate::skill_inventory::{build_skill, ManagedSkill};
+use crate::skill_inventory::{build_skill, build_skill_readonly, ManagedSkill};
 use crate::skill_origin::OriginInferenceCache;
 use crate::Skill;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -698,12 +698,28 @@ pub fn scan_unassigned_library_skills(db: &Connection) -> Result<Vec<Skill>, Str
     scan_library_skills_filtered(db, true)
 }
 
+/// 只读变体：不做缺失清理、不创建库根目录，并保留已失联的登记项，
+/// 让 doctor 这类诊断命令能看到 path_missing 等原始状态。
+pub fn read_library_skills(db: &Connection) -> Result<Vec<Skill>, String> {
+    list_registered_library_skills(db, false, false)
+}
+
 fn scan_library_skills_filtered(
     db: &Connection,
     only_unassigned: bool,
 ) -> Result<Vec<Skill>, String> {
     prune_missing_managed_installations(db)?;
-    library_root()?;
+    list_registered_library_skills(db, only_unassigned, true)
+}
+
+fn list_registered_library_skills(
+    db: &Connection,
+    only_unassigned: bool,
+    existing_only: bool,
+) -> Result<Vec<Skill>, String> {
+    if existing_only {
+        library_root()?;
+    }
     let query = if only_unassigned {
         "SELECT library_path, name
          FROM library_skills
@@ -732,14 +748,16 @@ fn scan_library_skills_filtered(
     let mut origin_cache = OriginInferenceCache::default();
     let mut skills = Vec::new();
     for (path, name) in entries {
-        if !path.is_dir() || !is_library_skill_path(&path) {
+        if existing_only && (!path.is_dir() || !is_library_skill_path(&path)) {
             continue;
         }
-        skills.push(build_skill(
-            db,
-            &ManagedSkill { path, name },
-            &mut origin_cache,
-        ));
+        let managed = ManagedSkill { path, name };
+        let skill = if existing_only {
+            build_skill(db, &managed, &mut origin_cache)
+        } else {
+            build_skill_readonly(db, &managed, &mut origin_cache)
+        };
+        skills.push(skill);
     }
     Ok(skills)
 }

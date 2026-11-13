@@ -5,7 +5,9 @@ use crate::managed_state::{
     content_fingerprint, fingerprint_matches, managed_state_entry, STATE_FILE_NAME,
 };
 use crate::skill_library::{find_deployment, resolve_library_path};
-use crate::skill_origin::{build_sync_info_with_cache, OriginInferenceCache};
+use crate::skill_origin::{
+    build_sync_info_readonly, build_sync_info_with_cache, OriginInferenceCache,
+};
 use crate::skill_structure::{detect_skill_entry, inspect_skill_for_inventory, SkillEntryKind};
 use crate::{
     AIAssistant, Skill, SkillInventoryFields, SkillOriginFields, SkillScanDiagnostic,
@@ -162,6 +164,16 @@ impl FingerprintCache {
 }
 
 pub fn scan_all_assistants(db: &Connection) -> Result<Vec<AIAssistant>, String> {
+    scan_assistants_inner(db, true)
+}
+
+/// 只读变体：扫描口径与 scan_all_assistants 一致，
+/// 但不持久化来源推断与受管校正，供 doctor 等诊断入口使用。
+pub fn scan_all_assistants_readonly(db: &Connection) -> Result<Vec<AIAssistant>, String> {
+    scan_assistants_inner(db, false)
+}
+
+fn scan_assistants_inner(db: &Connection, persist: bool) -> Result<Vec<AIAssistant>, String> {
     let managed_installations = list_managed_installations(db)?;
     let mut skill_cache = HashMap::<PathBuf, Skill>::new();
     let mut scan_cache = InventoryScanCache::default();
@@ -191,7 +203,11 @@ pub fn scan_all_assistants(db: &Connection) -> Result<Vec<AIAssistant>, String> 
                 .map(|value| value.to_string_lossy().to_string())
                 .unwrap_or_default();
             let managed = ManagedSkill { path, name };
-            let skill = build_skill_with_cache(db, &managed, &mut scan_cache);
+            let skill = if persist {
+                build_skill_with_cache(db, &managed, &mut scan_cache)
+            } else {
+                build_skill_with_cache_readonly(db, &managed, &mut scan_cache)
+            };
             skill_cache.insert(identity, skill.clone());
             skills.push(skill);
         }
@@ -383,7 +399,28 @@ pub(crate) fn build_skill(
     managed: &ManagedSkill,
     origin_cache: &mut OriginInferenceCache,
 ) -> Skill {
-    build_skill_with_fingerprints(db, managed, origin_cache, &mut FingerprintCache::default())
+    build_skill_with_fingerprints(
+        db,
+        managed,
+        origin_cache,
+        &mut FingerprintCache::default(),
+        true,
+    )
+}
+
+/// 只读变体：不持久化来源推断与受管校正。
+pub(crate) fn build_skill_readonly(
+    db: &Connection,
+    managed: &ManagedSkill,
+    origin_cache: &mut OriginInferenceCache,
+) -> Skill {
+    build_skill_with_fingerprints(
+        db,
+        managed,
+        origin_cache,
+        &mut FingerprintCache::default(),
+        false,
+    )
 }
 
 pub(crate) fn build_skill_with_cache(
@@ -391,7 +428,27 @@ pub(crate) fn build_skill_with_cache(
     managed: &ManagedSkill,
     cache: &mut InventoryScanCache,
 ) -> Skill {
-    build_skill_with_fingerprints(db, managed, &mut cache.origin, &mut cache.fingerprints)
+    build_skill_with_fingerprints(
+        db,
+        managed,
+        &mut cache.origin,
+        &mut cache.fingerprints,
+        true,
+    )
+}
+
+pub(crate) fn build_skill_with_cache_readonly(
+    db: &Connection,
+    managed: &ManagedSkill,
+    cache: &mut InventoryScanCache,
+) -> Skill {
+    build_skill_with_fingerprints(
+        db,
+        managed,
+        &mut cache.origin,
+        &mut cache.fingerprints,
+        false,
+    )
 }
 
 fn build_skill_with_fingerprints(
@@ -399,6 +456,7 @@ fn build_skill_with_fingerprints(
     managed: &ManagedSkill,
     origin_cache: &mut OriginInferenceCache,
     fingerprints: &mut FingerprintCache,
+    persist: bool,
 ) -> Skill {
     let ep = &managed.path;
     let modified = ep
@@ -443,7 +501,11 @@ fn build_skill_with_fingerprints(
         Ok(None) => (Vec::new(), None),
         Err(_) => (Vec::new(), Some("skill_tags_unavailable".to_string())),
     };
-    let sync_info = build_sync_info_with_cache(db, ep, origin_cache);
+    let sync_info = if persist {
+        build_sync_info_with_cache(db, ep, origin_cache)
+    } else {
+        build_sync_info_readonly(db, ep, origin_cache)
+    };
     let deployment = find_deployment(db, ep).ok().flatten();
     let content_path = metadata_path.as_path();
     let state_result = ep

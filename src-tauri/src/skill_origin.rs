@@ -335,6 +335,25 @@ pub fn build_sync_info_with_cache(
     path: &Path,
     cache: &mut OriginInferenceCache,
 ) -> SkillSyncInfo {
+    build_sync_info_inner(db, path, cache, true)
+}
+
+/// 只读变体：来源推断与受管校正只反映在返回值中，不写 skill_origin_meta，
+/// 供 doctor 等诊断入口使用——体检本身不得修改被诊断的状态。
+pub fn build_sync_info_readonly(
+    db: &Connection,
+    path: &Path,
+    cache: &mut OriginInferenceCache,
+) -> SkillSyncInfo {
+    build_sync_info_inner(db, path, cache, false)
+}
+
+fn build_sync_info_inner(
+    db: &Connection,
+    path: &Path,
+    cache: &mut OriginInferenceCache,
+    persist: bool,
+) -> SkillSyncInfo {
     let mut meta = match load_origin_meta(db, &path.to_string_lossy()) {
         Ok(Some(mut meta)) => {
             meta.skill_path = path.to_string_lossy().to_string();
@@ -342,9 +361,11 @@ pub fn build_sync_info_with_cache(
         }
         Ok(None) => {
             let mut meta = infer_origin_meta_with_cache(path, None, cache);
-            if let Err(error) = save_origin_meta(db, &meta) {
-                meta.sync_state = "failed".to_string();
-                meta.sync_message = format!("保存来源状态失败: {}", error);
+            if persist {
+                if let Err(error) = save_origin_meta(db, &meta) {
+                    meta.sync_state = "failed".to_string();
+                    meta.sync_message = format!("保存来源状态失败: {}", error);
+                }
             }
             meta
         }
@@ -358,9 +379,11 @@ pub fn build_sync_info_with_cache(
     match is_explicitly_managed(db, path) {
         Ok(managed) if meta.managed_by_app != managed => {
             meta.managed_by_app = managed;
-            if let Err(error) = save_origin_meta(db, &meta) {
-                meta.sync_state = "failed".to_string();
-                meta.sync_message = format!("校正受管状态失败: {}", error);
+            if persist {
+                if let Err(error) = save_origin_meta(db, &meta) {
+                    meta.sync_state = "failed".to_string();
+                    meta.sync_message = format!("校正受管状态失败: {}", error);
+                }
             }
         }
         Ok(_) => {}

@@ -18,6 +18,7 @@ mod organization_commands;
 mod project_inspection;
 mod scenario_manifest;
 mod skill_adoption;
+mod skill_doctor;
 mod skill_drift;
 mod skill_install;
 mod skill_install_source;
