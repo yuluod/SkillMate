@@ -159,7 +159,7 @@ plugin@marketplace
 
 SkillMate 会读取本机 Claude Marketplace 清单，将插件解析为本地目录或 Git 来源，再进入同一套结构预览、风险检查和写入计划。来自 npm 的 Marketplace 插件会明确提示使用原安装器，SkillMate 不会执行 npm 安装。
 
-技能库中的 [skills.sh](https://skills.sh/) 和 GitHub Repository Search 只负责发现来源，真正添加时仍会经过完整检查。
+技能库中的 [skills.sh](https://skills.sh/) 和 GitHub Repository Search 只负责发现来源，真正添加时仍会经过完整检查。结果中的「已添加」表示统一库内已存在同一 Git 来源的受管登记（含接管保留的原始来源）：GitHub 结果以整仓为粒度，skills.sh 结果再按仓库内子目录区分；仅扫描到的外部只读条目不算已添加。
 
 ### 接管外部 Skill
 

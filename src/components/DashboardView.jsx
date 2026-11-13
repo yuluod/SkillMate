@@ -22,16 +22,37 @@ function repositoryIdentity(value = "") {
   return (github?.[1] || normalized.split("#")[0]).replace(/\.git$/, "");
 }
 
+// 与 skill_install_source.rs 的 `<repo>#<ref>:<subdir>` 登记格式对应：
+// 子目录只从首个 # 片段的首个 : 之后取，避免 SSH 与本地路径中的冒号干扰。
+function locatorSkillSubdir(locator = "") {
+  const fragment = String(locator).split("#")[1];
+  if (!fragment) return "";
+  const index = fragment.indexOf(":");
+  if (index < 0) return "";
+  return fragment.slice(index + 1).split("/").filter(Boolean).join("/").toLowerCase();
+}
+
+// 「已添加」= 库内存在同来源受管登记（含接管保留的原始来源）；外部只读条目不计。
+// GitHub 结果以整仓为粒度，仅匹配仓库根来源；skills.sh 结果再按 skillId 比对子目录。
 function isMarketSkillInstalled(item, installedSkills) {
-  if (item.source !== "skills-sh") return false;
   const repository = repositoryIdentity(item.repository || item.installSource);
-  const identities = [item.skillId, item.name].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
+  if (!repository) return false;
+  const marketId = String(item.skillId || item.skill_id || "").trim().toLowerCase();
+  const matchSubdir = item.source === "skills-sh";
   return installedSkills.some((skill) => {
-    const locator = skill.origin_locator || skill.resolved_locator || skill.upstream_url || "";
-    const installedPathName = String(locator).split(":").pop().split("/").pop().toLowerCase();
-    return repositoryIdentity(locator) === repository
-      && (identities.includes(String(skill.name || "").trim().toLowerCase())
-        || identities.includes(installedPathName));
+    if (skill.origin_kind !== "git") return false;
+    if (skill.managed_by_app !== true && skill.in_library !== true) return false;
+    return [skill.origin_locator, skill.resolved_locator, skill.upstream_url].some((locator) => {
+      const value = String(locator || "").trim();
+      if (!value || repositoryIdentity(value) !== repository) return false;
+      const subdir = locatorSkillSubdir(value);
+      if (!matchSubdir) return subdir === "";
+      if (!marketId) return false;
+      return subdir === marketId
+        || subdir.split("/").pop() === marketId
+        || String(skill.name || "").trim().toLowerCase() === marketId
+        || String(skill.manifest_title || "").trim().toLowerCase() === marketId;
+    });
   });
 }
 

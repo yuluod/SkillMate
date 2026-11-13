@@ -159,7 +159,7 @@ plugin@marketplace
 
 SkillMate reads the local Claude Marketplace manifest, resolves a plugin to a local directory or Git source, and passes it through the same structure preview, risk checks, and write plan. Marketplace plugins sourced from npm are explicitly delegated to their original installer; SkillMate does not execute npm installation.
 
-The [skills.sh](https://skills.sh/) catalog and GitHub Repository Search are discovery channels only. Adding a result still goes through the complete inspection flow.
+The [skills.sh](https://skills.sh/) catalog and GitHub Repository Search are discovery channels only. Adding a result still goes through the complete inspection flow. A result shows "Added" when the unified library already holds a managed registration from the same Git source (including origins preserved by adoption): GitHub results match at repository granularity, while skills.sh results also compare the skill subdirectory; external read-only entries found by scanning do not count as added.
 
 ### Adopt external Skills
 
