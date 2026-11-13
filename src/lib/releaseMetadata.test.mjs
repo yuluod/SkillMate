@@ -294,7 +294,7 @@ test("普通 CI 必须覆盖前端、格式、Clippy 和 Rust 测试", () => {
   assert.match(workflow, /pnpm frontend:build/);
   assert.match(workflow, /\.\/actionlint/);
   assert.match(workflow, /windows-2022/);
-  assert.match(workflow, /macos-14/);
+  assert.match(workflow, /macos-15/);
   assert.ok(platformTestStart >= 0, "普通 CI 必须包含跨平台测试 job");
   const platformTest = workflow.slice(platformTestStart);
   assert.match(platformTest, /cargo test --manifest-path src-tauri\/Cargo\.toml --locked --no-fail-fast/);
