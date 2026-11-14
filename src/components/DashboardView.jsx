@@ -128,7 +128,7 @@ export function MarketDiscovery({ onInstall, installedSkills = [] }) {
 }
 
 
-export default function DashboardView({ stats, tagCount, driftGroups, onNavigate, onInstall, onOpenDrift }) {
+export default function DashboardView({ stats, tagCount, driftGroups, duplicateGroups = [], onNavigate, onInstall, onOpenDrift, onOpenDuplicates }) {
   const { t } = useI18n();
 
   const attentionCount = stats.updates + stats.structureIssues + stats.securityRisks
@@ -172,6 +172,7 @@ export default function DashboardView({ stats, tagCount, driftGroups, onNavigate
           {stats.localChanges > 0 && <AttentionRow icon="edit" tone="error" title={t("dashboard.localTitle", { count: stats.localChanges })} body={t("dashboard.localBody")} action={t("dashboard.review")} onClick={() => onNavigate("skills", "attention")} />}
           {stats.stale > 0 && <AttentionRow icon="unlink" tone="warn" title={t("dashboard.staleTitle", { count: stats.stale })} body={t("dashboard.staleBody")} action={t("dashboard.review")} onClick={() => onNavigate("skills", "attention")} />}
           {driftGroups.map((group) => <AttentionRow key={group.id} icon="branch" tone="warn" title={`${group.name} · ${t("drift.versions", { count: group.versionCount })}`} body={t("dashboard.driftBody")} action={t("dashboard.review")} onClick={() => onOpenDrift(group)} />)}
+          {duplicateGroups.map((group) => <AttentionRow key={group.id} icon="branch" title={`${group.name} · ${t("duplicates.copies", { count: group.copies.length })}`} body={t("dashboard.duplicateBody")} action={t("dashboard.review")} onClick={() => onOpenDuplicates(group)} />)}
           {stats.diagnostics > 0 && <AttentionRow icon="search" title={t("dashboard.diagnosticTitle", { count: stats.diagnostics })} body={t("dashboard.diagnosticBody")} action={t("dashboard.review")} onClick={() => onNavigate("ai")} />}
           {attentionCount === 0 && <div className="dash-empty"><Icon name="check" size={20} /><div><strong>{t("dashboard.allClear")}</strong><p>{t("dashboard.allClearHint")}</p></div></div>}
         </div>
