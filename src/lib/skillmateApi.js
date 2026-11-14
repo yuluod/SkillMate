@@ -139,6 +139,8 @@ export const skillmateApi = Object.freeze({
     setRoot: (path) => invoke("set_library_root", { path }),
     export: (path) => invoke("export_library", { path }),
     previewImport: (path, mode) => invoke("preview_import_library", { path, mode }),
+    validateDraft: (name, description) => invoke("validate_skill_draft", { name, description }),
+    create: (name, description, locale) => invoke("create_library_skill", { name, description, locale }),
   }),
   manifests: Object.freeze({
     exportSkillMate: (path) => invoke("export_skillmate_manifest", { path }),

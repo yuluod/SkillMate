@@ -1180,7 +1180,7 @@ fn validate_manifest_fields(
     }
 }
 
-fn is_valid_skill_name(name: &str) -> bool {
+pub(crate) fn is_valid_skill_name(name: &str) -> bool {
     let length = name.len();
     (1..=64).contains(&length)
         && !name.starts_with('-')

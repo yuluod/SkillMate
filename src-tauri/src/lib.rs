@@ -32,6 +32,7 @@ mod skill_package;
 mod skill_profile;
 mod skill_reconcile;
 mod skill_structure;
+mod skill_template;
 mod skill_trash;
 mod skillmate_manifest;
 #[cfg(desktop)]
@@ -1699,6 +1700,37 @@ fn detect_install_source(input: String) -> InstallDetection {
 }
 
 #[tauri::command]
+fn validate_skill_draft(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    description: String,
+) -> Result<skill_template::SkillDraftValidation, String> {
+    let db = lock_app_db(&state)?;
+    Ok(skill_template::validate_skill_draft(
+        &db,
+        &name,
+        &description,
+    ))
+}
+
+#[tauri::command]
+fn create_library_skill(
+    name: String,
+    description: String,
+    locale: Option<String>,
+) -> Result<String, String> {
+    run_exclusive_operation(move |db| {
+        let path = skill_template::create_library_skill(
+            db,
+            &name,
+            &description,
+            locale.as_deref().unwrap_or("zh-CN"),
+        )?;
+        Ok(path.to_string_lossy().to_string())
+    })
+}
+
+#[tauri::command]
 fn preview_project_skill_targets(
     project_path: String,
 ) -> Result<Vec<ProjectSkillTargetPreview>, String> {
@@ -1993,6 +2025,8 @@ pub fn run() {
             update_tag,
             delete_tag,
             update_skill_tags,
+            validate_skill_draft,
+            create_library_skill,
             get_scenarios,
             create_scenario,
             delete_scenario,

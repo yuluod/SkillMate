@@ -103,6 +103,83 @@ export function DriftSyncModal({ group, onClose, onComplete }) {
   );
 }
 
+// 从模板创建 Skill：name/description 实时校验（复用后端校验器同源规则），
+// 生成结果本身必须通过结构校验后才入库；纯静态骨架，不引入模型生成。
+export function CreateSkillModal({ onClose, onComplete }) {
+  const { t, language } = useI18n();
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [validation, setValidation] = useState(null);
+  const [validating, setValidating] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!name.trim() && !description.trim()) {
+      setValidation(null);
+      setValidating(false);
+      return undefined;
+    }
+    setValidating(true);
+    const timer = setTimeout(async () => {
+      try {
+        setValidation(await skillmateApi.library.validateDraft(name, description));
+      } catch {
+        // 校验通道失败时不阻塞输入，提交时后端仍会兜底校验
+        setValidation(null);
+      } finally {
+        setValidating(false);
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [name, description]);
+
+  async function create() {
+    if (!validation?.ok) return;
+    setBusy(true);
+    setError("");
+    try {
+      const path = await skillmateApi.library.create(name, description, language);
+      await onComplete(path);
+      onClose();
+    } catch (reason) {
+      setError(toUserErrorMessage(reason, t("error.safeRetry")));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <ModalShell title={t("create.title")} icon="sparkles" className="large create-skill-modal" onClose={onClose}>
+      <p className="modal-intro">{t("create.subtitle")}</p>
+      <div className="form">
+        <label htmlFor="create-name">{t("create.name")}</label>
+        <input id="create-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="my-skill" disabled={busy} autoFocus />
+        <small className="form-help">{t("create.nameHint")}</small>
+      </div>
+      <div className="form">
+        <label htmlFor="create-description">{t("create.description")}</label>
+        <input id="create-description" value={description} onChange={(event) => setDescription(event.target.value)} disabled={busy} />
+        <small className="form-help">{t("create.descriptionHint")}</small>
+      </div>
+      {validating && <div className="install-compact" role="status"><strong>{t("create.checking")}</strong></div>}
+      {!validating && validation && !validation.ok && (
+        <ul className="import-preview-list danger" role="alert">
+          {validation.errors.map((message) => <li key={message}>{message}</li>)}
+        </ul>
+      )}
+      {!validating && validation?.ok && <div className="install-compact success"><strong>{t("create.valid")}</strong></div>}
+      {error && <div className="install-compact error" role="alert"><strong>{error}</strong></div>}
+      <div className="modal-actions">
+        <button className="btn btn-secondary" onClick={onClose} disabled={busy}>{t("common.cancel")}</button>
+        <button className="btn btn-primary" onClick={create} disabled={busy || validating || !validation?.ok}>
+          <Icon name="plus" size={15} />{busy ? t("create.creating") : t("create.confirm")}
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
 function InlineInstallShell({ title, onClose, children }) {
   const { t } = useI18n();
   const panelRef = useRef(null);

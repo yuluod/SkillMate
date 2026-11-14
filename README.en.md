@@ -200,6 +200,8 @@ The following constraints protect existing installations:
 
 These rules prevent existing enablement links from breaking and ensure that adding a Skill never implicitly enables it globally.
 
+The library page offers “New Skill”: enter a name and description to generate a spec-compliant `SKILL.md` skeleton directly into the library. The same structure validation (name format, directory-name consistency, required description) runs live while typing, so invalid input never leaves a half-created directory; once created you can “Enable to…” immediately. The template is a static skeleton only — no model-generated content.
+
 ### Skill updates
 
 - Git Skills managed by SkillMate can be checked and updated when their source is reconstructable.

@@ -269,6 +269,7 @@ export function SkillsView({
   onAdopt = () => {},
   onUnlink,
   onRemove,
+  onCreate,
   selectedSkillPaths = [],
   onToggleSelection = () => {},
   onToggleVisibleSelection = () => {},
@@ -349,6 +350,7 @@ export function SkillsView({
         actions={(
           <>
           {onCheckAll && <button className="btn btn-ghost btn-sm" disabled={checkBusy} onClick={onCheckAll} aria-label={t("updates.checkAll")}><Icon name="refresh" size={14} />{t("updates.checkAll")}</button>}
+          {onCreate && <button className="btn btn-secondary btn-sm" onClick={onCreate} aria-label={t("create.open")}><Icon name="sparkles" size={14} />{t("create.open")}</button>}
           <button className="btn btn-secondary btn-sm" aria-expanded={discoveryOpen} onClick={onToggleDiscovery}><Icon name="search" size={14} />{t(discoveryOpen ? "skills.hideDiscovery" : "skills.discover")}</button>
           <button className="btn btn-primary btn-sm" onClick={onInstall}><Icon name="plus" size={14} />{t("common.install")}</button>
           </>
