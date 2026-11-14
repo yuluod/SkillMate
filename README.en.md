@@ -214,6 +214,8 @@ The diff lists up to 200 files and displays UTF-8 text up to 8 KiB per file, wit
 
 Safety policy is evaluated again before an update. Changes to local content, upstream commits, deployment relationships, or policy invalidate the preview token. Applying first downloads and validates one snapshot while the existing library original and deployment links remain readable, then replaces content through local file operations. Existing transaction recovery covers library files, provenance, and related deployment state together, attempting to restore them together on failure.
 
+After a successful update, the replaced version is kept as an update snapshot (up to the last 2 versions per Skill). The detail pane shows “Rollback available” with the source version and offers one-click rollback to the previous version. Rollback follows the same preview → plan-token → transaction path: it lists the files to restore and affected deployment locations, managed deployments follow the rollback, and independent project copies are untouched. The displaced current version is also kept as a snapshot, so rollback is itself reversible (rolling back again moves forward). Startup cleanup bounds the snapshot store.
+
 ### Application updates
 
 SkillMate checks, verifies, and installs application updates through GitHub Releases and the Tauri updater. Automatic startup checks can be configured in Settings. When a new release is found, it can be installed directly from the notification or ignored for the current prompt.

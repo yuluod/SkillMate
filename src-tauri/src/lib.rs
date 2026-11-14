@@ -31,6 +31,7 @@ mod skill_origin;
 mod skill_package;
 mod skill_profile;
 mod skill_reconcile;
+mod skill_snapshot;
 mod skill_structure;
 mod skill_trash;
 mod skillmate_manifest;
@@ -1821,6 +1822,42 @@ async fn update_from_upstream(path: String, plan_token: Option<String>) -> Resul
 }
 
 #[tauri::command]
+async fn list_skill_snapshots(path: String) -> Result<Vec<skill_snapshot::SkillSnapshot>, String> {
+    run_blocking_task(move || {
+        run_exclusive_operation(|db| {
+            let library_path = resolve_library_path(db, &expand_path(path.trim()))?;
+            skill_snapshot::list_snapshots(db, &library_path)
+        })
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn preview_skill_rollback(path: String) -> Result<update_preview::UpdatePreview, String> {
+    run_blocking_task(move || {
+        run_exclusive_operation(|db| {
+            update_preview::preview_skill_rollback(db, &expand_path(path.trim()))
+        })
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn apply_skill_rollback(path: String, plan_token: Option<String>) -> Result<String, String> {
+    run_blocking_task(move || {
+        run_exclusive_operation(|db| {
+            let p = expand_path(path.trim());
+            let library_path = resolve_library_path(db, &p)?;
+            if !is_known_skill_path(db, &p)? && !is_known_skill_path(db, &library_path)? {
+                return Err("只允许回滚已发现或受管的 Skill".to_string());
+            }
+            update_preview::apply_skill_rollback(db, &p, plan_token.as_deref())
+        })
+    })
+    .await?
+}
+
+#[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
     let url = url.trim();
     if !(url.starts_with("https://github.com/") || url.starts_with("https://skills.sh/")) {
@@ -1939,6 +1976,10 @@ fn initialize_database_state() -> (Option<Connection>, skill_trash::SkillTrash) 
     if let Err(error) = run_exclusive_operation(|db| {
         let (trash, removed) = skill_trash::restore_or_purge_abandoned_trash(db)?;
         restored_trash = trash;
+        // 更新快照的启动兜底清理：崩溃残留与超限快照在此收敛。
+        if let Err(error) = skill_snapshot::sweep_orphans(db) {
+            eprintln!("清理更新快照失败: {}", error);
+        }
         Ok(removed)
     }) {
         eprintln!("恢复可撤销暂存区失败: {}", error);
@@ -2018,6 +2059,9 @@ pub fn run() {
             check_updates,
             update_from_upstream,
             preview_skill_update,
+            list_skill_snapshots,
+            preview_skill_rollback,
+            apply_skill_rollback,
             search_market,
             preview_sync_skill_copies,
             sync_skill_copies,

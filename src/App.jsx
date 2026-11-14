@@ -40,6 +40,7 @@ import { useUpdateFlow } from "./lib/useUpdateFlow.js";
 import { useProjectWorkspace } from "./lib/useProjectWorkspace.js";
 import ProjectWorkspaceBar from "./components/ProjectWorkspaceBar.jsx";
 import UpdatePreviewModal from "./components/UpdatePreviewModal.jsx";
+import RollbackPreviewModal from "./components/RollbackPreviewModal.jsx";
 import { createResettableTimer } from "./lib/toastTimer.mjs";
 import { toUserErrorMessage } from "./lib/errorMessage.mjs";
 import { skillmateApi } from "./lib/skillmateApi.js";
@@ -189,6 +190,7 @@ function App() {
   const projectWorkspace = useProjectWorkspace();
   const projectWorkspacePath = projectWorkspace.path;
   const [updatePreviewPath, setUpdatePreviewPath] = useState("");
+  const [rollbackPreviewPath, setRollbackPreviewPath] = useState("");
   const {
     input: searchInput,
     query: search,
@@ -485,6 +487,7 @@ function App() {
     checkAllUpdates,
     checkUpdate,
     updateSkill,
+    rollbackSkill,
   } = useUpdateFlow({ updatable, showToast, loadData });
   resetUpdateStateRef.current = resetUpdateState;
 
@@ -935,6 +938,7 @@ function App() {
               onAdopt={setAdoptionCandidate}
               onUnlink={unlinkSymlink}
               onRemove={remove}
+              onRollback={setRollbackPreviewPath}
               onCheckAll={checkAllUpdates}
               checkBusy={Object.values(updateState).some(state => state.checking || state.updating)}
               onCheck={checkUpdate}
@@ -1110,6 +1114,7 @@ function App() {
 
       {driftGroup && <DriftSyncModal group={driftGroup} onClose={() => setDriftGroup(null)} onComplete={completeDrift} />}
       {updatePreviewPath && <UpdatePreviewModal path={updatePreviewPath} onClose={() => setUpdatePreviewPath("")} onConfirm={updateSkill} />}
+      {rollbackPreviewPath && <RollbackPreviewModal path={rollbackPreviewPath} onClose={() => setRollbackPreviewPath("")} onConfirm={rollbackSkill} />}
 
       {adoptionCandidate && <AdoptionModal candidate={adoptionCandidate} onClose={() => setAdoptionCandidate(null)} onComplete={completeAdoption} />}
 

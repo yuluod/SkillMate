@@ -3,7 +3,7 @@ use crate::managed_installation::{
     find_managed_installation, is_explicitly_managed, verify_managed_content_unchanged,
 };
 use crate::managed_state::content_fingerprint;
-use crate::operation_plan::{operation_plan_token, StableHash};
+use crate::operation_plan::{operation_plan_token, verify_operation_plan, StableHash};
 use crate::skill_install::{installable_content_fingerprint, with_git_snapshot};
 use crate::skill_library::{deployment_targets_for_library, resolve_library_path};
 use crate::skill_origin::load_origin_meta;
@@ -365,6 +365,148 @@ fn compare_files(before: &Path, after: &Path) -> Result<(Vec<FileChange>, usize)
         });
     }
     Ok((files, omitted))
+}
+
+// 回滚复用更新预览的展示结构：installedRef = 当前版本，latestRef = 回滚目标。
+// 计划令牌绑定快照目录、目标引用、本地基线指纹、快照内容指纹与启用关系，
+// 任一变化都会使旧令牌失效。
+#[derive(Serialize)]
+struct RollbackPlanPayload<'a> {
+    library_path: &'a Path,
+    snapshot_dir: &'a Path,
+    snapshot_ref: &'a str,
+    installed_ref: &'a str,
+    latest_ref: &'a str,
+    baseline: &'a str,
+    source_digest: &'a str,
+    impacts: &'a [UpdateImpact],
+}
+
+pub fn preview_skill_rollback(db: &Connection, requested: &Path) -> Result<UpdatePreview, String> {
+    with_rollback_context(
+        db,
+        requested,
+        |library_path, meta, snapshot, impacts, files, omitted, baseline, digest| {
+            let blocked_reason =
+                if files.is_empty() && omitted == 0 && meta.installed_ref == snapshot.ref_ {
+                    Some("unchanged")
+                } else if impacts.iter().any(|impact| !impact.connected) {
+                    Some("deployments")
+                } else {
+                    None
+                };
+            let payload = RollbackPlanPayload {
+                library_path,
+                snapshot_dir: Path::new(&snapshot.snapshot_dir),
+                snapshot_ref: &snapshot.ref_,
+                installed_ref: &meta.installed_ref,
+                latest_ref: &meta.latest_ref,
+                baseline: &baseline,
+                source_digest: &digest,
+                impacts: &impacts,
+            };
+            let plan_token = operation_plan_token("rollback", &payload)?;
+            Ok(UpdatePreview {
+                library_path: library_path.to_string_lossy().into_owned(),
+                installed_ref: meta.installed_ref.clone(),
+                latest_ref: snapshot.ref_.clone(),
+                source_digest: digest,
+                can_apply: blocked_reason.is_none(),
+                blocked_reason: blocked_reason.map(str::to_owned),
+                warnings: Vec::new(),
+                suspicious_instructions: Vec::new(),
+                impacts,
+                files,
+                omitted_files: omitted,
+                plan_token,
+            })
+        },
+    )
+}
+
+pub fn apply_skill_rollback(
+    db: &Connection,
+    requested: &Path,
+    token: Option<&str>,
+) -> Result<String, String> {
+    if token.is_none_or(|value| value.trim().is_empty()) {
+        return Err("操作计划缺失，请重新预览".into());
+    }
+    with_rollback_context(
+        db,
+        requested,
+        |library_path, meta, snapshot, impacts, _files, _omitted, baseline, digest| {
+            let payload = RollbackPlanPayload {
+                library_path,
+                snapshot_dir: Path::new(&snapshot.snapshot_dir),
+                snapshot_ref: &snapshot.ref_,
+                installed_ref: &meta.installed_ref,
+                latest_ref: &meta.latest_ref,
+                baseline: &baseline,
+                source_digest: &digest,
+                impacts: &impacts,
+            };
+            let expected_token = operation_plan_token("rollback", &payload)?;
+            verify_operation_plan(&expected_token, token)?;
+            crate::skill_origin::rollback_skill_to_snapshot(
+                db,
+                library_path,
+                Path::new(&snapshot.snapshot_dir),
+                &snapshot.ref_,
+                &baseline,
+            )
+        },
+    )
+}
+
+fn with_rollback_context<T>(
+    db: &Connection,
+    requested: &Path,
+    action: impl FnOnce(
+        &Path,
+        &crate::skill_origin::SkillOriginMeta,
+        &crate::skill_snapshot::SkillSnapshot,
+        Vec<UpdateImpact>,
+        Vec<FileChange>,
+        usize,
+        String,
+        String,
+    ) -> Result<T, String>,
+) -> Result<T, String> {
+    let path = resolve_library_path(db, requested)?;
+    if !is_explicitly_managed(db, &path)? {
+        return Err("只允许回滚 SkillMate 管理的 Skill".into());
+    }
+    verify_managed_content_unchanged(db, &path)?;
+    let meta = load_origin_meta(db, &path.to_string_lossy())?.ok_or("缺少更新来源信息")?;
+    let snapshot = crate::skill_snapshot::list_snapshots(db, &path)?
+        .into_iter()
+        .next()
+        .ok_or("没有可回滚的更新快照")?;
+    let snapshot_path = Path::new(&snapshot.snapshot_dir);
+    if !snapshot_path.is_dir() {
+        return Err("快照内容已不存在，无法回滚".into());
+    }
+    let baseline = content_fingerprint(&path)?;
+    let impacts = collect_update_impacts(db, &path)?;
+    let (files, omitted_files) = compare_files(&path, snapshot_path)?;
+    let digest = content_fingerprint(snapshot_path)?;
+    if content_fingerprint(&path)? != baseline {
+        return Err("预览期间本地内容发生变化，请重新预览".into());
+    }
+    if collect_update_impacts(db, &path)? != impacts {
+        return Err("预览期间启用关系发生变化，请重新预览".into());
+    }
+    action(
+        &path,
+        &meta,
+        &snapshot,
+        impacts,
+        files,
+        omitted_files,
+        baseline,
+        digest,
+    )
 }
 
 #[cfg(test)]

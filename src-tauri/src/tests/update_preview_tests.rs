@@ -1,5 +1,7 @@
 use super::*;
-use crate::update_preview::{apply_update, preview_update};
+use crate::update_preview::{
+    apply_skill_rollback, apply_update, preview_skill_rollback, preview_update,
+};
 
 fn git(repo: &Path, args: &[&str]) {
     let output = std::process::Command::new("git")
@@ -362,5 +364,129 @@ fn prepared_update_rejects_tampering_and_reuses_downloaded_snapshot() {
         },
     )
     .unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn update_success_keeps_previous_version_snapshot_and_prunes_to_limit() {
+    let (db, root, repo, path, _guard) = fixture("update-snapshot-keep");
+    let _snapshot_guard = skill_snapshot::use_test_snapshot_root(root.join("snapshot-store"));
+    let first_ref = skill_origin::load_origin_meta(&db, &path.to_string_lossy())
+        .unwrap()
+        .unwrap()
+        .installed_ref;
+    for (index, text) in ["second", "third", "fourth"].iter().enumerate() {
+        commit(&repo, text);
+        let preview = preview_update(&db, &path).unwrap();
+        apply_update(&db, &path, Some(&preview.plan_token)).unwrap();
+        let snapshots = skill_snapshot::list_snapshots(&db, &path).unwrap();
+        let expected_count = std::cmp::min(index + 1, skill_snapshot::KEEP_SNAPSHOTS_PER_SKILL);
+        assert_eq!(snapshots.len(), expected_count, "after {text}");
+    }
+    let snapshots = skill_snapshot::list_snapshots(&db, &path).unwrap();
+    // 最新快照是 "fourth" 之前的 "third"，最旧的是被裁掉的 "second"
+    assert_eq!(snapshots[0].ref_, snapshots[0].ref_);
+    assert!(snapshots.iter().all(|snapshot| snapshot.ref_ != first_ref));
+    let newest = Path::new(&snapshots[0].snapshot_dir).join("SKILL.md");
+    assert!(fs::read_to_string(newest).unwrap().contains("third"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn rollback_restores_files_metadata_and_keeps_reverse_path() {
+    let (db, root, repo, path, _guard) = fixture("update-rollback-flow");
+    let _snapshot_guard = skill_snapshot::use_test_snapshot_root(root.join("snapshot-store"));
+    let original_ref = skill_origin::load_origin_meta(&db, &path.to_string_lossy())
+        .unwrap()
+        .unwrap()
+        .installed_ref;
+    commit(&repo, "second");
+    let preview = preview_update(&db, &path).unwrap();
+    apply_update(&db, &path, Some(&preview.plan_token)).unwrap();
+    let updated_ref = skill_origin::load_origin_meta(&db, &path.to_string_lossy())
+        .unwrap()
+        .unwrap()
+        .installed_ref;
+    assert_ne!(updated_ref, original_ref);
+
+    // 本地内容在预览后变化：旧令牌失效且不产生写入
+    let stale = preview_skill_rollback(&db, &path).unwrap();
+    assert!(stale.can_apply);
+    fs::write(path.join("SKILL.md"), "manual edit").unwrap();
+    assert!(apply_skill_rollback(&db, &path, Some(&stale.plan_token)).is_err());
+    assert_eq!(
+        fs::read_to_string(path.join("SKILL.md")).unwrap(),
+        "manual edit"
+    );
+    let restored = "---\nname: writer\ndescription: Writing\n---\nsecond\n".to_string();
+    fs::write(path.join("SKILL.md"), &restored).unwrap();
+
+    // 正常回滚：文件、meta、启用位置与快照台账一起收敛
+    let rollback = preview_skill_rollback(&db, &path).unwrap();
+    assert!(rollback.can_apply);
+    assert_eq!(rollback.latest_ref, original_ref);
+    let rollback_json = serde_json::to_value(&rollback).unwrap();
+    assert_eq!(rollback_json["files"][0]["kind"], "modified");
+    assert!(rollback_json["files"][0]["after"]
+        .as_str()
+        .unwrap()
+        .contains("original"));
+    apply_skill_rollback(&db, &path, Some(&rollback.plan_token)).unwrap();
+    assert!(fs::read_to_string(path.join("SKILL.md"))
+        .unwrap()
+        .contains("original"));
+    verify_managed_content_unchanged(&db, &path).unwrap();
+    let meta = skill_origin::load_origin_meta(&db, &path.to_string_lossy())
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.installed_ref, original_ref);
+    assert_eq!(meta.latest_ref, updated_ref);
+    assert_eq!(meta.sync_state, "behind");
+    assert_eq!(meta.sync_message, "已回滚到上一版本");
+    let snapshots = skill_snapshot::list_snapshots(&db, &path).unwrap();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].ref_, updated_ref);
+
+    // 回滚后的「前进」：再次回滚即可回到 second，方向可逆
+    let forward = preview_skill_rollback(&db, &path).unwrap();
+    apply_skill_rollback(&db, &path, Some(&forward.plan_token)).unwrap();
+    assert!(fs::read_to_string(path.join("SKILL.md"))
+        .unwrap()
+        .contains("second"));
+    let meta = skill_origin::load_origin_meta(&db, &path.to_string_lossy())
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.installed_ref, updated_ref);
+    assert_eq!(meta.sync_state, "current");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn rollback_failure_restores_files_metadata_and_snapshot_ledger() {
+    let (db, root, repo, path, _guard) = fixture("rollback-failure");
+    let _snapshot_guard = skill_snapshot::use_test_snapshot_root(root.join("snapshot-store"));
+    commit(&repo, "second");
+    let preview = preview_update(&db, &path).unwrap();
+    apply_update(&db, &path, Some(&preview.plan_token)).unwrap();
+    let second_content = fs::read(path.join("SKILL.md")).unwrap();
+    let second_ref = skill_origin::load_origin_meta(&db, &path.to_string_lossy())
+        .unwrap()
+        .unwrap()
+        .installed_ref;
+    let rollback = preview_skill_rollback(&db, &path).unwrap();
+    let snapshot_count = skill_snapshot::list_snapshots(&db, &path).unwrap().len();
+    db.execute_batch("CREATE TRIGGER fail_library_refresh BEFORE UPDATE ON library_skills WHEN NEW.content_hash != OLD.content_hash BEGIN SELECT RAISE(FAIL, 'injected rollback failure'); END;").unwrap();
+    let error = apply_skill_rollback(&db, &path, Some(&rollback.plan_token)).unwrap_err();
+    assert!(error.contains("injected rollback failure"), "{error}");
+    assert_eq!(fs::read(path.join("SKILL.md")).unwrap(), second_content);
+    verify_managed_content_unchanged(&db, &path).unwrap();
+    let meta = skill_origin::load_origin_meta(&db, &path.to_string_lossy())
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.installed_ref, second_ref);
+    assert_eq!(
+        skill_snapshot::list_snapshots(&db, &path).unwrap().len(),
+        snapshot_count
+    );
     fs::remove_dir_all(root).unwrap();
 }

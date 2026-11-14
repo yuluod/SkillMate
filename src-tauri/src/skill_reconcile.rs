@@ -31,6 +31,10 @@ struct ReconcileJournal {
     metadata_checkpoint: Option<ManagedMetadataCheckpoint>,
     #[serde(default)]
     file_checkpoints: Vec<FileCheckpoint>,
+    // 提交成功后把被替换的旧主副本移入该目录（更新快照），而不是删除。
+    // 带 serde(default)：旧版本日志没有该字段也能照常解析。
+    #[serde(default)]
+    snapshot_request: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,6 +123,7 @@ impl ReconcileTransaction<'static> {
             Vec::new(),
             None,
             journal_directory,
+            None,
         )
     }
 
@@ -135,17 +140,20 @@ impl ReconcileTransaction<'static> {
             capture_file_checkpoints(checkpoint_paths)?,
             None,
             journal_directory,
+            None,
         )
     }
 }
 
 impl<'db> ReconcileTransaction<'db> {
-    // Related paths participate in metadata/sidecar recovery without moving their content.
-    pub fn prepare_managed_with_related_paths(
+    /// `snapshot_request` 指定提交成功后旧主副本的保留位置（更新快照）。
+    /// 快照保留失败只降级为提交警告，不影响更新本身的成功语义。
+    pub fn prepare_managed_with_related_paths_and_snapshot(
         db: &'db Connection,
         removals: &[PathBuf],
         install_targets: &[PathBuf],
         related_paths: &[PathBuf],
+        snapshot_request: Option<&Path>,
     ) -> Result<Self, String> {
         let mut metadata_paths = removals.to_vec();
         metadata_paths.extend_from_slice(install_targets);
@@ -158,6 +166,7 @@ impl<'db> ReconcileTransaction<'db> {
             Vec::new(),
             Some(db),
             &journal_directory(),
+            snapshot_request,
         )
     }
 
@@ -185,6 +194,7 @@ impl<'db> ReconcileTransaction<'db> {
             Vec::new(),
             Some(db),
             &journal_directory(),
+            None,
         )
     }
 
@@ -229,6 +239,7 @@ impl<'db> ReconcileTransaction<'db> {
             capture_file_checkpoints(checkpoint_paths)?,
             Some(db),
             journal_directory,
+            None,
         )
     }
 
@@ -338,6 +349,7 @@ fn prepare_transaction<'db>(
     file_checkpoints: Vec<FileCheckpoint>,
     db: Option<&'db Connection>,
     journal_directory: &Path,
+    snapshot_request: Option<&Path>,
 ) -> Result<ReconcileTransaction<'db>, String> {
     let created_targets = unique_paths(
         install_targets
@@ -365,6 +377,7 @@ fn prepare_transaction<'db>(
         moved_targets,
         metadata_checkpoint,
         file_checkpoints,
+        snapshot_request: snapshot_request.map(Path::to_path_buf),
     };
     let journal_path = if journal.created_targets.is_empty()
         && journal.moved_targets.is_empty()
@@ -607,11 +620,22 @@ fn sync_journal_commit_state(journal: &ReconcileJournal) -> Result<(), String> {
 
 fn cleanup_committed_journal(journal: &ReconcileJournal) -> Result<(), String> {
     let mut failures = Vec::new();
+    // 更新快照：单目标事务提交成功后把旧主副本移入快照库而不是删除；
+    // 快照保留失败回退为删除并记入警告，不改变提交语义。快照保留失败时
+    // 提交日志不会被移除，启动恢复会再次尝试。
+    let snapshot_request = journal
+        .snapshot_request
+        .as_deref()
+        .filter(|_| journal.moved_targets.len() == 1);
     for (_, backup) in &journal.moved_targets {
         if path_exists(backup) {
-            if let Err(error) = remove_path(backup)
-                .and_then(|_| sync_parent(backup).map_err(|error| error.to_string()))
-            {
+            let result = match snapshot_request {
+                Some(store) => preserve_snapshot_backup(backup, store),
+                None => {
+                    remove_path(backup).and_then(|_| sync_parent(backup).map_err(|e| e.to_string()))
+                }
+            };
+            if let Err(error) = result {
                 failures.push(format!("{}: {}", backup.to_string_lossy(), error));
             }
         }
@@ -621,6 +645,17 @@ fn cleanup_committed_journal(journal: &ReconcileJournal) -> Result<(), String> {
     } else {
         Err(format!("清理回滚暂存失败: {}", failures.join("；")))
     }
+}
+
+fn preserve_snapshot_backup(backup: &Path, store: &Path) -> Result<(), String> {
+    if let Some(parent) = store.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    if path_exists(store) {
+        return Err("快照目标目录已存在".to_string());
+    }
+    fs::rename(backup, store).map_err(|error| error.to_string())?;
+    sync_parent(store).map_err(|error| error.to_string())
 }
 
 fn write_new_journal(

@@ -119,5 +119,26 @@ export function useUpdateFlow({ updatable, showToast, loadData }) {
     } finally { finish(operation, [path]); }
   }, [begin, finish, language, loadData, probe, showToast, t]);
 
-  return { updateState, resetUpdateState, getSyncInfo, checkAllUpdates, checkUpdate, updateSkill };
+  // 回滚走与更新相同的两阶段语义：预览弹窗确认后携带计划令牌执行。
+  const rollbackSkill = useCallback(async (path, planToken) => {
+    if (active.current.has(path)) return false;
+    const operation = begin([path], true);
+    try {
+      const result = await skillmateApi.updates.applyRollback(path, planToken);
+      if (!isCurrent(operation)) return undefined;
+      showToast(language === "en"
+        ? t("updates.toast.rolledBack")
+        : (typeof result === "string" && result.trim() ? result : t("updates.toast.rolledBack")), "success");
+      await probe(operation, path);
+      if (!isCurrent(operation)) return;
+      await loadData({ resetUpdates: false });
+      return true;
+    } catch (error) {
+      if (!isCurrent(operation)) return undefined;
+      showToast(t("updates.toast.rollbackFailed", { message: toUserErrorMessage(error, t("error.safeRetry")) }), "error");
+      return false;
+    } finally { finish(operation, [path]); }
+  }, [begin, finish, language, loadData, probe, showToast, t]);
+
+  return { updateState, resetUpdateState, getSyncInfo, checkAllUpdates, checkUpdate, updateSkill, rollbackSkill };
 }
