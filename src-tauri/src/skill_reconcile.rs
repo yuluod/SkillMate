@@ -20,6 +20,20 @@ static TRANSACTION_COUNTER: AtomicU64 = AtomicU64::new(0);
 thread_local! {
     static DIRECTORY_SYNC_FAILURE: std::cell::RefCell<Option<PathBuf>> =
         const { std::cell::RefCell::new(None) };
+    // 注入快照保留的 rename 失败（模拟跨文件系统 EXDEV 等场景）
+    static SNAPSHOT_RENAME_FAILURE: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// 提交成功后把被替换的旧主副本保留为更新快照的意图：目标目录、来源
+/// 版本与内容指纹随事务日志落盘。提交成功但台账登记前崩溃时，恢复流程
+/// 据此幂等补登记，避免刚保留的旧版本被孤儿清理误删。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotRequest {
+    pub dir: PathBuf,
+    #[serde(rename = "ref")]
+    pub snapshot_ref: String,
+    pub content_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +45,9 @@ struct ReconcileJournal {
     metadata_checkpoint: Option<ManagedMetadataCheckpoint>,
     #[serde(default)]
     file_checkpoints: Vec<FileCheckpoint>,
+    // 带 serde(default)：旧版本日志没有该字段也能照常解析。
+    #[serde(default)]
+    snapshot: Option<SnapshotRequest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,6 +136,7 @@ impl ReconcileTransaction<'static> {
             Vec::new(),
             None,
             journal_directory,
+            None,
         )
     }
 
@@ -135,17 +153,21 @@ impl ReconcileTransaction<'static> {
             capture_file_checkpoints(checkpoint_paths)?,
             None,
             journal_directory,
+            None,
         )
     }
 }
 
 impl<'db> ReconcileTransaction<'db> {
-    // Related paths participate in metadata/sidecar recovery without moving their content.
-    pub fn prepare_managed_with_related_paths(
+    /// `snapshot` 描述提交成功后旧主副本的保留位置与版本信息（更新快照）。
+    /// 意图随事务日志落盘：提交成功但台账登记前崩溃时，恢复流程会幂等
+    /// 补登记。快照保留失败降级为提交警告，不影响更新本身的成功语义。
+    pub fn prepare_managed_with_related_paths_and_snapshot(
         db: &'db Connection,
         removals: &[PathBuf],
         install_targets: &[PathBuf],
         related_paths: &[PathBuf],
+        snapshot: Option<&SnapshotRequest>,
     ) -> Result<Self, String> {
         let mut metadata_paths = removals.to_vec();
         metadata_paths.extend_from_slice(install_targets);
@@ -158,6 +180,7 @@ impl<'db> ReconcileTransaction<'db> {
             Vec::new(),
             Some(db),
             &journal_directory(),
+            snapshot,
         )
     }
 
@@ -185,6 +208,7 @@ impl<'db> ReconcileTransaction<'db> {
             Vec::new(),
             Some(db),
             &journal_directory(),
+            None,
         )
     }
 
@@ -229,6 +253,7 @@ impl<'db> ReconcileTransaction<'db> {
             capture_file_checkpoints(checkpoint_paths)?,
             Some(db),
             journal_directory,
+            None,
         )
     }
 
@@ -242,8 +267,10 @@ impl<'db> ReconcileTransaction<'db> {
             Ok(None) => {}
             Err(error) => return Err(self.rollback_precommit_failure(error)),
         }
-        if let Err(warning) = self.finish_commit() {
-            warnings.push(warning);
+        match self.finish_commit() {
+            Ok(Some(warning)) => warnings.push(warning),
+            Ok(None) => {}
+            Err(error) => warnings.push(error),
         }
         Ok((!warnings.is_empty()).then(|| warnings.join("；")))
     }
@@ -300,16 +327,33 @@ impl<'db> ReconcileTransaction<'db> {
         }
     }
 
-    fn finish_commit(&mut self) -> Result<(), String> {
+    fn finish_commit(&mut self) -> Result<Option<String>, String> {
         if self.finalized {
-            return Ok(());
+            return Ok(None);
         }
-        let result = cleanup_committed_journal(&self.journal);
-        if result.is_ok() {
-            self.remove_journal()?;
-            self.finalized = true;
+        let notice = cleanup_committed_journal(&self.journal)?;
+        // 快照台账登记纳入提交过程：登记成功之后才清理日志。提交与登记
+        // 之间退出时日志仍在磁盘上，启动恢复按日志中的快照意图幂等补
+        // 登记，孤儿清理不会误删刚保留的旧版本。已放弃保留（快照目录
+        // 缺失）时无需登记。
+        if let (Some(db), Some(snapshot), Some((target, _))) = (
+            self.db,
+            self.journal.snapshot.as_ref(),
+            self.journal.moved_targets.first(),
+        ) {
+            if snapshot.dir.is_dir() {
+                crate::skill_snapshot::record_snapshot_idempotent(
+                    db,
+                    target,
+                    &snapshot.dir,
+                    &snapshot.snapshot_ref,
+                    &snapshot.content_hash,
+                )?;
+            }
         }
-        result
+        self.remove_journal()?;
+        self.finalized = true;
+        Ok(notice)
     }
 
     fn remove_journal(&mut self) -> Result<(), String> {
@@ -338,6 +382,7 @@ fn prepare_transaction<'db>(
     file_checkpoints: Vec<FileCheckpoint>,
     db: Option<&'db Connection>,
     journal_directory: &Path,
+    snapshot: Option<&SnapshotRequest>,
 ) -> Result<ReconcileTransaction<'db>, String> {
     let created_targets = unique_paths(
         install_targets
@@ -365,6 +410,7 @@ fn prepare_transaction<'db>(
         moved_targets,
         metadata_checkpoint,
         file_checkpoints,
+        snapshot: snapshot.cloned(),
     };
     let journal_path = if journal.created_targets.is_empty()
         && journal.moved_targets.is_empty()
@@ -481,7 +527,31 @@ fn recover_journal_file(db: Option<&Connection>, path: &Path) -> Result<(), Stri
         .and_then(|value| value.to_str())
         .unwrap_or_default();
     if name.ends_with(COMMITTED_SUFFIX) {
-        cleanup_committed_journal(&journal)?;
+        // 无数据库连接时无法补登记快照台账：保留日志等待下次带连接的
+        // 恢复，避免孤儿清理误删刚保留的旧版本。
+        if db.is_none() && journal.snapshot.as_ref().is_some_and(|s| s.dir.is_dir()) {
+            return Err("缺少数据库连接，无法补登记更新快照".to_string());
+        }
+        if let Some(notice) = cleanup_committed_journal(&journal)? {
+            eprintln!("{notice}");
+        }
+        // 提交成功但台账登记前退出的恢复：幂等补登记更新快照，
+        // 避免刚保留的旧版本被孤儿清理误删。快照目录缺失时无可
+        // 保留内容，跳过登记交由孤儿清理收敛。
+        if let (Some(db), Some(snapshot), Some((target, _))) =
+            (db, journal.snapshot.as_ref(), journal.moved_targets.first())
+        {
+            if snapshot.dir.is_dir() {
+                crate::skill_snapshot::record_snapshot_idempotent(
+                    db,
+                    target,
+                    &snapshot.dir,
+                    &snapshot.snapshot_ref,
+                    &snapshot.content_hash,
+                )
+                .map_err(|error| format!("补登记更新快照失败: {error}"))?;
+            }
+        }
     } else {
         rollback_prepared_journal(&journal, db)?;
     }
@@ -605,22 +675,114 @@ fn sync_journal_commit_state(journal: &ReconcileJournal) -> Result<(), String> {
     Ok(())
 }
 
-fn cleanup_committed_journal(journal: &ReconcileJournal) -> Result<(), String> {
+/// 清理已提交事务的暂存区。`Ok(Some(notice))` 表示清理完成但需要向用户
+/// 呈现通知（如快照保留失败被放弃）；`Err` 表示暂存无法消费，提交日志
+/// 将保留并由恢复流程重试。
+fn cleanup_committed_journal(journal: &ReconcileJournal) -> Result<Option<String>, String> {
     let mut failures = Vec::new();
+    let mut notices = Vec::new();
+    // 更新快照：单目标事务提交成功后把旧主副本移入快照库而不是删除。
+    // 保留失败时逐级降级（复制 → 放弃快照并删除暂存），保证已提交日志
+    // 总能被清理，不会永久阻断后续恢复；此时提交语义不变。
+    let snapshot_request = journal
+        .snapshot
+        .as_ref()
+        .filter(|_| journal.moved_targets.len() == 1);
     for (_, backup) in &journal.moved_targets {
         if path_exists(backup) {
-            if let Err(error) = remove_path(backup)
-                .and_then(|_| sync_parent(backup).map_err(|error| error.to_string()))
-            {
-                failures.push(format!("{}: {}", backup.to_string_lossy(), error));
+            let result = match snapshot_request {
+                Some(snapshot) => preserve_snapshot_backup(backup, snapshot),
+                None => {
+                    remove_path(backup).and_then(|_| sync_parent(backup).map_err(|e| e.to_string()))
+                }
+            };
+            if let Err(error) = result {
+                // 最后降级：快照库永久不可写（权限不足、磁盘满等）时放弃
+                // 保留旧版本并删除暂存——阻断所有受管写操作去保一份快照
+                // 不值得；放弃的信息以通知呈现。
+                let abandoned = remove_path(backup)
+                    .and_then(|_| sync_parent(backup).map_err(|e| e.to_string()));
+                match abandoned {
+                    Ok(()) => notices.push(format!("更新快照保留失败，已放弃保留旧版本: {error}")),
+                    Err(delete_error) => failures.push(format!(
+                        "{}: 保留失败 {error}；删除降级也失败 {delete_error}",
+                        backup.to_string_lossy()
+                    )),
+                }
             }
         }
     }
     if failures.is_empty() {
-        Ok(())
+        Ok((!notices.is_empty()).then(|| notices.join("；")))
     } else {
         Err(format!("清理回滚暂存失败: {}", failures.join("；")))
     }
+}
+
+/// 把事务暂存的旧主副本保留进快照库。统一库与快照库可能位于不同文件
+/// 系统：rename 不可用时（EXDEV 等跨卷错误）降级为复制 + 删除暂存。
+/// 暂存中的完整备份只有在快照内容通过指纹校验（与快照意图一致）之后
+/// 才会被删除——复制中断留下的半成品会被移除并重新复制，永远不会
+/// 顶替完整备份。
+fn preserve_snapshot_backup(backup: &Path, snapshot: &SnapshotRequest) -> Result<(), String> {
+    let store = &snapshot.dir;
+    if let Some(parent) = store.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    if path_exists(store) {
+        // 目标已存在可能是上次复制中断的半成品：只有内容指纹与快照
+        // 意图一致才视为完整并允许删除备份；否则删除半成品重新复制。
+        match crate::managed_state::content_fingerprint(store) {
+            Ok(hash) if hash == snapshot.content_hash => {
+                if path_exists(backup) {
+                    remove_path(backup)
+                        .and_then(|_| sync_parent(backup).map_err(|error| error.to_string()))?;
+                }
+                return Ok(());
+            }
+            _ => {
+                let _ = remove_path(store);
+            }
+        }
+    }
+    let rename_result = {
+        #[cfg(test)]
+        {
+            let injected = SNAPSHOT_RENAME_FAILURE.with(|flag| flag.borrow().clone());
+            if injected.as_deref() == Some(store) {
+                Err(std::io::Error::other("simulated EXDEV rename failure"))
+            } else {
+                fs::rename(backup, store)
+            }
+        }
+        #[cfg(not(test))]
+        fs::rename(backup, store)
+    };
+    match rename_result {
+        Ok(()) => {}
+        Err(_) => {
+            let copy_result = crate::skill_install::copy_dir_recursive(backup, store);
+            if let Err(error) = copy_result {
+                // 清理复制半成品，保证下次恢复从干净状态重试
+                let _ = remove_path(store);
+                return Err(format!("快照跨卷复制失败: {error}"));
+            }
+        }
+    }
+    // 完整性校验：复制/移动完成后指纹必须与快照意图一致，否则删除
+    // 结果并报错，完整备份保留在暂存中等待下次恢复重试。
+    let final_hash = crate::managed_state::content_fingerprint(store)
+        .map_err(|error| format!("快照完整性校验失败: {error}"))?;
+    if final_hash != snapshot.content_hash {
+        let _ = remove_path(store);
+        return Err("快照复制后内容与原始指纹不一致".to_string());
+    }
+    sync_parent(store).map_err(|error| error.to_string())?;
+    if path_exists(backup) {
+        remove_path(backup).map_err(|error| error.to_string())?;
+        sync_parent(backup).map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 fn write_new_journal(
@@ -1231,5 +1393,218 @@ mod tests {
         assert!(!removed.exists());
         assert!(fs::read_dir(&journals).unwrap().next().is_none());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn committed_snapshot_recovery_registers_ledger_idempotently() {
+        let db = managed_database();
+        crate::skill_snapshot::ensure_table(&db).unwrap();
+        let base = test_root("snapshot-recovery");
+        let journals = base.join("journals");
+        let root = base.join("skills");
+        let skill = root.join("writer");
+        seed_managed_skill(&db, &root, &skill);
+
+        // 模拟「提交成功、台账登记前退出」：旧主副本已移入快照目录
+        let snapshot_dir = base.join("snapshot-store/writer/1");
+        fs::create_dir_all(&snapshot_dir).unwrap();
+        fs::write(snapshot_dir.join("SKILL.md"), "old content").unwrap();
+        let journal = ReconcileJournal {
+            version: JOURNAL_VERSION,
+            created_targets: vec![],
+            moved_targets: vec![(skill.clone(), base.join("unused-backup"))],
+            metadata_checkpoint: None,
+            file_checkpoints: vec![],
+            snapshot: Some(SnapshotRequest {
+                dir: snapshot_dir.clone(),
+                snapshot_ref: "old-ref".into(),
+                content_hash: crate::managed_state::content_fingerprint(&snapshot_dir).unwrap(),
+            }),
+        };
+        let journal_path = journals.join("tx.committed.json");
+        fs::create_dir_all(&journals).unwrap();
+        fs::write(&journal_path, serde_json::to_vec(&journal).unwrap()).unwrap();
+
+        recover_pending_transactions_in(Some(&db), &journals).unwrap();
+        let snapshots = crate::skill_snapshot::list_snapshots(&db, &skill).unwrap();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].ref_, "old-ref");
+        assert!(snapshot_dir.is_dir(), "补登记不得删除快照目录");
+        assert!(!journal_path.exists());
+
+        // 幂等：同一意图重复恢复不产生重复行
+        fs::write(&journal_path, serde_json::to_vec(&journal).unwrap()).unwrap();
+        recover_pending_transactions_in(Some(&db), &journals).unwrap();
+        assert_eq!(
+            crate::skill_snapshot::list_snapshots(&db, &skill)
+                .unwrap()
+                .len(),
+            1
+        );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn snapshot_preservation_falls_back_to_copy_when_rename_fails() {
+        let db = managed_database();
+        crate::skill_snapshot::ensure_table(&db).unwrap();
+        let base = test_root("snapshot-exdev");
+        let journals = base.join("journals");
+        let root = base.join("skills");
+        let skill = root.join("writer");
+        seed_managed_skill(&db, &root, &skill);
+        let snapshot_request = SnapshotRequest {
+            dir: base.join("snapshot-store/writer/1"),
+            snapshot_ref: "old-ref".into(),
+            content_hash: crate::managed_state::content_fingerprint(&skill).unwrap(),
+        };
+        // 注入 rename 失败（模拟统一库与快照库跨文件系统的 EXDEV）
+        SNAPSHOT_RENAME_FAILURE.with(|flag| {
+            *flag.borrow_mut() = Some(snapshot_request.dir.clone());
+        });
+
+        let transaction = prepare_transaction(
+            std::slice::from_ref(&skill),
+            std::slice::from_ref(&skill),
+            None,
+            Vec::new(),
+            Some(&db),
+            &journals,
+            Some(&snapshot_request),
+        )
+        .unwrap();
+        // 模拟更新已完成的内容替换（copy_dir_recursive 会先建目标目录）
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), "new content").unwrap();
+        transaction.commit().unwrap();
+        SNAPSHOT_RENAME_FAILURE.with(|flag| {
+            *flag.borrow_mut() = None;
+        });
+
+        // 复制降级：旧内容进入快照库，暂存与提交日志均已消费
+        assert_eq!(
+            fs::read_to_string(snapshot_request.dir.join("SKILL.md")).unwrap(),
+            "old content"
+        );
+        assert!(fs::read_dir(&journals).unwrap().next().is_none());
+        // 提交即登记：调用方未做任何台账写入，提交后行已存在
+        let snapshots = crate::skill_snapshot::list_snapshots(&db, &skill).unwrap();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].ref_, "old-ref");
+
+        // 后续独立事务不受影响
+        let second_skill = root.join("second");
+        seed_managed_skill(&db, &root, &second_skill);
+        let second = prepare_transaction(
+            std::slice::from_ref(&second_skill),
+            std::slice::from_ref(&second_skill),
+            None,
+            Vec::new(),
+            Some(&db),
+            &journals,
+            None,
+        )
+        .unwrap();
+        fs::create_dir_all(&second_skill).unwrap();
+        fs::write(second_skill.join("SKILL.md"), "second content").unwrap();
+        second.commit().unwrap();
+        assert!(fs::read_dir(&journals).unwrap().next().is_none());
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn interrupted_copy_does_not_delete_backup_until_snapshot_complete() {
+        let base = test_root("snapshot-partial");
+        // 暂存中的完整旧主副本：SKILL.md + references/a.md
+        let backup = base.join("backup/writer");
+        fs::create_dir_all(backup.join("references")).unwrap();
+        fs::write(backup.join("SKILL.md"), "old content").unwrap();
+        fs::write(backup.join("references/a.md"), "ref").unwrap();
+        let snapshot = SnapshotRequest {
+            dir: base.join("store/writer/1"),
+            snapshot_ref: "old-ref".into(),
+            content_hash: crate::managed_state::content_fingerprint(&backup).unwrap(),
+        };
+        // 模拟复制中断：快照目录只剩 SKILL.md 的半成品
+        fs::create_dir_all(&snapshot.dir).unwrap();
+        fs::write(snapshot.dir.join("SKILL.md"), "old content").unwrap();
+
+        preserve_snapshot_backup(&backup, &snapshot).unwrap();
+
+        // 半成品指纹不一致 → 删除并从备份重新复制；备份只有在完整性
+        // 校验通过后才删除，完整旧版本不会被半成品顶替丢失
+        assert!(!backup.exists());
+        assert!(snapshot.dir.join("references/a.md").exists());
+        assert_eq!(
+            crate::managed_state::content_fingerprint(&snapshot.dir).unwrap(),
+            snapshot.content_hash
+        );
+        let _ = remove_path(&base);
+    }
+
+    #[test]
+    fn snapshot_preservation_failure_abandons_snapshot_and_unblocks_operations() {
+        let db = managed_database();
+        let base = test_root("snapshot-readonly");
+        let journals = base.join("journals");
+        let root = base.join("skills");
+        let skill = root.join("writer");
+        seed_managed_skill(&db, &root, &skill);
+        // 快照库根路径被普通文件占用：建目录在所有平台必然失败
+        // （模拟权限不足、磁盘满等永久性失败——与 EXDEV 的可恢复
+        // 降级不同，这类失败无法通过重试或复制解决）
+        let store_root = base.join("snapshot-store");
+        fs::write(&store_root, "occupied").unwrap();
+        let snapshot_request = SnapshotRequest {
+            dir: store_root.join("writer/1"),
+            snapshot_ref: "old-ref".into(),
+            content_hash: "old-hash".into(),
+        };
+
+        let transaction = prepare_transaction(
+            std::slice::from_ref(&skill),
+            std::slice::from_ref(&skill),
+            None,
+            Vec::new(),
+            Some(&db),
+            &journals,
+            Some(&snapshot_request),
+        )
+        .unwrap();
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), "new content").unwrap();
+        // 提交成功但携带「放弃保留快照」通知；日志与暂存均被消费
+        let message = transaction
+            .commit()
+            .unwrap()
+            .expect("commit should carry the abandonment notice");
+        assert!(message.contains("放弃保留"), "{message}");
+
+        assert!(fs::read_dir(&journals).unwrap().next().is_none());
+        assert!(skill.is_dir());
+        assert_eq!(
+            fs::read_to_string(skill.join("SKILL.md")).unwrap(),
+            "new content"
+        );
+
+        // 后续独立事务不受阻断
+        let second_skill = root.join("second");
+        seed_managed_skill(&db, &root, &second_skill);
+        let second = prepare_transaction(
+            std::slice::from_ref(&second_skill),
+            std::slice::from_ref(&second_skill),
+            None,
+            Vec::new(),
+            Some(&db),
+            &journals,
+            None,
+        )
+        .unwrap();
+        fs::create_dir_all(&second_skill).unwrap();
+        fs::write(second_skill.join("SKILL.md"), "second content").unwrap();
+        second.commit().unwrap();
+        assert!(fs::read_dir(&journals).unwrap().next().is_none());
+
+        let _ = remove_path(&base);
     }
 }

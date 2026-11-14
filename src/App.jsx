@@ -45,6 +45,7 @@ import { useSkillUpdateSchedule } from "./lib/useSkillUpdateSchedule.js";
 import { useProjectWorkspace } from "./lib/useProjectWorkspace.js";
 import ProjectWorkspaceBar from "./components/ProjectWorkspaceBar.jsx";
 import UpdatePreviewModal from "./components/UpdatePreviewModal.jsx";
+import RollbackPreviewModal from "./components/RollbackPreviewModal.jsx";
 import { createResettableTimer } from "./lib/toastTimer.mjs";
 import { toUserErrorMessage } from "./lib/errorMessage.mjs";
 import { skillmateApi } from "./lib/skillmateApi.js";
@@ -196,6 +197,9 @@ function App() {
   const projectWorkspace = useProjectWorkspace();
   const projectWorkspacePath = projectWorkspace.path;
   const [updatePreviewPath, setUpdatePreviewPath] = useState("");
+  const [rollbackPreviewPath, setRollbackPreviewPath] = useState("");
+  // 数据版本：每次成功加载后递增，详情栏据此刷新更新快照查询。
+  const [dataRevision, setDataRevision] = useState(0);
   const {
     input: searchInput,
     query: search,
@@ -354,6 +358,7 @@ function App() {
       const { assistants, librarySkills, tags, scenarios, git, ignoredPaths, diagnostics = [] } = await skillmateApi.inventory.loadDashboard();
       if (!mountedRef.current || requestId !== loadRequestRef.current) return;
       const failedSections = new Set(diagnostics.map((item) => item.section));
+      setDataRevision((revision) => revision + 1);
       setData((current) => ({
         assistants,
         librarySkills,
@@ -504,6 +509,7 @@ function App() {
     checkAllSilent,
     checkUpdate,
     updateSkill,
+    rollbackSkill,
   } = useUpdateFlow({ updatable, showToast, loadData });
   resetUpdateStateRef.current = resetUpdateState;
   // 定时检查使用完整可检查库存：不受搜索、标签与场景筛选影响，
@@ -998,6 +1004,8 @@ function App() {
               onAdopt={setAdoptionCandidate}
               onUnlink={unlinkSymlink}
               onRemove={remove}
+              onRollback={setRollbackPreviewPath}
+              dataRevision={dataRevision}
               onCreate={() => setCreateSkillOpen(true)}
               onCheckAll={checkAllUpdates}
               checkBusy={Object.values(updateState).some(state => state.checking || state.updating)}
@@ -1177,6 +1185,7 @@ function App() {
       {createSkillOpen && <CreateSkillModal onClose={() => setCreateSkillOpen(false)} onComplete={completeCreateSkill} />}
       {duplicateGroup && <DuplicateSkillModal group={duplicateGroup} onClose={() => setDuplicateGroup(null)} onAdopt={adoptDuplicateCopy} />}
       {updatePreviewPath && <UpdatePreviewModal path={updatePreviewPath} onClose={() => setUpdatePreviewPath("")} onConfirm={updateSkill} />}
+      {rollbackPreviewPath && <RollbackPreviewModal path={rollbackPreviewPath} onClose={() => setRollbackPreviewPath("")} onConfirm={rollbackSkill} />}
 
       {adoptionCandidate && <AdoptionModal candidate={adoptionCandidate} onClose={() => setAdoptionCandidate(null)} onComplete={completeAdoption} />}
 
