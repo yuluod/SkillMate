@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AiAvatar, AssistantsView, SkillsView } from "./InventoryViews.jsx";
 import DashboardView, { MarketDiscovery } from "./DashboardView.jsx";
-import { AdoptionModal, InstallModal, PreviewModal, TagManagerModal } from "./SkillMateModals.jsx";
+import { AdoptionModal, CreateSkillModal, InstallModal, PreviewModal, TagManagerModal } from "./SkillMateModals.jsx";
 import SettingsView from "./SettingsView.jsx";
 import ScenarioView from "./ScenarioView.jsx";
 import { persistPreference } from "../App.jsx";
@@ -1923,5 +1923,37 @@ describe("应用更新流程", () => {
       unmount();
       vi.useRealTimers();
     }
+  });
+});
+
+describe("模板创建", () => {
+  it("非法输入实时提示，校验通过后才允许创建", async () => {
+    const user = userEvent.setup();
+    const onComplete = vi.fn();
+    let valid = false;
+    invoke.mockImplementation(async (command, args = {}) => {
+      if (command === "validate_skill_draft") {
+        return { ok: valid, errors: valid ? [] : [`已存在同名 Skill 登记: ${args.name}`] };
+      }
+      if (command === "create_library_skill") return "/tmp/skillmate/skills/writer";
+      throw new Error(`未处理命令: ${command}`);
+    });
+    render(<CreateSkillModal onClose={vi.fn()} onComplete={onComplete} />);
+
+    const confirm = () => screen.getByRole("button", { name: "创建" });
+    expect(confirm().disabled).toBe(true);
+
+    await user.type(screen.getByLabelText("名称（目录名）"), "writer");
+    await user.type(screen.getByLabelText("描述"), "写作模板");
+    expect(await screen.findByText("已存在同名 Skill 登记: writer")).toBeTruthy();
+    expect(confirm().disabled).toBe(true);
+
+    valid = true;
+    await user.type(screen.getByLabelText("描述"), "！");
+    expect(await screen.findByText("校验通过，可以创建")).toBeTruthy();
+
+    await user.click(confirm());
+    expect(invoke.mock.calls.some(([command, args]) => command === "create_library_skill" && args.name === "writer")).toBe(true);
+    expect(onComplete).toHaveBeenCalledWith("/tmp/skillmate/skills/writer");
   });
 });

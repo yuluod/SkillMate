@@ -5,6 +5,7 @@ import appIcon from "../src-tauri/icons/128x128.png";
 import {
   ConfirmModal,
   AdoptionModal,
+  CreateSkillModal,
   DriftSyncModal,
   InstallModal,
   PreviewModal,
@@ -169,6 +170,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [init, setInit] = useState(true);
   const [installOpen, setInstallOpen] = useState(false);
+  const [createSkillOpen, setCreateSkillOpen] = useState(false);
   const [discoveryOpen, setDiscoveryOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [preview, setPreview] = useState({ title: "", content: "", validation: null, diagnostics: [] });
@@ -818,6 +820,13 @@ function App() {
     setInstallOpen(true);
   }, [prepareInstallSource, projectWorkspacePath, setInstallOpen, setInstallProjectPath, setInstallTargetMode]);
 
+  // 创建成功后刷新数据并直接进入「启用到…」流程：新库 Skill 立即可用。
+  async function completeCreateSkill(path) {
+    showToast(t("create.done"), "success");
+    await loadData({ resetUpdates: false });
+    enableLibrarySkill({ path });
+  }
+
   async function completeDrift(message) {
     showToast(typeof message === "string" && message.trim() ? message : t("drift.complete"), "success");
     await loadData();
@@ -935,6 +944,7 @@ function App() {
               onAdopt={setAdoptionCandidate}
               onUnlink={unlinkSymlink}
               onRemove={remove}
+              onCreate={() => setCreateSkillOpen(true)}
               onCheckAll={checkAllUpdates}
               checkBusy={Object.values(updateState).some(state => state.checking || state.updating)}
               onCheck={checkUpdate}
@@ -1109,6 +1119,7 @@ function App() {
       {trashReceipt && <div className="undo-bar" role="status"><span>{t("trash.done", { name: trashReceipt.name })}</span><button className="btn btn-secondary btn-sm" onClick={undoTrash}><Icon name="undo" size={14} />{t("trash.undo")}</button></div>}
 
       {driftGroup && <DriftSyncModal group={driftGroup} onClose={() => setDriftGroup(null)} onComplete={completeDrift} />}
+      {createSkillOpen && <CreateSkillModal onClose={() => setCreateSkillOpen(false)} onComplete={completeCreateSkill} />}
       {updatePreviewPath && <UpdatePreviewModal path={updatePreviewPath} onClose={() => setUpdatePreviewPath("")} onConfirm={updateSkill} />}
 
       {adoptionCandidate && <AdoptionModal candidate={adoptionCandidate} onClose={() => setAdoptionCandidate(null)} onComplete={completeAdoption} />}
