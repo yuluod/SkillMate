@@ -106,6 +106,37 @@ test("同名同内容副本形成重复组，内容不同的组仍走漂移口�
   assert.equal(drift[0].versionCount, 2);
 });
 
+test("同一主副本启用到多个平台不产生重复或漂移提醒", () => {
+  const masterCopy = {
+    name: "writer", content_hash: "same", managed_by_app: true,
+    source_type: "deployment", symlink_source: "/library/writer",
+    structure_status: "complete", structure_warnings: [],
+  };
+  const assistants = [
+    { name: "Codex", icon: "codex", exists: true, skills: [{ ...masterCopy, path: "/codex/writer", ai: "Codex" }] },
+    { name: "Cursor", icon: "cursor", exists: true, skills: [{ ...masterCopy, path: "/cursor/writer", ai: "Cursor" }] },
+  ];
+  assert.deepEqual(buildDuplicateGroups(assistants).map((group) => group.name), []);
+  assert.deepEqual(buildDriftGroups(assistants).map((group) => group.name), []);
+
+  // 主副本的部署 + 一份外部同内容副本：部署归一到主副本身份，组里只有一个可接管副本
+  const withExternal = [
+    assistants[0],
+    { name: "Claude Code", icon: "claude", exists: true, skills: [{ ...masterCopy, path: "/claude/writer", managed_by_app: false, source_type: "local", symlink_source: undefined, skill_type: "skill-folder" }] },
+  ];
+  const duplicates = buildDuplicateGroups(withExternal);
+  assert.equal(duplicates.length, 1);
+  assert.deepEqual(duplicates[0].copies.map((copy) => copy.managed), [false, true]);
+  assert.deepEqual(duplicates[0].copies.filter((copy) => copyCanAdopt(copy)).length, 1);
+
+  // 两个独立外部副本才构成重复组
+  const twoExternal = [
+    { name: "Claude Code", icon: "claude", exists: true, skills: [{ name: "writer", path: "/claude/writer", content_hash: "same", source_type: "local", skill_type: "skill-folder", structure_status: "complete", structure_warnings: [] }] },
+    { name: "Codex", icon: "codex", exists: true, skills: [{ name: "writer", path: "/codex/writer", content_hash: "same", source_type: "local", skill_type: "skill-folder", structure_status: "complete", structure_warnings: [] }] },
+  ];
+  assert.equal(buildDuplicateGroups(twoExternal).length, 1);
+});
+
 test("副本接管资格与详情栏 canAdopt 同一口径", () => {
   assert.equal(copyCanAdopt({ managed: false, isSymlink: false, manager: "", skillType: "skill-folder" }), true);
   assert.equal(copyCanAdopt({ managed: true, isSymlink: false, manager: "skillmate", skillType: "skill-folder" }), false);

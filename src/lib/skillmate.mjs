@@ -646,6 +646,8 @@ export function buildScenarioSkillInventory(skills) {
 
 // 同名副本分组核心：按名称聚合所有平台发现的实体副本。「同名不同内容」（漂移）
 // 与「同名同内容」（重复）两种口径共用此分组，只在过滤条件上区分。
+// 副本身份 = symlink_source（库主副本路径）或实体路径：同一主副本启用到多个
+// 平台只会产生一份副本，不构成重复，也不该在漂移组里重复计数。
 function buildNamedCopyGroups(assistants, t) {
   const byName = new Map();
   for (const assistant of Array.isArray(assistants) ? assistants : []) {
@@ -654,15 +656,16 @@ function buildNamedCopyGroups(assistants, t) {
       const path = typeof skill?.path === "string" ? skill.path : "";
       const contentHash = typeof skill?.content_hash === "string" ? skill.content_hash : "";
       if (!name || !path || !contentHash) continue;
+      const identity = skill?.symlink_source || path;
       const copies = byName.get(name) || new Map();
-      const existing = copies.get(path);
+      const existing = copies.get(identity);
       const availability = { name: assistant?.name || localized(t, "common.unknownAssistant", "未知助手"), icon: assistant?.icon || "" };
       if (existing) {
         if (!existing.availableIn.some((item) => item.name === availability.name)) {
           existing.availableIn.push(availability);
         }
       } else {
-        copies.set(path, {
+        copies.set(identity, {
           name,
           path,
           contentHash,
