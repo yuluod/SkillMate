@@ -1472,14 +1472,11 @@ mod tests {
         let root = base.join("skills");
         let skill = root.join("writer");
         seed_managed_skill(&db, &root, &skill);
-        // 快照库根目录只读：建目录、rename、复制全部失败（模拟权限不足/
-        // 磁盘满这类永久性失败，与 EXDEV 的可恢复降级不同）
+        // 快照库根路径被普通文件占用：建目录在所有平台必然失败
+        // （模拟权限不足、磁盘满等永久性失败——与 EXDEV 的可恢复
+        // 降级不同，这类失败无法通过重试或复制解决）
         let store_root = base.join("snapshot-store");
-        fs::create_dir_all(&store_root).unwrap();
-        let original_permissions = fs::metadata(&store_root).unwrap().permissions();
-        let mut readonly = original_permissions.clone();
-        readonly.set_readonly(true);
-        fs::set_permissions(&store_root, readonly).unwrap();
+        fs::write(&store_root, "occupied").unwrap();
         let snapshot_request = SnapshotRequest {
             dir: store_root.join("writer/1"),
             snapshot_ref: "old-ref".into(),
@@ -1530,8 +1527,6 @@ mod tests {
         second.commit().unwrap();
         assert!(fs::read_dir(&journals).unwrap().next().is_none());
 
-        // 恢复权限后清理测试目录
-        fs::set_permissions(&store_root, original_permissions).unwrap();
-        let _ = fs::remove_dir_all(base);
+        let _ = remove_path(&base);
     }
 }
