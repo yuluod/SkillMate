@@ -331,12 +331,29 @@ impl<'db> ReconcileTransaction<'db> {
         if self.finalized {
             return Ok(None);
         }
-        let result = cleanup_committed_journal(&self.journal);
-        if result.is_ok() {
-            self.remove_journal()?;
-            self.finalized = true;
+        let notice = cleanup_committed_journal(&self.journal)?;
+        // 快照台账登记纳入提交过程：登记成功之后才清理日志。提交与登记
+        // 之间退出时日志仍在磁盘上，启动恢复按日志中的快照意图幂等补
+        // 登记，孤儿清理不会误删刚保留的旧版本。已放弃保留（快照目录
+        // 缺失）时无需登记。
+        if let (Some(db), Some(snapshot), Some((target, _))) = (
+            self.db,
+            self.journal.snapshot.as_ref(),
+            self.journal.moved_targets.first(),
+        ) {
+            if snapshot.dir.is_dir() {
+                crate::skill_snapshot::record_snapshot_idempotent(
+                    db,
+                    target,
+                    &snapshot.dir,
+                    &snapshot.snapshot_ref,
+                    &snapshot.content_hash,
+                )?;
+            }
         }
-        result
+        self.remove_journal()?;
+        self.finalized = true;
+        Ok(notice)
     }
 
     fn remove_journal(&mut self) -> Result<(), String> {
@@ -510,6 +527,11 @@ fn recover_journal_file(db: Option<&Connection>, path: &Path) -> Result<(), Stri
         .and_then(|value| value.to_str())
         .unwrap_or_default();
     if name.ends_with(COMMITTED_SUFFIX) {
+        // 无数据库连接时无法补登记快照台账：保留日志等待下次带连接的
+        // 恢复，避免孤儿清理误删刚保留的旧版本。
+        if db.is_none() && journal.snapshot.as_ref().is_some_and(|s| s.dir.is_dir()) {
+            return Err("缺少数据库连接，无法补登记更新快照".to_string());
+        }
         if let Some(notice) = cleanup_committed_journal(&journal)? {
             eprintln!("{notice}");
         }
@@ -665,12 +687,11 @@ fn cleanup_committed_journal(journal: &ReconcileJournal) -> Result<Option<String
     let snapshot_request = journal
         .snapshot
         .as_ref()
-        .map(|snapshot| &snapshot.dir)
         .filter(|_| journal.moved_targets.len() == 1);
     for (_, backup) in &journal.moved_targets {
         if path_exists(backup) {
             let result = match snapshot_request {
-                Some(store) => preserve_snapshot_backup(backup, store),
+                Some(snapshot) => preserve_snapshot_backup(backup, snapshot),
                 None => {
                     remove_path(backup).and_then(|_| sync_parent(backup).map_err(|e| e.to_string()))
                 }
@@ -700,18 +721,29 @@ fn cleanup_committed_journal(journal: &ReconcileJournal) -> Result<Option<String
 
 /// 把事务暂存的旧主副本保留进快照库。统一库与快照库可能位于不同文件
 /// 系统：rename 不可用时（EXDEV 等跨卷错误）降级为复制 + 删除暂存。
-/// 操作保证可收敛——目标目录已存在而暂存仍在时，说明上次复制已完成、
-/// 仅剩暂存清理，补齐删除即可；复制中途失败则清理半成品，下次恢复重试。
-fn preserve_snapshot_backup(backup: &Path, store: &Path) -> Result<(), String> {
+/// 暂存中的完整备份只有在快照内容通过指纹校验（与快照意图一致）之后
+/// 才会被删除——复制中断留下的半成品会被移除并重新复制，永远不会
+/// 顶替完整备份。
+fn preserve_snapshot_backup(backup: &Path, snapshot: &SnapshotRequest) -> Result<(), String> {
+    let store = &snapshot.dir;
     if let Some(parent) = store.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
     if path_exists(store) {
-        if path_exists(backup) {
-            remove_path(backup)
-                .and_then(|_| sync_parent(backup).map_err(|error| error.to_string()))?;
+        // 目标已存在可能是上次复制中断的半成品：只有内容指纹与快照
+        // 意图一致才视为完整并允许删除备份；否则删除半成品重新复制。
+        match crate::managed_state::content_fingerprint(store) {
+            Ok(hash) if hash == snapshot.content_hash => {
+                if path_exists(backup) {
+                    remove_path(backup)
+                        .and_then(|_| sync_parent(backup).map_err(|error| error.to_string()))?;
+                }
+                return Ok(());
+            }
+            _ => {
+                let _ = remove_path(store);
+            }
         }
-        return Ok(());
     }
     let rename_result = {
         #[cfg(test)]
@@ -727,7 +759,7 @@ fn preserve_snapshot_backup(backup: &Path, store: &Path) -> Result<(), String> {
         fs::rename(backup, store)
     };
     match rename_result {
-        Ok(()) => sync_parent(store).map_err(|error| error.to_string()),
+        Ok(()) => {}
         Err(_) => {
             let copy_result = crate::skill_install::copy_dir_recursive(backup, store);
             if let Err(error) = copy_result {
@@ -735,11 +767,22 @@ fn preserve_snapshot_backup(backup: &Path, store: &Path) -> Result<(), String> {
                 let _ = remove_path(store);
                 return Err(format!("快照跨卷复制失败: {error}"));
             }
-            sync_parent(store).map_err(|error| error.to_string())?;
-            remove_path(backup).map_err(|error| error.to_string())?;
-            sync_parent(backup).map_err(|error| error.to_string())
         }
     }
+    // 完整性校验：复制/移动完成后指纹必须与快照意图一致，否则删除
+    // 结果并报错，完整备份保留在暂存中等待下次恢复重试。
+    let final_hash = crate::managed_state::content_fingerprint(store)
+        .map_err(|error| format!("快照完整性校验失败: {error}"))?;
+    if final_hash != snapshot.content_hash {
+        let _ = remove_path(store);
+        return Err("快照复制后内容与原始指纹不一致".to_string());
+    }
+    sync_parent(store).map_err(|error| error.to_string())?;
+    if path_exists(backup) {
+        remove_path(backup).map_err(|error| error.to_string())?;
+        sync_parent(backup).map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 fn write_new_journal(
@@ -1375,7 +1418,7 @@ mod tests {
             snapshot: Some(SnapshotRequest {
                 dir: snapshot_dir.clone(),
                 snapshot_ref: "old-ref".into(),
-                content_hash: "old-hash".into(),
+                content_hash: crate::managed_state::content_fingerprint(&snapshot_dir).unwrap(),
             }),
         };
         let journal_path = journals.join("tx.committed.json");
@@ -1404,6 +1447,7 @@ mod tests {
     #[test]
     fn snapshot_preservation_falls_back_to_copy_when_rename_fails() {
         let db = managed_database();
+        crate::skill_snapshot::ensure_table(&db).unwrap();
         let base = test_root("snapshot-exdev");
         let journals = base.join("journals");
         let root = base.join("skills");
@@ -1412,7 +1456,7 @@ mod tests {
         let snapshot_request = SnapshotRequest {
             dir: base.join("snapshot-store/writer/1"),
             snapshot_ref: "old-ref".into(),
-            content_hash: "old-hash".into(),
+            content_hash: crate::managed_state::content_fingerprint(&skill).unwrap(),
         };
         // 注入 rename 失败（模拟统一库与快照库跨文件系统的 EXDEV）
         SNAPSHOT_RENAME_FAILURE.with(|flag| {
@@ -1443,6 +1487,10 @@ mod tests {
             "old content"
         );
         assert!(fs::read_dir(&journals).unwrap().next().is_none());
+        // 提交即登记：调用方未做任何台账写入，提交后行已存在
+        let snapshots = crate::skill_snapshot::list_snapshots(&db, &skill).unwrap();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].ref_, "old-ref");
 
         // 后续独立事务不受影响
         let second_skill = root.join("second");
@@ -1462,6 +1510,36 @@ mod tests {
         second.commit().unwrap();
         assert!(fs::read_dir(&journals).unwrap().next().is_none());
         let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn interrupted_copy_does_not_delete_backup_until_snapshot_complete() {
+        let base = test_root("snapshot-partial");
+        // 暂存中的完整旧主副本：SKILL.md + references/a.md
+        let backup = base.join("backup/writer");
+        fs::create_dir_all(backup.join("references")).unwrap();
+        fs::write(backup.join("SKILL.md"), "old content").unwrap();
+        fs::write(backup.join("references/a.md"), "ref").unwrap();
+        let snapshot = SnapshotRequest {
+            dir: base.join("store/writer/1"),
+            snapshot_ref: "old-ref".into(),
+            content_hash: crate::managed_state::content_fingerprint(&backup).unwrap(),
+        };
+        // 模拟复制中断：快照目录只剩 SKILL.md 的半成品
+        fs::create_dir_all(&snapshot.dir).unwrap();
+        fs::write(snapshot.dir.join("SKILL.md"), "old content").unwrap();
+
+        preserve_snapshot_backup(&backup, &snapshot).unwrap();
+
+        // 半成品指纹不一致 → 删除并从备份重新复制；备份只有在完整性
+        // 校验通过后才删除，完整旧版本不会被半成品顶替丢失
+        assert!(!backup.exists());
+        assert!(snapshot.dir.join("references/a.md").exists());
+        assert_eq!(
+            crate::managed_state::content_fingerprint(&snapshot.dir).unwrap(),
+            snapshot.content_hash
+        );
+        let _ = remove_path(&base);
     }
 
     #[test]

@@ -1025,8 +1025,8 @@ pub(crate) fn update_skill_from_prepared_snapshot(
                 Err(rollback_error) => Err(format!("{}；文件回滚失败: {}", error, rollback_error)),
             };
         }
-        // 台账在提交成功后幂等写入；若在提交与登记之间崩溃，
-        // 恢复流程按日志中的快照意图补登记，孤儿清理不会误删。
+        // 快照台账登记已在事务提交过程内完成（登记成功后才清理日志）；
+        // 调用方只需裁剪超限快照。
         let commit_result = transaction.commit();
         match commit_result {
             Ok(commit_warning) => {
@@ -1034,16 +1034,8 @@ pub(crate) fn update_skill_from_prepared_snapshot(
                     Some(warning) => format!("更新成功；{warning}"),
                     None => "更新成功".to_string(),
                 };
-                let bookkeeping = crate::skill_snapshot::record_snapshot_idempotent(
-                    db,
-                    path,
-                    &snapshot_request.dir,
-                    &snapshot_request.snapshot_ref,
-                    &snapshot_request.content_hash,
-                )
-                .and_then(|_| crate::skill_snapshot::prune_snapshots(db, path));
-                if let Err(error) = bookkeeping {
-                    message = format!("{message}；更新快照登记失败: {error}");
+                if let Err(error) = crate::skill_snapshot::prune_snapshots(db, path) {
+                    message = format!("{message}；更新快照清理失败: {error}");
                 }
                 Ok(message)
             }
@@ -1128,18 +1120,11 @@ pub(crate) fn rollback_skill_to_snapshot(
                 Some(warning) => format!("已回滚到上一版本；{warning}"),
                 None => "已回滚到上一版本".to_string(),
             };
-            // 台账在提交后更新：先登记被替换下来的版本（幂等，崩溃窗口内
-            // 两行并存由 prune 收敛），再删除已恢复的旧快照——顺序保证任何
-            // 时点中断都不会丢掉可回滚内容。
-            let bookkeeping = crate::skill_snapshot::record_snapshot_idempotent(
-                db,
-                path,
-                &displaced_request.dir,
-                &displaced_request.snapshot_ref,
-                &displaced_request.content_hash,
-            )
-            .and_then(|_| crate::skill_snapshot::delete_snapshot(db, snapshot_dir))
-            .and_then(|_| crate::skill_snapshot::prune_snapshots(db, path));
+            // 被替换下来的版本已在提交过程内登记（登记成功后才清理日志，
+            // 任何时点中断都不会丢掉可回滚内容）；调用方删除已恢复的
+            // 旧快照并裁剪超限快照。
+            let bookkeeping = crate::skill_snapshot::delete_snapshot(db, snapshot_dir)
+                .and_then(|_| crate::skill_snapshot::prune_snapshots(db, path));
             if let Err(error) = bookkeeping {
                 message = format!("{message}；快照台账更新失败: {error}");
             }
