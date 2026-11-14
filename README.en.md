@@ -20,6 +20,14 @@ SkillMate is a cross-platform **AI Skills manager** for inventorying, adding, ad
 
 It does not try to replace each agent's own plugin system. Instead, it solves a more fundamental problem: where a Skill came from, who manages it, which platforms and projects use it, and how to avoid content drift caused by duplicated copies.
 
+## At a glance
+
+- Keep one library master copy and explicitly enable it per platform or project.
+- Inventory external Skills, identify duplicates and drift, and adopt or ignore entries.
+- Create Skills from a template and check their structure and static risks.
+- Check updates manually or on a schedule, preview and confirm changes, and roll back using snapshots.
+- Organize and migrate setups with tags, scenarios, manifests, and Git backup.
+
 ## Why SkillMate
 
 Claude Code, Codex, Gemini CLI, Cursor, and other tools use different global and project directories. Manually copying the same Skill between them quickly creates problems:
@@ -44,24 +52,18 @@ SkillMate divides the Skill lifecycle into explicit operations:
 - **Disable**: remove an enablement link while keeping the master copy in the library.
 - **Delete**: remove a master copy managed by SkillMate. Normal deletion first moves it to SkillMate's own trash and provides a 120-second undo window that survives an app restart.
 
-```text
-Git / local directory / Claude Marketplace
-                    │
-                    │ Add
-                    ▼
-            SkillMate library
-            (one master copy)
-                    │
-             ┌──────┴──────┐
-             │             │
-       Global enable   Project enable
-             │             │
-             ▼             ▼
-   Agent global dir   Project Skill dir
-             └──── directory links ────┘
-
-Existing physical Skill ── Adopt ──► Library + managed link at original location
+```mermaid
+flowchart TB
+    source["Git · Local directory · Marketplace"] -->|Add| library
+    template["Name and description"] -->|Create from template| library
+    external["Existing external physical Skill"] -->|Preview and confirm adoption| library
+    library[("SkillMate library<br/>Content · Provenance · Update state")]
+    library -->|Enable globally| global["Agent global directory<br/>Managed directory link"]
+    library -->|Enable for a project| project["Project Skill directory<br/>Managed directory link"]
+    library -. Replace original location after adoption .-> original["Original location<br/>Managed directory link"]
 ```
+
+Arrows show operations; each enabled location links back to the library master copy. Ignoring only hides an external entry: it neither moves files nor changes ownership.
 
 The library owns content, provenance, and update state. Agent directories only describe where a Skill is enabled. SkillMate never adopts or overwrites external content automatically; adoption must be explicitly requested and confirmed from a write plan.
 
@@ -83,7 +85,7 @@ The library owns content, provenance, and update state. Agent directories only d
 
 SkillMate scans every discovery directory declared for a platform. Project inspection merges project-level and global content, applies project-first precedence, and shows inferred visible Skills and the number shadowed by a same-named project Skill. This is inferred from directory conventions; it does not verify what an Agent has loaded at runtime. For Cursor, Gemini CLI, GitHub Copilot, OpenCode, and Kimi Code, project inspection additionally scans the shared `.agents/skills` directory (the upstream Agent Skills convention); enablement still writes to the project directory listed in the table.
 
-Creating managed directory links on Windows requires Developer Mode or symbolic-link creation privileges for the SkillMate process. Enable and adoption previews probe directory symlink support in an isolated temporary directory; when symlinks are unavailable, SkillMate probes NTFS junction as a fallback (no privilege required, but the deployment location and the library must both sit on a local volume — no network paths — and some tools traverse junctions as their target). When neither mechanism works, `directory_symlink_unavailable` blocks the operation without changing existing Skill content; junction fallback is explicitly marked in preview actions. Successful checks are cached for 30 seconds and failures for 2 seconds. After fixing permissions, wait briefly and preview again; if it still fails, check access to the system temporary directory. The probe does not validate the actual deployment directory's filesystem or permissions: applying still creates the real link and rolls back on failure. Adding a Skill to the library alone does not require this privilege.
+On Windows, SkillMate prefers directory symbolic links, which require Developer Mode or symbolic-link creation privileges for the SkillMate process. Enable and adoption previews probe directory symlink support in an isolated temporary directory; when symlinks are unavailable, SkillMate probes NTFS junction as a fallback (no privilege required, but the deployment location and the library must both sit on a local volume — no network paths — and some tools traverse junctions as their target). When neither mechanism works, `directory_symlink_unavailable` blocks the operation without changing existing Skill content; junction fallback is explicitly marked in preview actions. Successful checks are cached for 30 seconds and failures for 2 seconds. After fixing permissions, wait briefly and preview again; if it still fails, check access to the system temporary directory. The probe does not validate the actual deployment directory's filesystem or permissions: applying still creates the real link and rolls back on failure. Adding a Skill to the library alone does not require this privilege.
 
 ## Source, manager, and update responsibility
 
@@ -111,7 +113,7 @@ Choose a project folder from Overview, Deployments, or Scenarios. Successful ins
 - Distinguish project, global, shadowed, and shared discovery entries.
 - The Skill library lists each logical Skill once: deployments across platforms merge into one row, and the detail pane disables them per location.
 - Search and sort inside the library list, with All, Not enabled, Updates, and Needs attention filters. Desktop shows the first visible Skill’s details by default; smaller screens switch to details after selecting a row.
-- External entries you never want SkillMate to manage can be ignored: the entry is hidden via a local record and can be restored from the Ignored view at any time. Overview counts and content-drift reminders follow the ignore set as well — a drift reminder disappears once all of its copies are ignored. Ignoring never deletes files, never changes registrations, and scans still run in full; managed content cannot be ignored, and ignore records are never carried in exports.
+- External entries you never want SkillMate to manage can be ignored: the entry is hidden via a local record and can be restored from the Ignored view at any time. Overview counts, duplicate reminders, and content-drift reminders also follow the ignore set. Groups are reclassified using the remaining copies after some are ignored; fewer than two copies produce no reminder. Ignoring never deletes files, never changes registrations, and scans still run in full; managed content cannot be ignored, and ignore records are never carried in exports.
 - Search matches the `SKILL.md` body in addition to name and description: the primary copy is read live and each hit shows a file:line excerpt; above 1,000 entries body search is disabled with a notice, falling back to name and description only.
 - Choose “Enable to…” in the library to select agents and global/project scope in the right pane, then preview and confirm the file plan. Returning to details does not enable the Skill.
 - Show externally managed counts and missing sources on Overview.
@@ -207,7 +209,7 @@ The library page offers “New Skill”: enter a name and description to generat
 ### Skill updates
 
 - Git Skills managed by SkillMate can be checked and updated when their source is reconstructable.
-- Optional scheduled checks (Settings → Application updates; off by default, daily or weekly): when due they silently run the same batch check as the manual one and only refresh the “Updates” counts — updates are never installed automatically. Checks reach each Skill’s upstream Git remote; failures keep the last results silently.
+- Optional scheduled checks (Settings → Application updates; off by default, daily or weekly): while the app is running, due checks silently use the same batch engine as manual checks across the full checkable inventory, regardless of search, tag, or scenario filters. They refresh update status and the “Updates” count without installing updates automatically. Checks reach each Skill’s upstream Git remote; failures keep the last results silently.
 - Repository subdirectories and pinned refs are retained in provenance metadata.
 - Local sources are checked only for availability; SkillMate does not update them automatically.
 - `legacy_npm` and `legacy_pip` identify historical sources and direct users to the original updater.
@@ -219,7 +221,20 @@ The diff lists up to 200 files and displays UTF-8 text up to 8 KiB per file, wit
 
 Safety policy is evaluated again before an update. Changes to local content, upstream commits, deployment relationships, or policy invalidate the preview token. Applying first downloads and validates one snapshot while the existing library original and deployment links remain readable, then replaces content through local file operations. Existing transaction recovery covers library files, provenance, and related deployment state together, attempting to restore them together on failure.
 
-After a successful update, the replaced version is kept as an update snapshot (up to the last 2 versions per Skill). The detail pane shows “Rollback available” with the source version and offers one-click rollback to the previous version. Rollback follows the same preview → plan-token → transaction path: it lists the files to restore and affected deployment locations, managed deployments follow the rollback, and independent project copies are untouched. The displaced current version is also kept as a snapshot, so rollback is itself reversible (rolling back again moves forward). Rollback is subject to the current install policy and structure rules — a snapshot that no longer complies is rejected. Startup cleanup bounds the snapshot store; when a snapshot cannot be preserved (for example an unwritable snapshot store), SkillMate gives up keeping it with a notice in the result — the update itself is unaffected and no other operation is blocked.
+After a successful update, the replaced version is kept as an update snapshot (up to the last 2 versions per Skill). The detail pane shows “Rollback available” with the source version and lets you preview and confirm a rollback to the previous version. Rollback follows the same preview → plan-token → transaction path: it lists the files to restore and affected deployment locations, managed deployments follow the rollback, and independent project copies are untouched. The displaced current version is also kept as a snapshot, so rollback is itself reversible (rolling back again moves forward). Rollback is subject to the current install policy and structure rules — a snapshot that no longer complies is rejected. Startup cleanup bounds the snapshot store; when a snapshot cannot be preserved (for example an unwritable snapshot store), SkillMate gives up keeping it with a notice in the result — the update itself is unaffected and no other operation is blocked.
+
+```mermaid
+flowchart TB
+    check["Manual check / Scheduled check while app runs"] --> available["Update available"]
+    available --> preview["Preview changes and affected locations"]
+    preview -->|Confirm and validate| update["Update the library master copy"]
+    update --> current["New version active<br/>Managed deployments follow"]
+    update --> snapshot[("Keep previous-version snapshots<br/>Up to 2 per Skill")]
+    snapshot --> rollback["Preview rollback and evaluate current policy"]
+    rollback -->|Confirm| restore["Restore the previous version<br/>Keep displaced version as a snapshot"]
+```
+
+Checks only refresh update status; updates and rollbacks require user confirmation. Snapshot preservation failures are reported explicitly, so rollback is not guaranteed for that update.
 
 ### Application updates
 
