@@ -20,6 +20,7 @@ import {
   buildAppUpdateView,
   buildDashboardStats,
   buildDriftGroups,
+  buildSkillCardView,
   buildScenarioSkillInventory,
   buildUniqueSkillInventory,
   buildUnifiedSkillInventory,
@@ -489,9 +490,16 @@ function App() {
     updateSkill,
   } = useUpdateFlow({ updatable, showToast, loadData });
   resetUpdateStateRef.current = resetUpdateState;
+  // 定时检查使用完整可检查库存：不受搜索、标签与场景筛选影响，
+  // 避免停留在筛选结果时其他 Skill 长期得不到检查。
+  const checkablePaths = useMemo(
+    () => skillInventory.filter((skill) => buildSkillCardView(skill, t).canCheck).map((skill) => skill.path),
+    [skillInventory, t]
+  );
   const skillCheckSchedule = useSkillUpdateSchedule({
     checkAllSilent,
-    checkableCount: updatable.length,
+    checkPaths: checkablePaths,
+    checkableCount: checkablePaths.length,
   });
 
   const {
