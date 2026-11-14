@@ -20,6 +20,7 @@ import {
   buildAppUpdateView,
   buildDashboardStats,
   buildDriftGroups,
+  filterGroupsByIgnored,
   buildScenarioSkillInventory,
   buildUniqueSkillInventory,
   buildUnifiedSkillInventory,
@@ -406,9 +407,13 @@ function App() {
     }));
     return [...deployed, ...inLibrary];
   }, [data.assistants, data.librarySkills, t]);
-  const driftGroups = useMemo(() => buildDriftGroups(data.assistants, t), [data.assistants, t]);
   // 忽略清单：纯展示层，被忽略的外部条目默认隐藏、可在「已忽略」视图找回。
   const ignoredSet = useMemo(() => new Set(data.ignoredPaths || []), [data.ignoredPaths]);
+  // 漂移提醒与统计共用同一忽略过滤：被忽略副本不再出现在概览行里。
+  const driftGroups = useMemo(
+    () => filterGroupsByIgnored(buildDriftGroups(data.assistants, t), ignoredSet),
+    [data.assistants, t, ignoredSet]
+  );
   const scenarioSkills = useMemo(() => buildScenarioSkillInventory(allSkills), [allSkills]);
   // 技能库列表与统计使用统一身份：同一逻辑 Skill 的多平台部署与库内主副本合并为一行。
   const skillInventory = useMemo(() => buildUnifiedSkillInventory(allSkills), [allSkills]);

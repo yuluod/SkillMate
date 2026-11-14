@@ -766,12 +766,26 @@ export function buildUnifiedSkillInventory(skills) {
   return unified;
 }
 
+// 忽略是展示层：分组里被忽略的副本一并隐藏；版本数按剩余副本重算，
+// 剩余不足两份的组整体消失。计数与概览行共用这一结果，保证口径一致。
+export function filterGroupsByIgnored(groups, ignoredPaths = null) {
+  if (!Array.isArray(groups)) return [];
+  if (!ignoredPaths?.has) return groups;
+  return groups
+    .map((group) => {
+      const copies = group.copies.filter((copy) => !ignoredPaths.has(copy.path));
+      const hashes = new Set(copies.map((copy) => copy.contentHash));
+      return { ...group, copies, versionCount: hashes.size };
+    })
+    .filter((group) => group.copies.length > 1);
+}
+
 export function buildDashboardStats(assistants, librarySkills = [], t, ignoredPaths = null) {
   const skills = buildScenarioSkillInventory([
     ...buildUniqueSkillInventory(assistants, t),
     ...(Array.isArray(librarySkills) ? librarySkills : []),
   ]);
-  const driftGroups = buildDriftGroups(assistants, t);
+  const driftGroups = filterGroupsByIgnored(buildDriftGroups(assistants, t), ignoredPaths);
   const isIgnored = (skill) => Boolean(ignoredPaths?.has?.(skill?.path));
   let updates = 0;
   let structureIssues = 0;
