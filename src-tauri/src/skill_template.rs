@@ -46,7 +46,18 @@ pub fn create_library_skill(
     let root = library_root()?;
     let target = root.join(name);
 
+    // 独占创建目标目录：预检查与实际创建之间外部程序新建的同名目录
+    // 会在这里直接拒绝，不会复用更不会覆盖其内容。
+    let mut created = false;
     let outcome = (|| -> Result<(), String> {
+        fs::create_dir(&target).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                format!("统一库中已存在同名目录: {}", target.display())
+            } else {
+                format!("无法创建 Skill 目录: {error}")
+            }
+        })?;
+        created = true;
         write_template_skill(&target, name, description.trim(), locale)?;
         let report = validate_skill_structure(&target);
         if report.structure_status != "complete" {
@@ -59,14 +70,34 @@ pub fn create_library_skill(
             return Err(format!("生成的模板未通过结构校验: {messages}"));
         }
         crate::managed_state::mark_managed_skill(&root, "SkillMate", &target, "template")?;
-        record_managed_path(db, &root, &target, "library", None)?;
-        register_library_skill(db, &target, "模板创建", "template", None)?;
+        // 两步数据库登记放在同一事务里：任一失败自动回滚，
+        // 不留下指向半成品的受管登记。
+        let transaction = db
+            .unchecked_transaction()
+            .map_err(|error| error.to_string())?;
+        let registration = (|| -> Result<(), String> {
+            record_managed_path(&transaction, &root, &target, "library", None)?;
+            register_library_skill(&transaction, &target, "模板创建", "template", None)?;
+            Ok(())
+        })();
+        match registration {
+            Ok(()) => transaction.commit().map_err(|error| error.to_string())?,
+            Err(error) => {
+                let _ = transaction.rollback();
+                return Err(error);
+            }
+        }
         Ok(())
     })();
     match outcome {
         Ok(()) => Ok(target),
         Err(error) => {
-            cleanup_created_skill(&target);
+            // 只有本次独占创建成功的目录才清理：sidecar 与受管登记一并回收，
+            // 外部目录永远不会被触碰。
+            if created {
+                let _ = crate::managed_installation::cleanup_skill_metadata(db, &target);
+                cleanup_created_skill(&target);
+            }
             Err(error)
         }
     }
@@ -133,7 +164,6 @@ fn write_template_skill(
     description: &str,
     locale: &str,
 ) -> Result<(), String> {
-    fs::create_dir_all(target).map_err(|error| format!("无法创建 Skill 目录: {error}"))?;
     let body = template_body(name, description, locale);
     fs::write(target.join("SKILL.md"), body).map_err(|error| format!("无法写入 SKILL.md: {error}"))
 }
@@ -187,6 +217,26 @@ mod tests {
                 scope TEXT NOT NULL DEFAULT 'global',
                 project_path TEXT,
                 updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS skill_origin_meta (
+                skill_path TEXT PRIMARY KEY,
+                origin_kind TEXT NOT NULL DEFAULT 'unknown',
+                origin_locator TEXT NOT NULL DEFAULT '',
+                resolved_locator TEXT NOT NULL DEFAULT '',
+                tracking_ref TEXT NOT NULL DEFAULT '',
+                installed_ref TEXT NOT NULL DEFAULT '',
+                latest_ref TEXT NOT NULL DEFAULT '',
+                sync_state TEXT NOT NULL DEFAULT 'unprobed',
+                sync_message TEXT NOT NULL DEFAULT '',
+                lag_count INTEGER NOT NULL DEFAULT 0,
+                last_probe_at INTEGER,
+                last_sync_at INTEGER,
+                managed_by_app INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS skill_tags (
+                skill_path TEXT PRIMARY KEY,
+                tags TEXT,
+                tags_json TEXT NOT NULL DEFAULT '[]'
             );
             CREATE TABLE IF NOT EXISTS managed_installations (
                 skill_path TEXT PRIMARY KEY,
@@ -291,5 +341,65 @@ mod tests {
             "\"say \\\"hi\\\" \\\\ done\""
         );
         assert_eq!(yaml_quote("line1\nline2"), "\"line1 line2\"");
+    }
+
+    #[test]
+    fn failed_registration_leaves_no_trace_and_allows_immediate_retry() {
+        let db = draft_db();
+        let root =
+            std::env::temp_dir().join(format!("skillmate-template-fail-{}", std::process::id()));
+        let _guard = crate::skill_library::use_test_library_root(root.clone());
+
+        db.execute_batch(
+            "CREATE TRIGGER fail_library_register BEFORE INSERT ON library_skills
+             WHEN NEW.name = 'broken' BEGIN SELECT RAISE(FAIL, 'injected register failure'); END;",
+        )
+        .unwrap();
+        let error = create_library_skill(&db, "broken", "描述", "zh-CN").unwrap_err();
+        assert!(error.contains("injected register failure"), "{error}");
+
+        // 目录、受管启用登记、库登记与 sidecar 全部回收
+        assert!(!root.join("broken").exists());
+        let installation_count: i64 = db
+            .query_row("SELECT COUNT(*) FROM managed_installations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(installation_count, 0);
+        let root_count: i64 = db
+            .query_row("SELECT COUNT(*) FROM managed_roots", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(root_count, 0);
+        let state = crate::managed_state::read_managed_state(&root).unwrap();
+        assert!(state.managed_skills.is_empty());
+
+        // 撤除注入后同名可立即重试
+        db.execute_batch("DROP TRIGGER fail_library_register")
+            .unwrap();
+        let path = create_library_skill(&db, "broken", "描述", "zh-CN").unwrap();
+        assert!(path.join("SKILL.md").exists());
+    }
+
+    #[test]
+    fn externally_created_directory_is_rejected_without_modification() {
+        let db = draft_db();
+        let root =
+            std::env::temp_dir().join(format!("skillmate-template-race-{}", std::process::id()));
+        let _guard = crate::skill_library::use_test_library_root(root.clone());
+
+        // 预检查之后出现的外部同名目录：创建必须整体拒绝，
+        // 原文件保持不变，目录也绝不会被清理
+        let external = root.join("taken");
+        fs::create_dir_all(&external).unwrap();
+        fs::write(external.join("SKILL.md"), "user content").unwrap();
+        fs::write(external.join("notes.txt"), "keep me").unwrap();
+
+        let error = create_library_skill(&db, "taken", "描述", "zh-CN").unwrap_err();
+        assert!(error.contains("同名目录"), "{error}");
+        assert_eq!(
+            fs::read_to_string(external.join("SKILL.md")).unwrap(),
+            "user content"
+        );
+        assert!(external.join("notes.txt").exists());
     }
 }
