@@ -6,6 +6,7 @@ import {
   ConfirmModal,
   AdoptionModal,
   DriftSyncModal,
+  DuplicateSkillModal,
   InstallModal,
   PreviewModal,
   TagEditorModal,
@@ -20,6 +21,7 @@ import {
   buildAppUpdateView,
   buildDashboardStats,
   buildDriftGroups,
+  buildDuplicateGroups,
   buildScenarioSkillInventory,
   buildUniqueSkillInventory,
   buildUnifiedSkillInventory,
@@ -184,6 +186,7 @@ function App() {
   const [loadError, setLoadError] = useState(null);
   const [trashReceipt, setTrashReceipt] = useState(null);
   const [driftGroup, setDriftGroup] = useState(null);
+  const [duplicateGroup, setDuplicateGroup] = useState(null);
   const [adoptionCandidate, setAdoptionCandidate] = useState(null);
   const [projectInspectionRevision, setProjectInspectionRevision] = useState(0);
   const projectWorkspace = useProjectWorkspace();
@@ -406,6 +409,7 @@ function App() {
     return [...deployed, ...inLibrary];
   }, [data.assistants, data.librarySkills, t]);
   const driftGroups = useMemo(() => buildDriftGroups(data.assistants, t), [data.assistants, t]);
+  const duplicateGroups = useMemo(() => buildDuplicateGroups(data.assistants, t), [data.assistants, t]);
   const scenarioSkills = useMemo(() => buildScenarioSkillInventory(allSkills), [allSkills]);
   // 技能库列表与统计使用统一身份：同一逻辑 Skill 的多平台部署与库内主副本合并为一行。
   const skillInventory = useMemo(() => buildUnifiedSkillInventory(allSkills), [allSkills]);
@@ -829,6 +833,16 @@ function App() {
     setProjectInspectionRevision((revision) => revision + 1);
   }
 
+  // 重复副本组内的接管入口：复用详情栏同一条 AdoptionModal 流程，
+  // 副本所在平台取自扫描发现的 availableIn，全局范围接管不带 projectPath。
+  function adoptDuplicateCopy(copy) {
+    const skill = allSkills.find((item) => item.path === copy.path);
+    const assistant = copy.availableIn[0]?.name || skill?.ai || "";
+    if (!skill || !assistant) return;
+    setDuplicateGroup(null);
+    setAdoptionCandidate({ skill, assistant, projectPath: "" });
+  }
+
   const iconContext = useMemo(() => ({ weight: skin === "cardbox" ? "bold" : "regular" }), [skin]);
 
   return (
@@ -886,9 +900,11 @@ function App() {
               stats={dashboardStats}
               tagCount={tags.length}
               driftGroups={driftGroups}
+              duplicateGroups={duplicateGroups}
               onNavigate={(target, filter = "all") => (target === "skills" ? openSkills(filter) : setView(target))}
               onInstall={startAddSkill}
               onOpenDrift={setDriftGroup}
+              onOpenDuplicates={setDuplicateGroup}
             />
           )}
 
@@ -1109,6 +1125,7 @@ function App() {
       {trashReceipt && <div className="undo-bar" role="status"><span>{t("trash.done", { name: trashReceipt.name })}</span><button className="btn btn-secondary btn-sm" onClick={undoTrash}><Icon name="undo" size={14} />{t("trash.undo")}</button></div>}
 
       {driftGroup && <DriftSyncModal group={driftGroup} onClose={() => setDriftGroup(null)} onComplete={completeDrift} />}
+      {duplicateGroup && <DuplicateSkillModal group={duplicateGroup} onClose={() => setDuplicateGroup(null)} onAdopt={adoptDuplicateCopy} />}
       {updatePreviewPath && <UpdatePreviewModal path={updatePreviewPath} onClose={() => setUpdatePreviewPath("")} onConfirm={updateSkill} />}
 
       {adoptionCandidate && <AdoptionModal candidate={adoptionCandidate} onClose={() => setAdoptionCandidate(null)} onComplete={completeAdoption} />}

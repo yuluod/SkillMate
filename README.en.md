@@ -116,6 +116,7 @@ Choose a project folder from Overview, Deployments, or Scenarios. Successful ins
 - Show externally managed counts and missing sources on Overview.
 - Display content source, manager, update mechanism, and enabled platforms.
 - Summarize structure issues, static risks, local changes, content drift, and scan diagnostics.
+- Detect same-named Skills scattered across platform directories: identical-content groups suggest adopting one copy and enabling it everywhere, while differing-content groups offer the cross-platform sync entry. Grouping relies only on name and content fingerprint, never on platform inference, and SkillMate never merges or deletes copies automatically.
 
 ### Structure and safety checks
 

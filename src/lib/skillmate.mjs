@@ -644,7 +644,9 @@ export function buildScenarioSkillInventory(skills) {
   return [...byIdentity.values()];
 }
 
-export function buildDriftGroups(assistants, t) {
+// 同名副本分组核心：按名称聚合所有平台发现的实体副本。「同名不同内容」（漂移）
+// 与「同名同内容」（重复）两种口径共用此分组，只在过滤条件上区分。
+function buildNamedCopyGroups(assistants, t) {
   const byName = new Map();
   for (const assistant of Array.isArray(assistants) ? assistants : []) {
     for (const skill of Array.isArray(assistant?.skills) ? assistant.skills : []) {
@@ -669,6 +671,9 @@ export function buildDriftGroups(assistants, t) {
           source: skill?.source || "",
           structureStatus: skill?.structure_status || "nonstandard",
           warnings: Array.isArray(skill?.structure_warnings) ? [...skill.structure_warnings] : [],
+          skillType: skill?.skill_type || "",
+          isSymlink: ["symlink", "deployment"].includes(skill?.source_type),
+          manager: skill?.manager || "",
           availableIn: [availability],
         });
       }
@@ -687,8 +692,27 @@ export function buildDriftGroups(assistants, t) {
         versionCount: hashes.length,
       };
     })
-    .filter((group) => group.copies.length > 1 && group.versionCount > 1)
+    .filter((group) => group.copies.length > 1)
     .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+export function buildDriftGroups(assistants, t) {
+  return buildNamedCopyGroups(assistants, t).filter((group) => group.versionCount > 1);
+}
+
+// 内容完全相同的同名副本：引导「接管其中一个为统一库主副本，再启用到其余平台」。
+// 分组只提示不写入；判定只基于名称与内容指纹，不基于平台推断。
+export function buildDuplicateGroups(assistants, t) {
+  return buildNamedCopyGroups(assistants, t).filter((group) => group.versionCount === 1);
+}
+
+// 副本接管资格：与详情栏 canAdopt 同一口径（非受管、非连接、非 skills CLI 仓库条目、实体目录）。
+export function copyCanAdopt(copy) {
+  return Boolean(copy)
+    && !copy.managed
+    && !copy.isSymlink
+    && copy.manager !== "skills_cli"
+    && copy.skillType === "skill-folder";
 }
 
 export function isSkillManaged(skill) {
@@ -770,6 +794,7 @@ export function buildDashboardStats(assistants, librarySkills = [], t) {
     ...(Array.isArray(librarySkills) ? librarySkills : []),
   ]);
   const driftGroups = buildDriftGroups(assistants, t);
+  const duplicateGroups = buildDuplicateGroups(assistants, t);
   let updates = 0;
   let structureIssues = 0;
   let securityRisks = 0;
@@ -795,6 +820,7 @@ export function buildDashboardStats(assistants, librarySkills = [], t) {
     external,
     stale,
     driftGroups: driftGroups.length,
+    duplicateGroups: duplicateGroups.length,
     diagnostics: (Array.isArray(assistants) ? assistants : [])
       .reduce((count, assistant) => count + (Array.isArray(assistant?.diagnostics) ? assistant.diagnostics.length : 0), 0),
   };

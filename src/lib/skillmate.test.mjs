@@ -27,6 +27,8 @@ import {
   buildUnifiedSkillInventory,
   skillMatchesQuery,
   buildDriftGroups,
+  buildDuplicateGroups,
+  copyCanAdopt,
   buildDashboardStats,
   getMarketInstallRequest,
   getMarketInstallSource,
@@ -83,7 +85,42 @@ test("工作台统计汇总风险、更新、诊断和内容漂移", () => {
     ],
     [{ name: "reader", path: "/library/reader", manager: "skillmate", managed_by_app: true, structure_status: "complete", structure_warnings: [] }]
   );
-  assert.deepEqual(stats, { skills: 3, assistants: 2, updates: 1, structureIssues: 1, securityRisks: 1, localChanges: 1, external: 0, stale: 0, driftGroups: 1, diagnostics: 1 });
+  assert.deepEqual(stats, { skills: 3, assistants: 2, updates: 1, structureIssues: 1, securityRisks: 1, localChanges: 1, external: 0, stale: 0, driftGroups: 1, duplicateGroups: 0, diagnostics: 1 });
+});
+
+test("同名同内容副本形成重复组，内容不同的组仍走漂移口径", () => {
+  const assistants = [
+    { name: "Codex", icon: "codex", exists: true, skills: [{ name: "writer", path: "/a/writer", content_hash: "same", skill_type: "skill-folder", structure_status: "complete", structure_warnings: [] }] },
+    { name: "Cursor", icon: "cursor", exists: true, skills: [{ name: "writer", path: "/b/writer", content_hash: "same", skill_type: "skill-folder", structure_status: "complete", structure_warnings: [] }] },
+    { name: "Claude Code", icon: "claude", exists: true, skills: [{ name: "reader", path: "/c/reader", content_hash: "x", structure_status: "complete", structure_warnings: [] }, { name: "reader", path: "/d/reader", content_hash: "y", structure_status: "complete", structure_warnings: [] }] },
+  ];
+  const duplicates = buildDuplicateGroups(assistants);
+  assert.equal(duplicates.length, 1);
+  assert.equal(duplicates[0].name, "writer");
+  assert.equal(duplicates[0].copies.length, 2);
+  assert.equal(duplicates[0].versionCount, 1);
+  assert.deepEqual(duplicates[0].copies.map((copy) => copy.path), ["/a/writer", "/b/writer"]);
+  const drift = buildDriftGroups(assistants);
+  assert.equal(drift.length, 1);
+  assert.equal(drift[0].name, "reader");
+  assert.equal(drift[0].versionCount, 2);
+});
+
+test("副本接管资格与详情栏 canAdopt 同一口径", () => {
+  assert.equal(copyCanAdopt({ managed: false, isSymlink: false, manager: "", skillType: "skill-folder" }), true);
+  assert.equal(copyCanAdopt({ managed: true, isSymlink: false, manager: "skillmate", skillType: "skill-folder" }), false);
+  assert.equal(copyCanAdopt({ managed: false, isSymlink: true, manager: "", skillType: "skill-folder" }), false);
+  assert.equal(copyCanAdopt({ managed: false, isSymlink: false, manager: "skills_cli", skillType: "skill-folder" }), false);
+  assert.equal(copyCanAdopt({ managed: false, isSymlink: false, manager: "", skillType: "skill-file" }), false);
+});
+
+test("工作台统计包含重复副本计数且不与漂移组混算", () => {
+  const stats = buildDashboardStats([
+    { name: "Codex", exists: true, skills: [{ name: "dup", path: "/a/dup", content_hash: "same", structure_status: "complete", structure_warnings: [] }] },
+    { name: "Cursor", exists: true, skills: [{ name: "dup", path: "/b/dup", content_hash: "same", structure_status: "complete", structure_warnings: [] }] },
+  ]);
+  assert.equal(stats.duplicateGroups, 1);
+  assert.equal(stats.driftGroups, 0);
 });
 
 test("工作台区分外部管理与失联来源", () => {
