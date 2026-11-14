@@ -267,8 +267,10 @@ impl<'db> ReconcileTransaction<'db> {
             Ok(None) => {}
             Err(error) => return Err(self.rollback_precommit_failure(error)),
         }
-        if let Err(warning) = self.finish_commit() {
-            warnings.push(warning);
+        match self.finish_commit() {
+            Ok(Some(warning)) => warnings.push(warning),
+            Ok(None) => {}
+            Err(error) => warnings.push(error),
         }
         Ok((!warnings.is_empty()).then(|| warnings.join("；")))
     }
@@ -325,9 +327,9 @@ impl<'db> ReconcileTransaction<'db> {
         }
     }
 
-    fn finish_commit(&mut self) -> Result<(), String> {
+    fn finish_commit(&mut self) -> Result<Option<String>, String> {
         if self.finalized {
-            return Ok(());
+            return Ok(None);
         }
         let result = cleanup_committed_journal(&self.journal);
         if result.is_ok() {
@@ -508,7 +510,9 @@ fn recover_journal_file(db: Option<&Connection>, path: &Path) -> Result<(), Stri
         .and_then(|value| value.to_str())
         .unwrap_or_default();
     if name.ends_with(COMMITTED_SUFFIX) {
-        cleanup_committed_journal(&journal)?;
+        if let Some(notice) = cleanup_committed_journal(&journal)? {
+            eprintln!("{notice}");
+        }
         // 提交成功但台账登记前退出的恢复：幂等补登记更新快照，
         // 避免刚保留的旧版本被孤儿清理误删。快照目录缺失时无可
         // 保留内容，跳过登记交由孤儿清理收敛。
@@ -649,10 +653,14 @@ fn sync_journal_commit_state(journal: &ReconcileJournal) -> Result<(), String> {
     Ok(())
 }
 
-fn cleanup_committed_journal(journal: &ReconcileJournal) -> Result<(), String> {
+/// 清理已提交事务的暂存区。`Ok(Some(notice))` 表示清理完成但需要向用户
+/// 呈现通知（如快照保留失败被放弃）；`Err` 表示暂存无法消费，提交日志
+/// 将保留并由恢复流程重试。
+fn cleanup_committed_journal(journal: &ReconcileJournal) -> Result<Option<String>, String> {
     let mut failures = Vec::new();
+    let mut notices = Vec::new();
     // 更新快照：单目标事务提交成功后把旧主副本移入快照库而不是删除。
-    // 保留失败时暂存区仍会被消费（复制降级或最终删除），保证已提交日志
+    // 保留失败时逐级降级（复制 → 放弃快照并删除暂存），保证已提交日志
     // 总能被清理，不会永久阻断后续恢复；此时提交语义不变。
     let snapshot_request = journal
         .snapshot
@@ -668,12 +676,23 @@ fn cleanup_committed_journal(journal: &ReconcileJournal) -> Result<(), String> {
                 }
             };
             if let Err(error) = result {
-                failures.push(format!("{}: {}", backup.to_string_lossy(), error));
+                // 最后降级：快照库永久不可写（权限不足、磁盘满等）时放弃
+                // 保留旧版本并删除暂存——阻断所有受管写操作去保一份快照
+                // 不值得；放弃的信息以通知呈现。
+                let abandoned = remove_path(backup)
+                    .and_then(|_| sync_parent(backup).map_err(|e| e.to_string()));
+                match abandoned {
+                    Ok(()) => notices.push(format!("更新快照保留失败，已放弃保留旧版本: {error}")),
+                    Err(delete_error) => failures.push(format!(
+                        "{}: 保留失败 {error}；删除降级也失败 {delete_error}",
+                        backup.to_string_lossy()
+                    )),
+                }
             }
         }
     }
     if failures.is_empty() {
-        Ok(())
+        Ok((!notices.is_empty()).then(|| notices.join("；")))
     } else {
         Err(format!("清理回滚暂存失败: {}", failures.join("；")))
     }
@@ -1442,6 +1461,77 @@ mod tests {
         fs::write(second_skill.join("SKILL.md"), "second content").unwrap();
         second.commit().unwrap();
         assert!(fs::read_dir(&journals).unwrap().next().is_none());
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn snapshot_preservation_failure_abandons_snapshot_and_unblocks_operations() {
+        let db = managed_database();
+        let base = test_root("snapshot-readonly");
+        let journals = base.join("journals");
+        let root = base.join("skills");
+        let skill = root.join("writer");
+        seed_managed_skill(&db, &root, &skill);
+        // 快照库根目录只读：建目录、rename、复制全部失败（模拟权限不足/
+        // 磁盘满这类永久性失败，与 EXDEV 的可恢复降级不同）
+        let store_root = base.join("snapshot-store");
+        fs::create_dir_all(&store_root).unwrap();
+        let original_permissions = fs::metadata(&store_root).unwrap().permissions();
+        let mut readonly = original_permissions.clone();
+        readonly.set_readonly(true);
+        fs::set_permissions(&store_root, readonly).unwrap();
+        let snapshot_request = SnapshotRequest {
+            dir: store_root.join("writer/1"),
+            snapshot_ref: "old-ref".into(),
+            content_hash: "old-hash".into(),
+        };
+
+        let transaction = prepare_transaction(
+            std::slice::from_ref(&skill),
+            std::slice::from_ref(&skill),
+            None,
+            Vec::new(),
+            Some(&db),
+            &journals,
+            Some(&snapshot_request),
+        )
+        .unwrap();
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), "new content").unwrap();
+        // 提交成功但携带「放弃保留快照」通知；日志与暂存均被消费
+        let message = transaction
+            .commit()
+            .unwrap()
+            .expect("commit should carry the abandonment notice");
+        assert!(message.contains("放弃保留"), "{message}");
+
+        assert!(fs::read_dir(&journals).unwrap().next().is_none());
+        assert!(skill.is_dir());
+        assert_eq!(
+            fs::read_to_string(skill.join("SKILL.md")).unwrap(),
+            "new content"
+        );
+
+        // 后续独立事务不受阻断
+        let second_skill = root.join("second");
+        seed_managed_skill(&db, &root, &second_skill);
+        let second = prepare_transaction(
+            std::slice::from_ref(&second_skill),
+            std::slice::from_ref(&second_skill),
+            None,
+            Vec::new(),
+            Some(&db),
+            &journals,
+            None,
+        )
+        .unwrap();
+        fs::create_dir_all(&second_skill).unwrap();
+        fs::write(second_skill.join("SKILL.md"), "second content").unwrap();
+        second.commit().unwrap();
+        assert!(fs::read_dir(&journals).unwrap().next().is_none());
+
+        // 恢复权限后清理测试目录
+        fs::set_permissions(&store_root, original_permissions).unwrap();
         let _ = fs::remove_dir_all(base);
     }
 }
