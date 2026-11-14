@@ -28,5 +28,19 @@ Thumbs.db
 /Cargo.lock
 
 .impeccable
-.claude
+# 本机 Agent 配置与计划
+/.agents/
+/.claude/
+/.codex/
+/.copilot/
+/.cursor/
+/.devin/
+/.dsh/
+/.gemini/
+/.kimi-code/
+/.openclaw/
+/.opencode/
+/.windsurf/
+/.zcode/
+/.github/skills/
 .mcp.json
