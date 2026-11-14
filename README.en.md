@@ -207,6 +207,7 @@ The library page offers “New Skill”: enter a name and description to generat
 ### Skill updates
 
 - Git Skills managed by SkillMate can be checked and updated when their source is reconstructable.
+- Optional scheduled checks (Settings → Application updates; off by default, daily or weekly): when due they silently run the same batch check as the manual one and only refresh the “Updates” counts — updates are never installed automatically. Checks reach each Skill’s upstream Git remote; failures keep the last results silently.
 - Repository subdirectories and pinned refs are retained in provenance metadata.
 - Local sources are checked only for availability; SkillMate does not update them automatically.
 - `legacy_npm` and `legacy_pip` identify historical sources and direct users to the original updater.

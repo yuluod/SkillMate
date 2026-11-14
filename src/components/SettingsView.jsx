@@ -124,6 +124,28 @@ function AppUpdateSettings({ value }) {
   );
 }
 
+// Skill 更新定时检查：只发现、不写入。到期静默调用与手动检查同一引擎，
+// 结果只改变「可更新」计数；绝不自动执行更新。
+function SkillUpdateSettings({ value }) {
+  const { t } = useI18n();
+  return (
+    <div className="settings-card">
+      <SurfaceHeader className="settings-surface-header" title={t("settings.skillUpdate.title")} description={t("settings.skillUpdate.subtitle")} />
+      <div className="settings-body">
+        <div className="form">
+          <label htmlFor="skill-check-frequency">{t("settings.skillUpdate.frequency")}</label>
+          <select id="skill-check-frequency" value={value.frequency} onChange={(event) => value.setFrequency(event.target.value)}>
+            <option value="off">{t("settings.skillUpdate.off")}</option>
+            <option value="daily">{t("settings.skillUpdate.daily")}</option>
+            <option value="weekly">{t("settings.skillUpdate.weekly")}</option>
+          </select>
+        </div>
+        <div className="git-meta">{t("settings.skillUpdate.hint")}</div>
+      </div>
+    </div>
+  );
+}
+
 function LanguageSettings() {
   const { t, language, setLanguage } = useI18n();
   return (
@@ -353,7 +375,7 @@ function SkillSetSettings({ value }) {
   );
 }
 
-export default function SettingsView({ activeTab, setActiveTab, appearance, backup, appUpdate, installPolicy, librarySettings, data, skillSet }) {
+export default function SettingsView({ activeTab, setActiveTab, appearance, backup, appUpdate, skillUpdate, installPolicy, librarySettings, data, skillSet }) {
   const { t } = useI18n();
   return (
     <div className="settings">
@@ -376,6 +398,7 @@ export default function SettingsView({ activeTab, setActiveTab, appearance, back
         {activeTab === "appearance" && <AppearanceSettings value={appearance} />}
         {activeTab === "backup" && <BackupSettings value={backup} />}
         {activeTab === "app-update" && <AppUpdateSettings value={appUpdate} />}
+        {activeTab === "app-update" && skillUpdate && <SkillUpdateSettings value={skillUpdate} />}
         {activeTab === "install-policy" && <InstallPolicySettings value={installPolicy} />}
         {activeTab === "library" && <LibrarySettings value={librarySettings} />}
         {activeTab === "data" && <DataSettings value={data} />}

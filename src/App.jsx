@@ -22,6 +22,7 @@ import {
   buildAppUpdateView,
   buildDashboardStats,
   buildDriftGroups,
+  buildSkillCardView,
   buildDuplicateGroups,
   buildScenarioSkillInventory,
   buildUniqueSkillInventory,
@@ -40,6 +41,7 @@ import { useLibrarySettingsFlow } from "./lib/useLibrarySettingsFlow.js";
 import { useScenarioFlow } from "./lib/useScenarioFlow.js";
 import { useSearchFlow } from "./lib/useSearchFlow.js";
 import { useUpdateFlow } from "./lib/useUpdateFlow.js";
+import { useSkillUpdateSchedule } from "./lib/useSkillUpdateSchedule.js";
 import { useProjectWorkspace } from "./lib/useProjectWorkspace.js";
 import ProjectWorkspaceBar from "./components/ProjectWorkspaceBar.jsx";
 import UpdatePreviewModal from "./components/UpdatePreviewModal.jsx";
@@ -499,10 +501,22 @@ function App() {
     resetUpdateState,
     getSyncInfo,
     checkAllUpdates,
+    checkAllSilent,
     checkUpdate,
     updateSkill,
   } = useUpdateFlow({ updatable, showToast, loadData });
   resetUpdateStateRef.current = resetUpdateState;
+  // 定时检查使用完整可检查库存：不受搜索、标签与场景筛选影响，
+  // 避免停留在筛选结果时其他 Skill 长期得不到检查。
+  const checkablePaths = useMemo(
+    () => skillInventory.filter((skill) => buildSkillCardView(skill, t).canCheck).map((skill) => skill.path),
+    [skillInventory, t]
+  );
+  const skillCheckSchedule = useSkillUpdateSchedule({
+    checkAllSilent,
+    checkPaths: checkablePaths,
+    checkableCount: checkablePaths.length,
+  });
 
   const {
     appUpdateState,
@@ -1029,6 +1043,7 @@ function App() {
                 runPrimaryAction: runAppUpdatePrimaryAction,
                 check: checkAppUpdate,
               }}
+              skillUpdate={skillCheckSchedule}
               installPolicy={installPolicyFlow}
               librarySettings={librarySettingsFlow}
               data={{

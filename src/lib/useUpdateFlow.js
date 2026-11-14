@@ -66,29 +66,51 @@ export function useUpdateFlow({ updatable, showToast, loadData }) {
     notify(accept(operation, path, result));
   }, [accept, change, failedResult, isCurrent, notify]);
 
-  const checkAllUpdates = useCallback(async () => {
-    if (batch.current) return;
-    const paths = [...new Set(updatable.map(skill => skill.path))]
+  // 手动检查与定时检查共用同一批量引擎：silent 变体跳过 toast 提示。
+  // 静默失败（IPC 整体失败或单条结果失败）不写入任何结果——上次成功
+  // 发现的更新信息保留到下一次成功检查；返回值表示检查是否真正启动，
+  // 供定时调度只在启动后记录检查时间戳。requestedPaths 允许定时任务
+  // 指定完整可检查库存，不受列表页当前筛选影响。
+  const runBatchCheck = useCallback(async ({ silent, paths: requestedPaths } = {}) => {
+    if (batch.current) return false;
+    const requested = requestedPaths ?? updatable.map(skill => skill.path);
+    const paths = [...new Set(requested)]
       .filter(path => !active.current.has(path));
-    if (!paths.length) return;
+    if (!paths.length) return false;
     const operation = begin(paths);
     batch.current = operation;
     try {
       const results = await skillmateApi.updates.checkAll(paths);
-      if (!isCurrent(operation)) return;
+      if (!isCurrent(operation)) return true;
       const byPath = new Map(results.map(result => [result.path, result]));
-      const accepted = paths.map(path => accept(operation, path, byPath.get(path)));
-      const count = accepted.filter(isIncompleteUpdateCheck).length;
-      showToast(t(count ? "updates.toast.batchIncomplete" : "updates.toast.batchDone", { count }), count ? "warn" : "success");
+      if (silent) {
+        // 单条失败/缺失结果不覆盖上次成功发现的更新信息
+        paths.forEach(path => {
+          const result = byPath.get(path);
+          if (result && !isIncompleteUpdateCheck(result)) accept(operation, path, result);
+        });
+      } else {
+        const accepted = paths.map(path => accept(operation, path, byPath.get(path)));
+        const count = accepted.filter(isIncompleteUpdateCheck).length;
+        showToast(t(count ? "updates.toast.batchIncomplete" : "updates.toast.batchDone", { count }), count ? "warn" : "success");
+      }
     } catch (error) {
-      if (!isCurrent(operation)) return;
-      paths.forEach(path => accept(operation, path, failedResult(error)));
-      showToast(t("updates.toast.batchFailed", { message: toUserErrorMessage(error, t("error.safeRetry")) }), "error");
+      if (!isCurrent(operation)) return true;
+      // 静默失败保留上次成功结果，不把任何条目改写为失败
+      if (!silent) {
+        paths.forEach(path => accept(operation, path, failedResult(error)));
+        showToast(t("updates.toast.batchFailed", { message: toUserErrorMessage(error, t("error.safeRetry")) }), "error");
+      }
     } finally {
       finish(operation, paths);
       if (batch.current === operation) batch.current = null;
     }
+    return true;
   }, [accept, begin, failedResult, finish, isCurrent, showToast, t, updatable]);
+
+  // onClick 直接绑定时会传入事件对象，仅接受显式路径数组，其余回退到 updatable。
+  const checkAllUpdates = useCallback((paths) => runBatchCheck({ silent: false, paths: Array.isArray(paths) ? paths : undefined }), [runBatchCheck]);
+  const checkAllSilent = useCallback((paths) => runBatchCheck({ silent: true, paths: Array.isArray(paths) ? paths : undefined }), [runBatchCheck]);
 
   const checkUpdate = useCallback(async path => {
     if (active.current.has(path)) return;
@@ -119,5 +141,5 @@ export function useUpdateFlow({ updatable, showToast, loadData }) {
     } finally { finish(operation, [path]); }
   }, [begin, finish, language, loadData, probe, showToast, t]);
 
-  return { updateState, resetUpdateState, getSyncInfo, checkAllUpdates, checkUpdate, updateSkill };
+  return { updateState, resetUpdateState, getSyncInfo, checkAllUpdates, checkAllSilent, checkUpdate, updateSkill };
 }

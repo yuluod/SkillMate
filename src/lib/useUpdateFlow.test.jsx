@@ -119,6 +119,53 @@ describe("useUpdateFlow checks", () => {
     expect(showToast).toHaveBeenLastCalledWith("Check complete; 2 Skills could not be verified", "warn");
   });
 
+  it("silent check shares the same engine and results but never toasts", async () => {
+    const { result, showToast } = setup([a, b]);
+    api.checkAll.mockResolvedValueOnce([{ path: a.path, syncState: "behind", hasUpdate: true, canCheck: true, canSync: true, lagCount: 2 }, { path: b.path, ...current }]);
+    await act(() => result.current.checkAllSilent());
+    expect(api.checkAll).toHaveBeenCalledExactlyOnceWith([a.path, b.path]);
+    expect(showToast).not.toHaveBeenCalled();
+    expect(result.current.getSyncInfo(a)).toMatchObject({ syncState: "behind", hasUpdate: true, lagCount: 2 });
+
+    // 静默 IPC 失败保留上次成功发现的更新，不改写为失败
+    api.checkAll.mockRejectedValueOnce(new Error("offline"));
+    await act(() => result.current.checkAllSilent());
+    expect(showToast).not.toHaveBeenCalled();
+    expect(result.current.getSyncInfo(a)).toMatchObject({ syncState: "behind", hasUpdate: true, lagCount: 2, checking: false });
+    expect(result.current.getSyncInfo(b)).toMatchObject({ syncState: "current" });
+  });
+
+  it("silent check skips failed per-path results to keep previous findings", async () => {
+    const { result, showToast } = setup([a, b]);
+    api.checkAll.mockResolvedValueOnce([{ path: a.path, syncState: "behind", hasUpdate: true, canCheck: true, canSync: true, lagCount: 2 }, { path: b.path, ...current }]);
+    await act(() => result.current.checkAllSilent());
+    // 离线重试：a 单条失败（保留 behind），b 仍返回 current
+    api.checkAll.mockResolvedValueOnce([{ path: a.path, ...failed }, { path: b.path, ...current }]);
+    await act(() => result.current.checkAllSilent());
+    expect(showToast).not.toHaveBeenCalled();
+    expect(result.current.getSyncInfo(a)).toMatchObject({ syncState: "behind", hasUpdate: true, lagCount: 2 });
+    expect(result.current.getSyncInfo(b)).toMatchObject({ syncState: "current" });
+  });
+
+  it("silent check honors explicit paths beyond the filtered updatable list", async () => {
+    const { result } = setup([a]);
+    api.checkAll.mockResolvedValueOnce([a, b].map(skill => ({ path: skill.path, ...current })));
+    await act(() => result.current.checkAllSilent([a.path, b.path]));
+    expect(api.checkAll).toHaveBeenCalledExactlyOnceWith([a.path, b.path]);
+  });
+
+  it("reports not-started when a batch is already running so schedulers keep their window", async () => {
+    const pending = deferred();
+    api.checkAll.mockReturnValueOnce(pending.promise);
+    const { result } = setup();
+    act(() => { result.current.checkAllUpdates(); });
+    let started;
+    await act(async () => { started = await result.current.checkAllSilent(); });
+    expect(started).toBe(false);
+    expect(api.checkAll).toHaveBeenCalledTimes(1);
+    pending.resolve([a, b].map(skill => ({ path: skill.path, ...current })));
+  });
+
   it.each([true, false])("interleaved apply and batch preserve independent busy state (batch first finishes: %s)", async batchFirst => {
     const apply = deferred(), batch = deferred();
     api.applyOne.mockReturnValueOnce(apply.promise);
