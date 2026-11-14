@@ -6,6 +6,14 @@
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-14
+
+### 变更
+
+- 开发与 CI 环境升级至 Node.js 26 LTS、pnpm 12.18.0，补充 Corepack 配置说明。
+- 升级 Vite、jsdom、user-event 和 Rust 依赖，数据库依赖 rusqlite 升级至 0.42。
+- 升级 Rust 工具链到 1.100.0，同步 CI 与发布工作流。
+
 ## [0.1.1] - 2026-11-14
 
 ### 新增
@@ -262,7 +270,8 @@
 - 修复 CI 格式检查和 Windows 平台故障注入测试。
 - 发布版本一致性测试不再硬编码版本号。
 
-[Unreleased]: https://github.com/yuluod/SkillMate/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/yuluod/SkillMate/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/yuluod/SkillMate/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/yuluod/SkillMate/compare/v0.1.0...v0.1.1
 [0.0.16]: https://github.com/yuluod/SkillMate/compare/v0.0.15...v0.0.16
 [0.0.15]: https://github.com/yuluod/SkillMate/compare/v0.0.14...v0.0.15
