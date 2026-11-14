@@ -17,10 +17,11 @@ async function loadDashboard() {
     invoke("get_all_assistants"),
     invoke("get_library_skills"),
   ]);
-  const [tagsResult, scenariosResult, gitResult] = await Promise.allSettled([
+  const [tagsResult, scenariosResult, gitResult, ignoredResult] = await Promise.allSettled([
     invoke("get_all_tags"),
     invoke("get_scenarios"),
     invoke("get_git_backup"),
+    invoke("list_ignored_skills"),
   ]);
   const diagnostics = [];
   const optionalValue = (section, result, fallback) => {
@@ -41,6 +42,7 @@ async function loadDashboard() {
       branch: "main",
       last_sync: "",
     }),
+    ignoredPaths: optionalValue("ignored", ignoredResult, []),
     diagnostics,
   };
 }
@@ -98,6 +100,10 @@ export const skillmateApi = Object.freeze({
     delete: (tagId) => invoke("delete_tag", { tagId }),
     updateSkill: (skillPath, tags) => invoke("update_skill_tags", { skillPath, tags }),
   }),
+  ignore: Object.freeze({
+    list: () => invoke("list_ignored_skills"),
+    set: (path, ignored) => invoke("set_skill_ignore", { skillPath: path, ignored }),
+  }),
   scenarios: Object.freeze({
     create: ({ name, description, skillIds }) => invoke("create_scenario", { name, description, skillIds }),
     delete: (scenarioId) => invoke("delete_scenario", { scenarioId }),
@@ -142,6 +148,8 @@ export const skillmateApi = Object.freeze({
     setRoot: (path) => invoke("set_library_root", { path }),
     export: (path) => invoke("export_library", { path }),
     previewImport: (path, mode) => invoke("preview_import_library", { path, mode }),
+    validateDraft: (name, description) => invoke("validate_skill_draft", { name, description }),
+    create: (name, description, locale) => invoke("create_library_skill", { name, description, locale }),
   }),
   manifests: Object.freeze({
     exportSkillMate: (path) => invoke("export_skillmate_manifest", { path }),

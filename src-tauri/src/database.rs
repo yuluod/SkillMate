@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-const DB_SCHEMA_VERSION: i64 = 8;
+const DB_SCHEMA_VERSION: i64 = 9;
 static DATABASE_INITIALIZATION_ERROR: OnceLock<String> = OnceLock::new();
 
 #[derive(Clone, Copy)]
@@ -17,6 +17,7 @@ pub enum PathColumn {
     ManagedRoot,
     LibrarySkill,
     DeploymentTarget,
+    SkillIgnores,
 }
 
 impl PathColumn {
@@ -29,6 +30,7 @@ impl PathColumn {
             Self::ManagedRoot => ("managed_roots", "root_path"),
             Self::LibrarySkill => ("library_skills", "library_path"),
             Self::DeploymentTarget => ("skill_deployments", "target_path"),
+            Self::SkillIgnores => ("skill_ignores", "skill_path"),
         }
     }
 }
@@ -255,6 +257,7 @@ fn migrate_database(connection: &Connection) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     crate::finding_review::ensure_review_table(&transaction)?;
     crate::skill_snapshot::ensure_table(&transaction)?;
+    crate::skill_ignore::ensure_ignore_table(&transaction)?;
 
     let scenario_json_added = !table_has_column(&transaction, "scenarios", "skill_ids_json")?;
     if scenario_json_added {
@@ -472,6 +475,38 @@ mod tests {
             serde_json::from_str::<Vec<String>>(&tags_json).unwrap(),
             vec!["one", "two"]
         );
+    }
+
+    #[test]
+    fn migration_preserves_v8_ignores_and_adds_snapshots() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(crate::skill_ignore::TABLE_DDL)
+            .unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO skill_ignores VALUES ('/tmp/external', '2026-11-14');
+                 PRAGMA user_version = 8;",
+            )
+            .unwrap();
+
+        migrate_database(&connection).unwrap();
+        migrate_database(&connection).unwrap();
+
+        let ignored: String = connection
+            .query_row("SELECT skill_path FROM skill_ignores", [], |row| row.get(0))
+            .unwrap();
+        let snapshots: i64 = connection
+            .query_row("SELECT COUNT(*) FROM skill_update_snapshots", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(ignored, "/tmp/external");
+        assert_eq!(snapshots, 0);
+        assert_eq!(version, 9);
     }
 
     #[test]

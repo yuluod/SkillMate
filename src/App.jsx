@@ -5,7 +5,9 @@ import appIcon from "../src-tauri/icons/128x128.png";
 import {
   ConfirmModal,
   AdoptionModal,
+  CreateSkillModal,
   DriftSyncModal,
+  DuplicateSkillModal,
   InstallModal,
   PreviewModal,
   TagEditorModal,
@@ -20,6 +22,8 @@ import {
   buildAppUpdateView,
   buildDashboardStats,
   buildDriftGroups,
+  buildSkillCardView,
+  buildDuplicateGroups,
   buildScenarioSkillInventory,
   buildUniqueSkillInventory,
   buildUnifiedSkillInventory,
@@ -37,6 +41,7 @@ import { useLibrarySettingsFlow } from "./lib/useLibrarySettingsFlow.js";
 import { useScenarioFlow } from "./lib/useScenarioFlow.js";
 import { useSearchFlow } from "./lib/useSearchFlow.js";
 import { useUpdateFlow } from "./lib/useUpdateFlow.js";
+import { useSkillUpdateSchedule } from "./lib/useSkillUpdateSchedule.js";
 import { useProjectWorkspace } from "./lib/useProjectWorkspace.js";
 import ProjectWorkspaceBar from "./components/ProjectWorkspaceBar.jsx";
 import UpdatePreviewModal from "./components/UpdatePreviewModal.jsx";
@@ -45,7 +50,7 @@ import { createResettableTimer } from "./lib/toastTimer.mjs";
 import { toUserErrorMessage } from "./lib/errorMessage.mjs";
 import { skillmateApi } from "./lib/skillmateApi.js";
 
-const EMPTY_DATA = { assistants: [], librarySkills: [], tags: [], scenarios: [], git: { enabled: false, remote_url: "" } };
+const EMPTY_DATA = { assistants: [], librarySkills: [], tags: [], scenarios: [], ignoredPaths: [], git: { enabled: false, remote_url: "" } };
 const THEME_STORAGE_KEY = "skillmate-theme-mode";
 const THEME_MODES = ["system", "light", "dark"];
 const SKIN_STORAGE_KEY = "skillmate-skin";
@@ -170,6 +175,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [init, setInit] = useState(true);
   const [installOpen, setInstallOpen] = useState(false);
+  const [createSkillOpen, setCreateSkillOpen] = useState(false);
   const [discoveryOpen, setDiscoveryOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [preview, setPreview] = useState({ title: "", content: "", validation: null, diagnostics: [] });
@@ -185,6 +191,7 @@ function App() {
   const [loadError, setLoadError] = useState(null);
   const [trashReceipt, setTrashReceipt] = useState(null);
   const [driftGroup, setDriftGroup] = useState(null);
+  const [duplicateGroup, setDuplicateGroup] = useState(null);
   const [adoptionCandidate, setAdoptionCandidate] = useState(null);
   const [projectInspectionRevision, setProjectInspectionRevision] = useState(0);
   const projectWorkspace = useProjectWorkspace();
@@ -348,7 +355,7 @@ function App() {
     setLoading(true);
     setLoadError(null);
     try {
-      const { assistants, librarySkills, tags, scenarios, git, diagnostics = [] } = await skillmateApi.inventory.loadDashboard();
+      const { assistants, librarySkills, tags, scenarios, git, ignoredPaths, diagnostics = [] } = await skillmateApi.inventory.loadDashboard();
       if (!mountedRef.current || requestId !== loadRequestRef.current) return;
       const failedSections = new Set(diagnostics.map((item) => item.section));
       setDataRevision((revision) => revision + 1);
@@ -357,6 +364,7 @@ function App() {
         librarySkills,
         tags: failedSections.has("tags") ? current.tags : tags,
         scenarios: failedSections.has("scenarios") ? current.scenarios : scenarios,
+        ignoredPaths: failedSections.has("ignored") ? current.ignoredPaths : ignoredPaths,
         git: failedSections.has("git") ? current.git : git,
       }));
       if (!failedSections.has("tags")) {
@@ -410,13 +418,23 @@ function App() {
     }));
     return [...deployed, ...inLibrary];
   }, [data.assistants, data.librarySkills, t]);
-  const driftGroups = useMemo(() => buildDriftGroups(data.assistants, t), [data.assistants, t]);
+  // 忽略清单：纯展示层，被忽略的外部条目默认隐藏、可在「已忽略」视图找回。
+  const ignoredSet = useMemo(() => new Set(data.ignoredPaths || []), [data.ignoredPaths]);
+  // 漂移与重复提醒按忽略后剩余的副本重新分类，与统计保持一致。
+  const driftGroups = useMemo(
+    () => buildDriftGroups(data.assistants, t, ignoredSet),
+    [data.assistants, t, ignoredSet]
+  );
+  const duplicateGroups = useMemo(
+    () => buildDuplicateGroups(data.assistants, t, ignoredSet),
+    [data.assistants, t, ignoredSet]
+  );
   const scenarioSkills = useMemo(() => buildScenarioSkillInventory(allSkills), [allSkills]);
   // 技能库列表与统计使用统一身份：同一逻辑 Skill 的多平台部署与库内主副本合并为一行。
   const skillInventory = useMemo(() => buildUnifiedSkillInventory(allSkills), [allSkills]);
   const dashboardStats = useMemo(
-    () => buildDashboardStats(data.assistants, data.librarySkills, t),
-    [data.assistants, data.librarySkills, t]
+    () => buildDashboardStats(data.assistants, data.librarySkills, t, ignoredSet),
+    [data.assistants, data.librarySkills, t, ignoredSet]
   );
 
   const scenarioFlow = useScenarioFlow({
@@ -488,11 +506,23 @@ function App() {
     resetUpdateState,
     getSyncInfo,
     checkAllUpdates,
+    checkAllSilent,
     checkUpdate,
     updateSkill,
     rollbackSkill,
   } = useUpdateFlow({ updatable, showToast, loadData });
   resetUpdateStateRef.current = resetUpdateState;
+  // 定时检查使用完整可检查库存：不受搜索、标签与场景筛选影响，
+  // 避免停留在筛选结果时其他 Skill 长期得不到检查。
+  const checkablePaths = useMemo(
+    () => skillInventory.filter((skill) => buildSkillCardView(skill, t).canCheck).map((skill) => skill.path),
+    [skillInventory, t]
+  );
+  const skillCheckSchedule = useSkillUpdateSchedule({
+    checkAllSilent,
+    checkPaths: checkablePaths,
+    checkableCount: checkablePaths.length,
+  });
 
   const {
     appUpdateState,
@@ -824,6 +854,13 @@ function App() {
     setInstallOpen(true);
   }, [prepareInstallSource, projectWorkspacePath, setInstallOpen, setInstallProjectPath, setInstallTargetMode]);
 
+  // 创建成功后刷新数据并直接进入「启用到…」流程：新库 Skill 立即可用。
+  async function completeCreateSkill(path) {
+    showToast(t("create.done"), "success");
+    await loadData({ resetUpdates: false });
+    enableLibrarySkill({ path });
+  }
+
   async function completeDrift(message) {
     showToast(typeof message === "string" && message.trim() ? message : t("drift.complete"), "success");
     await loadData();
@@ -833,6 +870,28 @@ function App() {
     showToast(typeof message === "string" && message.trim() ? message : t("adoption.complete"), "success");
     await loadData();
     setProjectInspectionRevision((revision) => revision + 1);
+  }
+
+  // 忽略是纯展示层登记：可随时撤销，文件、登记与扫描结果不受影响。
+  async function setSkillIgnored(path, ignored) {
+    try {
+      const message = await skillmateApi.ignore.set(path, ignored);
+      showToast(message || (ignored ? t("skills.ignoreDone") : t("skills.unignoreDone")), "success");
+    } catch (error) {
+      showToast(toUserErrorMessage(error, t("error.safeRetry")), "error");
+      return;
+    }
+    await loadData({ resetUpdates: false });
+  }
+
+  // 重复副本组内的接管入口：复用详情栏同一条 AdoptionModal 流程，
+  // 副本所在平台取自扫描发现的 availableIn，全局范围接管不带 projectPath。
+  function adoptDuplicateCopy(copy) {
+    const skill = allSkills.find((item) => item.path === copy.path);
+    const assistant = copy.availableIn[0]?.name || skill?.ai || "";
+    if (!skill || !assistant) return;
+    setDuplicateGroup(null);
+    setAdoptionCandidate({ skill, assistant, projectPath: "" });
   }
 
   const iconContext = useMemo(() => ({ weight: skin === "cardbox" ? "bold" : "regular" }), [skin]);
@@ -892,9 +951,11 @@ function App() {
               stats={dashboardStats}
               tagCount={tags.length}
               driftGroups={driftGroups}
+              duplicateGroups={duplicateGroups}
               onNavigate={(target, filter = "all") => (target === "skills" ? openSkills(filter) : setView(target))}
               onInstall={startAddSkill}
               onOpenDrift={setDriftGroup}
+              onOpenDuplicates={setDuplicateGroup}
             />
           )}
 
@@ -921,6 +982,8 @@ function App() {
               discoveryOpen={discoveryOpen}
               discovery={discoveryOpen ? <MarketDiscovery onInstall={installMarketSkill} installedSkills={allSkills} /> : null}
               filterRequest={skillFilterRequest}
+              ignoredPaths={ignoredSet}
+              onIgnore={setSkillIgnored}
               activeScenario={activeScenario}
               onClearScenario={() => scenarioFlow.setActiveId("")}
               onUpdate={setUpdatePreviewPath}
@@ -943,6 +1006,7 @@ function App() {
               onRemove={remove}
               onRollback={setRollbackPreviewPath}
               dataRevision={dataRevision}
+              onCreate={() => setCreateSkillOpen(true)}
               onCheckAll={checkAllUpdates}
               checkBusy={Object.values(updateState).some(state => state.checking || state.updating)}
               onCheck={checkUpdate}
@@ -987,6 +1051,7 @@ function App() {
                 runPrimaryAction: runAppUpdatePrimaryAction,
                 check: checkAppUpdate,
               }}
+              skillUpdate={skillCheckSchedule}
               installPolicy={installPolicyFlow}
               librarySettings={librarySettingsFlow}
               data={{
@@ -1117,6 +1182,8 @@ function App() {
       {trashReceipt && <div className="undo-bar" role="status"><span>{t("trash.done", { name: trashReceipt.name })}</span><button className="btn btn-secondary btn-sm" onClick={undoTrash}><Icon name="undo" size={14} />{t("trash.undo")}</button></div>}
 
       {driftGroup && <DriftSyncModal group={driftGroup} onClose={() => setDriftGroup(null)} onComplete={completeDrift} />}
+      {createSkillOpen && <CreateSkillModal onClose={() => setCreateSkillOpen(false)} onComplete={completeCreateSkill} />}
+      {duplicateGroup && <DuplicateSkillModal group={duplicateGroup} onClose={() => setDuplicateGroup(null)} onAdopt={adoptDuplicateCopy} />}
       {updatePreviewPath && <UpdatePreviewModal path={updatePreviewPath} onClose={() => setUpdatePreviewPath("")} onConfirm={updateSkill} />}
       {rollbackPreviewPath && <RollbackPreviewModal path={rollbackPreviewPath} onClose={() => setRollbackPreviewPath("")} onConfirm={rollbackSkill} />}
 

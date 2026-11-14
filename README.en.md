@@ -111,11 +111,13 @@ Choose a project folder from Overview, Deployments, or Scenarios. Successful ins
 - Distinguish project, global, shadowed, and shared discovery entries.
 - The Skill library lists each logical Skill once: deployments across platforms merge into one row, and the detail pane disables them per location.
 - Search and sort inside the library list, with All, Not enabled, Updates, and Needs attention filters. Desktop shows the first visible Skill’s details by default; smaller screens switch to details after selecting a row.
+- External entries you never want SkillMate to manage can be ignored: the entry is hidden via a local record and can be restored from the Ignored view at any time. Overview counts and content-drift reminders follow the ignore set as well — a drift reminder disappears once all of its copies are ignored. Ignoring never deletes files, never changes registrations, and scans still run in full; managed content cannot be ignored, and ignore records are never carried in exports.
 - Search matches the `SKILL.md` body in addition to name and description: the primary copy is read live and each hit shows a file:line excerpt; above 1,000 entries body search is disabled with a notice, falling back to name and description only.
 - Choose “Enable to…” in the library to select agents and global/project scope in the right pane, then preview and confirm the file plan. Returning to details does not enable the Skill.
 - Show externally managed counts and missing sources on Overview.
 - Display content source, manager, update mechanism, and enabled platforms.
 - Summarize structure issues, static risks, local changes, content drift, and scan diagnostics.
+- Detect same-named Skills scattered across platform directories: identical-content groups suggest adopting one copy and enabling it everywhere, while differing-content groups offer the cross-platform sync entry. Grouping relies only on name and content fingerprint, never on platform inference, and SkillMate never merges or deletes copies automatically.
 
 ### Structure and safety checks
 
@@ -200,9 +202,12 @@ The following constraints protect existing installations:
 
 These rules prevent existing enablement links from breaking and ensure that adding a Skill never implicitly enables it globally.
 
+The library page offers “New Skill”: enter a name and description to generate a spec-compliant `SKILL.md` skeleton directly into the library. The same structure validation (name format, directory-name consistency, required description) runs live while typing, so invalid input never leaves a half-created directory; once created you can “Enable to…” immediately. The template is a static skeleton only — no model-generated content.
+
 ### Skill updates
 
 - Git Skills managed by SkillMate can be checked and updated when their source is reconstructable.
+- Optional scheduled checks (Settings → Application updates; off by default, daily or weekly): when due they silently run the same batch check as the manual one and only refresh the “Updates” counts — updates are never installed automatically. Checks reach each Skill’s upstream Git remote; failures keep the last results silently.
 - Repository subdirectories and pinned refs are retained in provenance metadata.
 - Local sources are checked only for availability; SkillMate does not update them automatically.
 - `legacy_npm` and `legacy_pip` identify historical sources and direct users to the original updater.
