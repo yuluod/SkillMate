@@ -583,6 +583,8 @@ export function buildSkillCardView(skill, t, updateInfo) {
     canDelete: isManaged && !isSymlink,
     canUnlink: isManaged && isSymlink,
     canAdopt: !isManaged && !isSymlink && inferredManager !== "skills_cli" && skill?.skill_type === "skill-folder",
+    // 忽略只对外部（非受管）条目开放：受管内容的问题必须持续暴露，不提供隐藏入口。
+    canIgnore: !isSkillManaged(skill),
     canMaterialize: isManaged && skill?.source_type === "deployment" && skill?.scope === "project",
     availableIn,
     availabilityLabel: availableIn.map((assistant) => assistant.name).join(localized(t, "common.listSeparator", "、")),
@@ -699,14 +701,14 @@ function buildNamedCopyGroups(assistants, t) {
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
-export function buildDriftGroups(assistants, t) {
-  return buildNamedCopyGroups(assistants, t).filter((group) => group.versionCount > 1);
+export function buildDriftGroups(assistants, t, ignoredPaths = null) {
+  return filterGroupsByIgnored(buildNamedCopyGroups(assistants, t), ignoredPaths);
 }
 
 // 内容完全相同的同名副本：引导「接管其中一个为统一库主副本，再启用到其余平台」。
 // 分组只提示不写入；判定只基于名称与内容指纹，不基于平台推断。
-export function buildDuplicateGroups(assistants, t) {
-  return buildNamedCopyGroups(assistants, t).filter((group) => group.versionCount === 1);
+export function buildDuplicateGroups(assistants, t, ignoredPaths = null) {
+  return filterGroupsByIgnored(buildNamedCopyGroups(assistants, t), ignoredPaths, "duplicate");
 }
 
 // 副本接管资格：与详情栏 canAdopt 同一口径（非受管、非连接、非 skills CLI 仓库条目、实体目录）。
@@ -791,13 +793,27 @@ export function buildUnifiedSkillInventory(skills) {
   return unified;
 }
 
-export function buildDashboardStats(assistants, librarySkills = [], t) {
+// 先隐藏被忽略的副本，再按剩余指纹区分漂移与重复，避免分组分类过期。
+export function filterGroupsByIgnored(groups, ignoredPaths = null, kind = "drift") {
+  if (!Array.isArray(groups)) return [];
+  return groups
+    .map((group) => {
+      const copies = group.copies.filter((copy) => !ignoredPaths?.has?.(copy.path));
+      const hashes = new Set(copies.map((copy) => copy.contentHash));
+      return { ...group, copies, versionCount: hashes.size };
+    })
+    .filter((group) => group.copies.length > 1
+      && (kind === "duplicate" ? group.versionCount === 1 : group.versionCount > 1));
+}
+
+export function buildDashboardStats(assistants, librarySkills = [], t, ignoredPaths = null) {
   const skills = buildScenarioSkillInventory([
     ...buildUniqueSkillInventory(assistants, t),
     ...(Array.isArray(librarySkills) ? librarySkills : []),
   ]);
-  const driftGroups = buildDriftGroups(assistants, t);
-  const duplicateGroups = buildDuplicateGroups(assistants, t);
+  const driftGroups = buildDriftGroups(assistants, t, ignoredPaths);
+  const duplicateGroups = buildDuplicateGroups(assistants, t, ignoredPaths);
+  const isIgnored = (skill) => Boolean(ignoredPaths?.has?.(skill?.path));
   let updates = 0;
   let structureIssues = 0;
   let securityRisks = 0;
@@ -805,6 +821,8 @@ export function buildDashboardStats(assistants, librarySkills = [], t) {
   let external = 0;
   let stale = 0;
   for (const skill of skills) {
+    // 忽略是展示层降噪：被忽略的外部条目不再计入外部噪音，其余口径不变。
+    if (isIgnored(skill)) continue;
     const card = buildSkillCardView(skill, t);
     if (skill?.sync_state === "behind" || skill?.has_update) updates += 1;
     if (skill?.structure_status === "nonstandard") structureIssues += 1;

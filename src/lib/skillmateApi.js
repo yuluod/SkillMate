@@ -17,10 +17,11 @@ async function loadDashboard() {
     invoke("get_all_assistants"),
     invoke("get_library_skills"),
   ]);
-  const [tagsResult, scenariosResult, gitResult] = await Promise.allSettled([
+  const [tagsResult, scenariosResult, gitResult, ignoredResult] = await Promise.allSettled([
     invoke("get_all_tags"),
     invoke("get_scenarios"),
     invoke("get_git_backup"),
+    invoke("list_ignored_skills"),
   ]);
   const diagnostics = [];
   const optionalValue = (section, result, fallback) => {
@@ -41,6 +42,7 @@ async function loadDashboard() {
       branch: "main",
       last_sync: "",
     }),
+    ignoredPaths: optionalValue("ignored", ignoredResult, []),
     diagnostics,
   };
 }
@@ -97,6 +99,10 @@ export const skillmateApi = Object.freeze({
     update: (tagId, name, color) => invoke("update_tag", { tagId, name, color }),
     delete: (tagId) => invoke("delete_tag", { tagId }),
     updateSkill: (skillPath, tags) => invoke("update_skill_tags", { skillPath, tags }),
+  }),
+  ignore: Object.freeze({
+    list: () => invoke("list_ignored_skills"),
+    set: (path, ignored) => invoke("set_skill_ignore", { skillPath: path, ignored }),
   }),
   scenarios: Object.freeze({
     create: ({ name, description, skillIds }) => invoke("create_scenario", { name, description, skillIds }),

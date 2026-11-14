@@ -114,6 +114,7 @@ describe("Dashboard 数据加载", () => {
       if (command === "get_all_tags") throw new Error("标签数据库不可用");
       if (command === "get_scenarios") return [{ id: "writing", name: "写作" }];
       if (command === "get_git_backup") return { enabled: true, repo_path: "/tmp/backup" };
+      if (command === "list_ignored_skills") return [];
       throw new Error(`未处理命令: ${command}`);
     });
 
