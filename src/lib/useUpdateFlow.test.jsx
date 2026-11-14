@@ -119,6 +119,21 @@ describe("useUpdateFlow checks", () => {
     expect(showToast).toHaveBeenLastCalledWith("Check complete; 2 Skills could not be verified", "warn");
   });
 
+  it("silent check shares the same engine and results but never toasts", async () => {
+    const { result, showToast } = setup([a, b]);
+    api.checkAll.mockResolvedValueOnce([{ path: a.path, syncState: "behind", hasUpdate: true, canCheck: true, canSync: true }, { path: b.path, ...current }]);
+    await act(() => result.current.checkAllSilent());
+    expect(api.checkAll).toHaveBeenCalledExactlyOnceWith([a.path, b.path]);
+    expect(showToast).not.toHaveBeenCalled();
+    expect(result.current.getSyncInfo(a)).toMatchObject({ syncState: "behind", hasUpdate: true });
+
+    // 静默失败同样保留结果且不打扰
+    api.checkAll.mockRejectedValueOnce(new Error("offline"));
+    await act(() => result.current.checkAllSilent());
+    expect(showToast).not.toHaveBeenCalled();
+    expect(result.current.getSyncInfo(a)).toMatchObject({ syncState: "failed", checking: false });
+  });
+
   it.each([true, false])("interleaved apply and batch preserve independent busy state (batch first finishes: %s)", async batchFirst => {
     const apply = deferred(), batch = deferred();
     api.applyOne.mockReturnValueOnce(apply.promise);

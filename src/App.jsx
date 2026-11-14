@@ -37,6 +37,7 @@ import { useLibrarySettingsFlow } from "./lib/useLibrarySettingsFlow.js";
 import { useScenarioFlow } from "./lib/useScenarioFlow.js";
 import { useSearchFlow } from "./lib/useSearchFlow.js";
 import { useUpdateFlow } from "./lib/useUpdateFlow.js";
+import { useSkillUpdateSchedule } from "./lib/useSkillUpdateSchedule.js";
 import { useProjectWorkspace } from "./lib/useProjectWorkspace.js";
 import ProjectWorkspaceBar from "./components/ProjectWorkspaceBar.jsx";
 import UpdatePreviewModal from "./components/UpdatePreviewModal.jsx";
@@ -483,10 +484,15 @@ function App() {
     resetUpdateState,
     getSyncInfo,
     checkAllUpdates,
+    checkAllSilent,
     checkUpdate,
     updateSkill,
   } = useUpdateFlow({ updatable, showToast, loadData });
   resetUpdateStateRef.current = resetUpdateState;
+  const skillCheckSchedule = useSkillUpdateSchedule({
+    checkAllSilent,
+    checkableCount: updatable.length,
+  });
 
   const {
     appUpdateState,
@@ -979,6 +985,7 @@ function App() {
                 runPrimaryAction: runAppUpdatePrimaryAction,
                 check: checkAppUpdate,
               }}
+              skillUpdate={skillCheckSchedule}
               installPolicy={installPolicyFlow}
               librarySettings={librarySettingsFlow}
               data={{

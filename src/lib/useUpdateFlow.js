@@ -66,7 +66,9 @@ export function useUpdateFlow({ updatable, showToast, loadData }) {
     notify(accept(operation, path, result));
   }, [accept, change, failedResult, isCurrent, notify]);
 
-  const checkAllUpdates = useCallback(async () => {
+  // 手动检查与定时检查共用同一批量引擎：silent 变体跳过 toast 提示，
+  // 结果照常写入 updateState，驱动侧边栏徽标与库页「可更新」筛选。
+  const runBatchCheck = useCallback(async ({ silent }) => {
     if (batch.current) return;
     const paths = [...new Set(updatable.map(skill => skill.path))]
       .filter(path => !active.current.has(path));
@@ -78,17 +80,22 @@ export function useUpdateFlow({ updatable, showToast, loadData }) {
       if (!isCurrent(operation)) return;
       const byPath = new Map(results.map(result => [result.path, result]));
       const accepted = paths.map(path => accept(operation, path, byPath.get(path)));
-      const count = accepted.filter(isIncompleteUpdateCheck).length;
-      showToast(t(count ? "updates.toast.batchIncomplete" : "updates.toast.batchDone", { count }), count ? "warn" : "success");
+      if (!silent) {
+        const count = accepted.filter(isIncompleteUpdateCheck).length;
+        showToast(t(count ? "updates.toast.batchIncomplete" : "updates.toast.batchDone", { count }), count ? "warn" : "success");
+      }
     } catch (error) {
       if (!isCurrent(operation)) return;
       paths.forEach(path => accept(operation, path, failedResult(error)));
-      showToast(t("updates.toast.batchFailed", { message: toUserErrorMessage(error, t("error.safeRetry")) }), "error");
+      if (!silent) showToast(t("updates.toast.batchFailed", { message: toUserErrorMessage(error, t("error.safeRetry")) }), "error");
     } finally {
       finish(operation, paths);
       if (batch.current === operation) batch.current = null;
     }
   }, [accept, begin, failedResult, finish, isCurrent, showToast, t, updatable]);
+
+  const checkAllUpdates = useCallback(() => runBatchCheck({ silent: false }), [runBatchCheck]);
+  const checkAllSilent = useCallback(() => runBatchCheck({ silent: true }), [runBatchCheck]);
 
   const checkUpdate = useCallback(async path => {
     if (active.current.has(path)) return;
@@ -119,5 +126,5 @@ export function useUpdateFlow({ updatable, showToast, loadData }) {
     } finally { finish(operation, [path]); }
   }, [begin, finish, language, loadData, probe, showToast, t]);
 
-  return { updateState, resetUpdateState, getSyncInfo, checkAllUpdates, checkUpdate, updateSkill };
+  return { updateState, resetUpdateState, getSyncInfo, checkAllUpdates, checkAllSilent, checkUpdate, updateSkill };
 }
