@@ -767,7 +767,9 @@ export function buildUnifiedSkillInventory(skills) {
 }
 
 // 忽略是展示层：分组里被忽略的副本一并隐藏；版本数按剩余副本重算，
-// 剩余不足两份的组整体消失。计数与概览行共用这一结果，保证口径一致。
+// 剩余副本不足两份、或部分忽略后塌缩为同内容（如 A、A、B 忽略 B 后
+// 只剩 A、A）的组整体消失。计数与概览行共用这一结果，保证口径一致。
+// 重复检测（内容相同口径）整合时复用同一重算，但按自身条件过滤。
 export function filterGroupsByIgnored(groups, ignoredPaths = null) {
   if (!Array.isArray(groups)) return [];
   if (!ignoredPaths?.has) return groups;
@@ -777,7 +779,7 @@ export function filterGroupsByIgnored(groups, ignoredPaths = null) {
       const hashes = new Set(copies.map((copy) => copy.contentHash));
       return { ...group, copies, versionCount: hashes.size };
     })
-    .filter((group) => group.copies.length > 1);
+    .filter((group) => group.copies.length > 1 && group.versionCount > 1);
 }
 
 export function buildDashboardStats(assistants, librarySkills = [], t, ignoredPaths = null) {

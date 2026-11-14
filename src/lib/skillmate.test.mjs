@@ -126,6 +126,35 @@ test("全部忽略后漂移提醒消失，撤销后恢复且计数与概览共�
   assert.equal(statsRestored.driftGroups, 1);
 });
 
+test("部分忽略使漂移组塌缩为同内容时提醒消失", () => {
+  // A、A、B 三份内容：构成一个漂移组（两个内容版本）
+  const skill = (path, hash) => ({
+    name: "writer", path, content_hash: hash,
+    structure_status: "complete", structure_warnings: [],
+  });
+  const assistants = [
+    { name: "Claude Code", exists: true, skills: [skill("/a/writer", "A")] },
+    { name: "Codex", exists: true, skills: [skill("/b/writer", "A")] },
+    { name: "Cursor", exists: true, skills: [skill("/c/writer", "B")] },
+  ];
+  const groups = buildDriftGroups(assistants);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].copies.length, 3);
+  assert.equal(groups[0].versionCount, 2);
+
+  // 忽略 B：剩余 A、A 同内容，版本数重算为 1，不再构成漂移提醒
+  const collapsed = filterGroupsByIgnored(groups, new Set(["/c/writer"]));
+  assert.equal(collapsed.length, 0);
+  const statsCollapsed = buildDashboardStats(assistants, [], translateEnglish, new Set(["/c/writer"]));
+  assert.equal(statsCollapsed.driftGroups, 0);
+
+  // 忽略其中一份 A：剩余 A、B 仍是漂移组，版本数保持 2
+  const kept = filterGroupsByIgnored(groups, new Set(["/a/writer"]));
+  assert.equal(kept.length, 1);
+  assert.equal(kept[0].copies.length, 2);
+  assert.equal(kept[0].versionCount, 2);
+});
+
 test("被忽略的外部条目不再计入外部噪音，受管条目不可忽略", () => {
   const assistants = [
     {
