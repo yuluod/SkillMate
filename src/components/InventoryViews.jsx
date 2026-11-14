@@ -169,8 +169,9 @@ const SkillRow = React.memo(function SkillRow({
   );
 });
 
-function SkillDetailPane({ skill, card, tags, t, onClose, onPreview, onUpdate, onCheck, onEnable, onAdopt, onEditTags, onUnlink, onOpenDirectory, onRollback }) {
-  // 更新快照：受管 Skill 打开详情时查询一次；有快照即可一键回滚到上一版本。
+function SkillDetailPane({ skill, card, tags, t, onClose, onPreview, onUpdate, onCheck, onEnable, onAdopt, onEditTags, onUnlink, onOpenDirectory, onRollback, dataRevision = 0 }) {
+  // 更新快照：打开详情时查询，并在数据刷新（更新/回滚成功）后重查，
+  // 保证「最需要回滚的时刻」入口可见、版本标签同步。
   const [snapshots, setSnapshots] = React.useState(null);
   const skillPath = skill?.path || "";
   React.useEffect(() => {
@@ -182,7 +183,7 @@ function SkillDetailPane({ skill, card, tags, t, onClose, onPreview, onUpdate, o
       .then((list) => { if (!cancelled) setSnapshots(Array.isArray(list) ? list : []); })
       .catch(() => { if (!cancelled) setSnapshots([]); });
     return () => { cancelled = true; };
-  }, [skillPath]);
+  }, [skillPath, dataRevision]);
   if (!skill || !card) return null;
   const singleDeployment = skill.deployments?.length === 1 ? skill.deployments[0] : null;
   const locations = skillLocations(skill, card);
@@ -289,6 +290,7 @@ export function SkillsView({
   onUnlink,
   onRemove,
   onRollback,
+  dataRevision = 0,
   selectedSkillPaths = [],
   onToggleSelection = () => {},
   onToggleVisibleSelection = () => {},
@@ -492,6 +494,7 @@ export function SkillsView({
           onUnlink={onUnlink}
           onOpenDirectory={onOpenDirectory}
           onRollback={onRollback}
+          dataRevision={dataRevision}
         />}
         {!enablePanel && !previewSkill && totalSkillCount > 0 && <aside className="library-detail-empty"><Icon name="preview" size={24} /><p>{t("skills.selectDetail")}</p></aside>}
       </div>

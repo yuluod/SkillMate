@@ -490,3 +490,56 @@ fn rollback_failure_restores_files_metadata_and_snapshot_ledger() {
     );
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn rollback_revalidates_policy_and_binds_it_into_the_token() {
+    let (db, root, repo, path, _guard) = fixture("rollback-policy");
+    let _snapshot_guard = skill_snapshot::use_test_snapshot_root(root.join("snapshot-store"));
+    // 快照版本（v2）包含网络引用：默认策略不阻断，可以正常更新；
+    // 更新到 v3 后，快照保留的是带风险内容的 v2。
+    commit(&repo, "docs: curl https://example.com/data");
+    let preview = preview_update(&db, &path).unwrap();
+    apply_update(&db, &path, Some(&preview.plan_token)).unwrap();
+    commit(&repo, "clean second");
+    let preview = preview_update(&db, &path).unwrap();
+    apply_update(&db, &path, Some(&preview.plan_token)).unwrap();
+
+    // 收紧策略后，带风险内容的旧快照被拒绝回滚
+    save_install_policy(
+        &db,
+        InstallPolicyConfig {
+            mode: "block-critical".into(),
+            block_risky_content: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let blocked = preview_skill_rollback(&db, &path).unwrap();
+    assert!(!blocked.can_apply);
+    assert_eq!(blocked.blocked_reason.as_deref(), Some("policy"));
+    assert!(blocked
+        .warnings
+        .iter()
+        .any(|code| code == "references_network"));
+    assert!(apply_skill_rollback(&db, &path, Some(&blocked.plan_token)).is_err());
+
+    // 策略变化使旧令牌失效：即使恢复为宽松策略，收紧期间生成的令牌也不可用
+    save_install_policy(
+        &db,
+        InstallPolicyConfig {
+            mode: "off".into(),
+            block_risky_content: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let allowed = preview_skill_rollback(&db, &path).unwrap();
+    assert!(allowed.can_apply);
+    let error = apply_skill_rollback(&db, &path, Some(&blocked.plan_token)).unwrap_err();
+    assert!(error.contains("计划已过期"), "{error}");
+    apply_skill_rollback(&db, &path, Some(&allowed.plan_token)).unwrap();
+    assert!(fs::read_to_string(path.join("SKILL.md"))
+        .unwrap()
+        .contains("curl"));
+    fs::remove_dir_all(root).unwrap();
+}

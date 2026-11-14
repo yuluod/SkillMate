@@ -1925,3 +1925,31 @@ describe("应用更新流程", () => {
     }
   });
 });
+
+describe("更新快照详情刷新", () => {
+  it("数据刷新后重新查询快照，新出现的快照立即提供回滚入口", async () => {
+    const user = userEvent.setup();
+    let snapshots = [];
+    invoke.mockImplementation(async (command) => {
+      if (command === "list_skill_snapshots") return snapshots;
+      throw new Error(`未处理命令: ${command}`);
+    });
+    const skill = {
+      path: "/tmp/writer", name: "writer", managed_by_app: true, source_type: "git",
+      origin_kind: "git", can_check: true, sync_state: "current",
+      tags: [], structure_status: "complete", structure_warnings: [],
+    };
+    const props = (revision) => ({
+      skills: [skill], allSkillCount: 1, tags: [], dataRevision: revision,
+      onInstall: vi.fn(), onClearFilters: vi.fn(), onPreview: vi.fn(), onRollback: vi.fn(),
+    });
+    const { rerender } = render(<SkillsView {...props(0)} />);
+    await user.click(screen.getByText("writer", { selector: ".skill-title" }).closest(".skill-row"));
+    expect(screen.queryByRole("button", { name: "回滚到上一版本" })).toBeNull();
+
+    // 更新成功后 loadData 递增数据版本：详情页不关闭也能看到回滚入口
+    snapshots = [{ snapshotDir: "/tmp/snap", ref: "old-ref", contentHash: "hash", createdAt: 1 }];
+    rerender(<SkillsView {...props(1)} />);
+    expect(await screen.findByRole("button", { name: "回滚到上一版本" })).toBeTruthy();
+  });
+});

@@ -191,6 +191,8 @@ function App() {
   const projectWorkspacePath = projectWorkspace.path;
   const [updatePreviewPath, setUpdatePreviewPath] = useState("");
   const [rollbackPreviewPath, setRollbackPreviewPath] = useState("");
+  // 数据版本：每次成功加载后递增，详情栏据此刷新更新快照查询。
+  const [dataRevision, setDataRevision] = useState(0);
   const {
     input: searchInput,
     query: search,
@@ -349,6 +351,7 @@ function App() {
       const { assistants, librarySkills, tags, scenarios, git, diagnostics = [] } = await skillmateApi.inventory.loadDashboard();
       if (!mountedRef.current || requestId !== loadRequestRef.current) return;
       const failedSections = new Set(diagnostics.map((item) => item.section));
+      setDataRevision((revision) => revision + 1);
       setData((current) => ({
         assistants,
         librarySkills,
@@ -939,6 +942,7 @@ function App() {
               onUnlink={unlinkSymlink}
               onRemove={remove}
               onRollback={setRollbackPreviewPath}
+              dataRevision={dataRevision}
               onCheckAll={checkAllUpdates}
               checkBusy={Object.values(updateState).some(state => state.checking || state.updating)}
               onCheck={checkUpdate}

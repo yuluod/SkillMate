@@ -68,7 +68,9 @@ fn snapshot_store_root() -> Result<PathBuf, String> {
 }
 
 /// 计算一次更新的事务提交后旧主副本的落位目录：
-/// `<快照库>/<skill 目录名>/<纳秒时间戳>`。时间戳仅用于排序与隔离。
+/// `<快照库>/<skill 目录名>/<纳秒时间戳>/<skill 目录名>`。
+/// 时间戳用于排序与隔离；最内层目录名保持与 Skill 名一致，
+/// 让快照内容直接通过结构校验的「目录名一致性」规则。
 pub fn next_snapshot_dir(skill_path: &Path) -> Result<PathBuf, String> {
     let name = skill_path
         .file_name()
@@ -79,8 +81,9 @@ pub fn next_snapshot_dir(skill_path: &Path) -> Result<PathBuf, String> {
         .map(|value| value.as_nanos())
         .unwrap_or_default();
     Ok(snapshot_store_root()?
-        .join(name)
-        .join(timestamp.to_string()))
+        .join(&name)
+        .join(timestamp.to_string())
+        .join(&name))
 }
 
 pub fn record_snapshot(
@@ -111,6 +114,30 @@ pub fn record_snapshot(
     )
     .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+/// 幂等登记：同一快照目录只记录一次。事务恢复在「提交成功、台账未登记」
+/// 的崩溃窗口后补登记时使用，重复执行不产生重复行。
+pub fn record_snapshot_idempotent(
+    db: &Connection,
+    skill_path: &Path,
+    snapshot_dir: &Path,
+    snapshot_ref: &str,
+    content_hash: &str,
+) -> Result<bool, String> {
+    ensure_table(db)?;
+    let exists = db
+        .query_row(
+            "SELECT 1 FROM skill_update_snapshots WHERE snapshot_dir = ?",
+            [snapshot_dir.to_string_lossy()],
+            |row| row.get::<_, i64>(0),
+        )
+        .is_ok();
+    if exists {
+        return Ok(false);
+    }
+    record_snapshot(db, skill_path, snapshot_dir, snapshot_ref, content_hash)?;
+    Ok(true)
 }
 
 pub fn list_snapshots(db: &Connection, skill_path: &Path) -> Result<Vec<SkillSnapshot>, String> {
@@ -200,13 +227,23 @@ pub fn sweep_orphans(db: &Connection) -> Result<(), String> {
         if !path.is_dir() {
             continue;
         }
+        // 布局 <store>/<skill>/<时间戳>/<skill>：时间戳目录未被任何行
+        // 引用时整目录移除（含其内层快照）。
+        let skill_name = path.file_name().map(std::path::PathBuf::from);
         if let Ok(timestamps) = fs::read_dir(&path) {
             for timestamp in timestamps.flatten() {
-                let snapshot_dir = timestamp.path();
+                let timestamp_dir = timestamp.path();
+                if !timestamp_dir.is_dir() {
+                    continue;
+                }
+                let Some(skill_name) = &skill_name else {
+                    continue;
+                };
+                let snapshot_dir = timestamp_dir.join(skill_name);
                 if recorded.contains(&snapshot_dir.to_string_lossy().into_owned()) {
                     continue;
                 }
-                let _ = fs::remove_dir_all(&snapshot_dir);
+                let _ = fs::remove_dir_all(&timestamp_dir);
             }
         }
         // 技能目录为空时一并移除，保持快照库整洁
