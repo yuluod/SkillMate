@@ -2443,6 +2443,7 @@ body {
 .drift-copy span { min-width: 0; display: grid; gap: 3px; }
 .drift-copy small { color: var(--text3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .drift-copy code { color: var(--text2); font-size: 0.75rem; }
+.drift-copy .duplicate-copy-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 
 .skill-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
