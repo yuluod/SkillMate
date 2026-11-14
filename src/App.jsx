@@ -44,7 +44,7 @@ import { createResettableTimer } from "./lib/toastTimer.mjs";
 import { toUserErrorMessage } from "./lib/errorMessage.mjs";
 import { skillmateApi } from "./lib/skillmateApi.js";
 
-const EMPTY_DATA = { assistants: [], librarySkills: [], tags: [], scenarios: [], git: { enabled: false, remote_url: "" } };
+const EMPTY_DATA = { assistants: [], librarySkills: [], tags: [], scenarios: [], ignoredPaths: [], git: { enabled: false, remote_url: "" } };
 const THEME_STORAGE_KEY = "skillmate-theme-mode";
 const THEME_MODES = ["system", "light", "dark"];
 const SKIN_STORAGE_KEY = "skillmate-skin";
@@ -344,7 +344,7 @@ function App() {
     setLoading(true);
     setLoadError(null);
     try {
-      const { assistants, librarySkills, tags, scenarios, git, diagnostics = [] } = await skillmateApi.inventory.loadDashboard();
+      const { assistants, librarySkills, tags, scenarios, git, ignoredPaths, diagnostics = [] } = await skillmateApi.inventory.loadDashboard();
       if (!mountedRef.current || requestId !== loadRequestRef.current) return;
       const failedSections = new Set(diagnostics.map((item) => item.section));
       setData((current) => ({
@@ -352,6 +352,7 @@ function App() {
         librarySkills,
         tags: failedSections.has("tags") ? current.tags : tags,
         scenarios: failedSections.has("scenarios") ? current.scenarios : scenarios,
+        ignoredPaths: failedSections.has("ignored") ? current.ignoredPaths : ignoredPaths,
         git: failedSections.has("git") ? current.git : git,
       }));
       if (!failedSections.has("tags")) {
@@ -406,12 +407,14 @@ function App() {
     return [...deployed, ...inLibrary];
   }, [data.assistants, data.librarySkills, t]);
   const driftGroups = useMemo(() => buildDriftGroups(data.assistants, t), [data.assistants, t]);
+  // 忽略清单：纯展示层，被忽略的外部条目默认隐藏、可在「已忽略」视图找回。
+  const ignoredSet = useMemo(() => new Set(data.ignoredPaths || []), [data.ignoredPaths]);
   const scenarioSkills = useMemo(() => buildScenarioSkillInventory(allSkills), [allSkills]);
   // 技能库列表与统计使用统一身份：同一逻辑 Skill 的多平台部署与库内主副本合并为一行。
   const skillInventory = useMemo(() => buildUnifiedSkillInventory(allSkills), [allSkills]);
   const dashboardStats = useMemo(
-    () => buildDashboardStats(data.assistants, data.librarySkills, t),
-    [data.assistants, data.librarySkills, t]
+    () => buildDashboardStats(data.assistants, data.librarySkills, t, ignoredSet),
+    [data.assistants, data.librarySkills, t, ignoredSet]
   );
 
   const scenarioFlow = useScenarioFlow({
@@ -829,6 +832,18 @@ function App() {
     setProjectInspectionRevision((revision) => revision + 1);
   }
 
+  // 忽略是纯展示层登记：可随时撤销，文件、登记与扫描结果不受影响。
+  async function setSkillIgnored(path, ignored) {
+    try {
+      const message = await skillmateApi.ignore.set(path, ignored);
+      showToast(message || (ignored ? t("skills.ignoreDone") : t("skills.unignoreDone")), "success");
+    } catch (error) {
+      showToast(toUserErrorMessage(error, t("error.safeRetry")), "error");
+      return;
+    }
+    await loadData({ resetUpdates: false });
+  }
+
   const iconContext = useMemo(() => ({ weight: skin === "cardbox" ? "bold" : "regular" }), [skin]);
 
   return (
@@ -915,6 +930,8 @@ function App() {
               discoveryOpen={discoveryOpen}
               discovery={discoveryOpen ? <MarketDiscovery onInstall={installMarketSkill} installedSkills={allSkills} /> : null}
               filterRequest={skillFilterRequest}
+              ignoredPaths={ignoredSet}
+              onIgnore={setSkillIgnored}
               activeScenario={activeScenario}
               onClearScenario={() => scenarioFlow.setActiveId("")}
               onUpdate={setUpdatePreviewPath}

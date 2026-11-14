@@ -89,6 +89,8 @@ const SkillRow = React.memo(function SkillRow({
   onOpenDirectory,
   onUnlink,
   onRemove,
+  ignored = false,
+  onIgnore,
 }) {
   const locations = skillLocations(skill, card);
   const status = card.needsAttention
@@ -158,6 +160,11 @@ const SkillRow = React.memo(function SkillRow({
         <div className="registry-more-actions">
           <button className="btn btn-ghost btn-sm" onClick={() => onEditTags(skill)} aria-label={t("skills.editTags", { name: skill.name })}><Icon name="tag" size={15} />{t("skills.tagsAction")}</button>
           <button className="btn btn-ghost btn-sm" onClick={() => onOpenDirectory(skill.path)} aria-label={t("skills.openFolder", { name: skill.name })}><Icon name="folder" size={15} />{t("skills.folderAction")}</button>
+          {(card.canIgnore || ignored) && onIgnore && (
+            <button className="btn btn-ghost btn-sm" onClick={() => onIgnore(skill.path, !ignored)} aria-label={t(ignored ? "skills.unignoreAction" : "skills.ignoreAction", { name: skill.name })}>
+              <Icon name={ignored ? "preview" : "eyeSlash"} size={15} />{t(ignored ? "skills.unignoreAction" : "skills.ignoreAction")}
+            </button>
+          )}
           {card.canUnlink ? (
             <button className="btn btn-ghost btn-sm danger" onClick={() => onUnlink(singleDeployment ? singleDeployment.path : skill.path, skill.name)} aria-label={t("skills.unlink", { name: skill.name })}><Icon name="unlink" size={15} />{t("skills.unlinkAction")}</button>
           ) : card.canDelete ? (
@@ -277,6 +284,8 @@ export function SkillsView({
   onClearTags,
   onManageTags,
   filterRequest,
+  ignoredPaths = null,
+  onIgnore,
   activeScenario,
   onClearScenario,
   onUpdate = () => {},
@@ -313,25 +322,39 @@ export function SkillsView({
     [skills, t, getSyncInfo]
   );
   const totalSkillCount = allSkillCount ?? skills.length;
+  // 忽略是展示层：被忽略条目从默认视图与各计数中隐藏，只出现在「已忽略」视图。
+  const isIgnored = React.useCallback((skill) => Boolean(ignoredPaths?.has?.(skill?.path)), [ignoredPaths]);
   const attentionCount = React.useMemo(
-    () => skillCards.filter((card) => card.needsAttention).length,
-    [skillCards]
+    () => skillCards.filter((card, index) => !isIgnored(skills[index]) && card.needsAttention).length,
+    [skillCards, skills, isIgnored]
   );
-  const updatesCount = React.useMemo(() => skillCards.filter((card) => card.hasUpdate).length, [skillCards]);
+  const updatesCount = React.useMemo(
+    () => skillCards.filter((card, index) => !isIgnored(skills[index]) && card.hasUpdate).length,
+    [skillCards, skills, isIgnored]
+  );
+  // 忽略是展示层：被忽略条目从默认视图与各计数中隐藏，只出现在「已忽略」视图。
+  const notIgnoredCount = React.useMemo(() => skills.filter((skill) => !isIgnored(skill)).length, [skills, isIgnored]);
+  const ignoredCount = React.useMemo(() => skills.filter(isIgnored).length, [skills, isIgnored]);
+  // 「已忽略」视图内撤销最后一个条目后自动回到全部，避免停留在空视图。
+  React.useEffect(() => {
+    if (statusFilter === "ignored" && ignoredCount === 0) setStatusFilter("all");
+  }, [statusFilter, ignoredCount]);
   const notEnabledCount = React.useMemo(
-    () => skills.filter((skill) => skill.in_library && !(Array.isArray(skill.deployments) && skill.deployments.length > 0)).length,
-    [skills]
+    () => skills.filter((skill) => !isIgnored(skill) && skill.in_library && !(Array.isArray(skill.deployments) && skill.deployments.length > 0)).length,
+    [skills, isIgnored]
   );
   const visibleSkills = React.useMemo(() => {
-    if (statusFilter === "attention") {
-      return skills.filter((_, index) => skillCards[index].needsAttention);
-    }
-    if (statusFilter === "updates") return skills.filter((_, index) => skillCards[index].hasUpdate);
-    if (statusFilter === "notEnabled") {
-      return skills.filter((skill) => skill.in_library && !(Array.isArray(skill.deployments) && skill.deployments.length > 0));
-    }
-    return skills;
-  }, [skills, skillCards, statusFilter]);
+    if (statusFilter === "ignored") return skills.filter(isIgnored);
+    return skills.filter((skill, index) => {
+      if (isIgnored(skill)) return false;
+      if (statusFilter === "attention") return skillCards[index].needsAttention;
+      if (statusFilter === "updates") return skillCards[index].hasUpdate;
+      if (statusFilter === "notEnabled") {
+        return skill.in_library && !(Array.isArray(skill.deployments) && skill.deployments.length > 0);
+      }
+      return true;
+    });
+  }, [skills, skillCards, statusFilter, isIgnored]);
   const previewSkill = React.useMemo(
     () => previewPath === null ? null : visibleSkills.find((skill) => skill.path === previewPath) ?? visibleSkills[0] ?? null,
     [visibleSkills, previewPath]
@@ -370,10 +393,11 @@ export function SkillsView({
       )}
           <div className="skills-filters">
             <div className="skills-status-filters">
-            <button className={`filter-chip${statusFilter === "all" ? " active" : ""}`} aria-pressed={statusFilter === "all"} onClick={() => setStatusFilter("all")}>{t("skills.filterAll")}<span>{skills.length}</span></button>
+            <button className={`filter-chip${statusFilter === "all" ? " active" : ""}`} aria-pressed={statusFilter === "all"} onClick={() => setStatusFilter("all")}>{t("skills.filterAll")}<span>{notIgnoredCount}</span></button>
               <button className={`filter-chip${statusFilter === "notEnabled" ? " active" : ""}`} aria-pressed={statusFilter === "notEnabled"} onClick={() => setStatusFilter("notEnabled")}>{t("skills.filterNotEnabled")}<span>{notEnabledCount}</span></button>
             <button className={`filter-chip warn${statusFilter === "updates" ? " active" : ""}`} aria-pressed={statusFilter === "updates"} onClick={() => setStatusFilter("updates")}>{t("skills.filterUpdates")}<span>{updatesCount}</span></button>
             <button className={`filter-chip danger${statusFilter === "attention" ? " active" : ""}`} aria-pressed={statusFilter === "attention"} onClick={() => setStatusFilter("attention")}>{t("skills.filterNeedsAttention")}<span>{attentionCount}</span></button>
+            {ignoredCount > 0 && <button className={`filter-chip${statusFilter === "ignored" ? " active" : ""}`} aria-pressed={statusFilter === "ignored"} onClick={() => setStatusFilter("ignored")}>{t("skills.filterIgnored")}<span>{ignoredCount}</span></button>}
             </div>
             <div className="skills-filter-actions">
               {onManageTags && <button className="btn btn-ghost btn-sm" onClick={onManageTags}><Icon name="tag" size={14} />{t("tags.manage")}</button>}
@@ -443,6 +467,8 @@ export function SkillsView({
                     previewed={skill.path === previewSkill?.path}
                     searchSnippet={searchSnippets?.get?.(skill.path)}
                     t={t}
+                    ignored={isIgnored(skill)}
+                    onIgnore={onIgnore}
                     onToggleSelection={onToggleSelection}
                     onOpenPreview={(path) => { onCloseEnable?.(); setPreviewPath(path); setDetailOpen(true); }}
                     onUpdate={onUpdate}

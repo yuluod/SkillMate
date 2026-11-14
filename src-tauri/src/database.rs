@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-const DB_SCHEMA_VERSION: i64 = 7;
+const DB_SCHEMA_VERSION: i64 = 8;
 static DATABASE_INITIALIZATION_ERROR: OnceLock<String> = OnceLock::new();
 
 #[derive(Clone, Copy)]
@@ -17,6 +17,7 @@ pub enum PathColumn {
     ManagedRoot,
     LibrarySkill,
     DeploymentTarget,
+    SkillIgnores,
 }
 
 impl PathColumn {
@@ -29,6 +30,7 @@ impl PathColumn {
             Self::ManagedRoot => ("managed_roots", "root_path"),
             Self::LibrarySkill => ("library_skills", "library_path"),
             Self::DeploymentTarget => ("skill_deployments", "target_path"),
+            Self::SkillIgnores => ("skill_ignores", "skill_path"),
         }
     }
 }
@@ -254,6 +256,7 @@ fn migrate_database(connection: &Connection) -> Result<(), String> {
         )
         .map_err(|error| error.to_string())?;
     crate::finding_review::ensure_review_table(&transaction)?;
+    crate::skill_ignore::ensure_ignore_table(&transaction)?;
 
     let scenario_json_added = !table_has_column(&transaction, "scenarios", "skill_ids_json")?;
     if scenario_json_added {
