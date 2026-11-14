@@ -169,10 +169,25 @@ const SkillRow = React.memo(function SkillRow({
   );
 });
 
-function SkillDetailPane({ skill, card, tags, t, onClose, onPreview, onUpdate, onCheck, onEnable, onAdopt, onEditTags, onUnlink, onOpenDirectory }) {
+function SkillDetailPane({ skill, card, tags, t, onClose, onPreview, onUpdate, onCheck, onEnable, onAdopt, onEditTags, onUnlink, onOpenDirectory, onRollback, dataRevision = 0 }) {
+  // 更新快照：打开详情时查询，并在数据刷新（更新/回滚成功）后重查，
+  // 保证「最需要回滚的时刻」入口可见、版本标签同步。
+  const [snapshots, setSnapshots] = React.useState(null);
+  const skillPath = skill?.path || "";
+  React.useEffect(() => {
+    if (!skillPath) return undefined;
+    let cancelled = false;
+    setSnapshots(null);
+    // 快照查询是纯展示信息：通道缺失或失败都按「无快照」处理，不打扰用户。
+    Promise.resolve(skillmateApi.updates.listSnapshots(skillPath))
+      .then((list) => { if (!cancelled) setSnapshots(Array.isArray(list) ? list : []); })
+      .catch(() => { if (!cancelled) setSnapshots([]); });
+    return () => { cancelled = true; };
+  }, [skillPath, dataRevision]);
   if (!skill || !card) return null;
   const singleDeployment = skill.deployments?.length === 1 ? skill.deployments[0] : null;
   const locations = skillLocations(skill, card);
+  const latestSnapshot = snapshots?.length > 0 ? snapshots[0] : null;
   return (
     <aside className="skill-pane library-detail" aria-label={t("skills.detailLabel", { name: card.title })}>
       <div className="library-detail-top">
@@ -225,6 +240,10 @@ function SkillDetailPane({ skill, card, tags, t, onClose, onPreview, onUpdate, o
           <span>{t("provenance.sourceLabel")}</span><span>{card.contentSourceLabel}</span>
           <span>{t("provenance.managerLabel")}</span><span>{card.managerLabel}</span>
           <span>{t("provenance.updateLabel")}</span><span>{card.updateStrategyLabel}</span>
+          {latestSnapshot && <>
+            <span>{t("skills.rollbackState")}</span>
+            <span title={t("skills.rollbackVersion", { ref: latestSnapshot.ref })}>{t("skills.rollbackVersion", { ref: latestSnapshot.ref })}</span>
+          </>}
         </div>
         {skill.tags?.length > 0 && <div className="skill-pane-tags">{skill.tags.map((tagId) => {
           const tag = tags.find((item) => item.id === tagId);
@@ -242,6 +261,7 @@ function SkillDetailPane({ skill, card, tags, t, onClose, onPreview, onUpdate, o
       </details>
       <div className="skill-pane-foot">
         {card.canCheck && onCheck && <button className="btn btn-ghost btn-sm" disabled={card.updateBusy} onClick={() => onCheck(skill.path)} aria-label={t("preview.checkUpdate")}><Icon name="refresh" size={14} />{t("preview.checkUpdate")}</button>}
+        {latestSnapshot && onRollback && <button className="btn btn-ghost btn-sm" disabled={card.updateBusy} onClick={() => onRollback(skill.path)} aria-label={t("skills.rollbackAction")}><Icon name="undo" size={14} />{t("skills.rollbackAction")}</button>}
         <button className="btn btn-ghost btn-sm" onClick={() => onEditTags(skill)} aria-label={t("skills.editTags", { name: skill.name })}><Icon name="tag" size={14} />{t("skills.tagsAction")}</button>
         <button className="btn btn-ghost btn-sm" onClick={() => onOpenDirectory(skill.path)} aria-label={t("skills.openFolder", { name: skill.name })}><Icon name="folder" size={14} />{t("skills.folderAction")}</button>
         {card.canUnlink && !card.isShared && onUnlink && <button className="btn btn-ghost btn-sm danger" onClick={() => onUnlink(singleDeployment ? singleDeployment.path : skill.path, skill.name)} aria-label={t("skills.unlink", { name: skill.name })}><Icon name="unlink" size={14} />{t("skills.unlinkAction")}</button>}
@@ -269,6 +289,8 @@ export function SkillsView({
   onAdopt = () => {},
   onUnlink,
   onRemove,
+  onRollback,
+  dataRevision = 0,
   selectedSkillPaths = [],
   onToggleSelection = () => {},
   onToggleVisibleSelection = () => {},
@@ -471,6 +493,8 @@ export function SkillsView({
           onEditTags={onEditTags}
           onUnlink={onUnlink}
           onOpenDirectory={onOpenDirectory}
+          onRollback={onRollback}
+          dataRevision={dataRevision}
         />}
         {!enablePanel && !previewSkill && totalSkillCount > 0 && <aside className="library-detail-empty"><Icon name="preview" size={24} /><p>{t("skills.selectDetail")}</p></aside>}
       </div>

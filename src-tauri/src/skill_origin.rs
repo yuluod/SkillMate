@@ -976,16 +976,28 @@ pub(crate) fn update_skill_from_prepared_snapshot(
             }
         };
         validate(&crate::skill_structure::inspect_skill_for_inventory(source).structure)?;
+        // 更新前记录旧版本信息：事务提交后把暂存的旧主副本登记为更新快照，
+        // 让「可回滚事务」从失败路径延伸到「成功但后悔」。快照意图随事务
+        // 日志落盘，提交后、台账登记前崩溃时由恢复流程幂等补登记。
+        let previous_ref = meta.installed_ref.clone();
+        let previous_hash = crate::managed_state::content_fingerprint(path)?;
+        let snapshot_request = crate::skill_reconcile::SnapshotRequest {
+            dir: crate::skill_snapshot::next_snapshot_dir(path)?,
+            snapshot_ref: previous_ref.clone(),
+            content_hash: previous_hash.clone(),
+        };
         let related_paths = crate::skill_library::deployment_targets_for_library(db, path)?
             .into_iter()
             .map(PathBuf::from)
             .collect::<Vec<_>>();
-        let mut transaction = ReconcileTransaction::prepare_managed_with_related_paths(
-            db,
-            std::slice::from_ref(&path.to_path_buf()),
-            std::slice::from_ref(&path.to_path_buf()),
-            &related_paths,
-        )?;
+        let mut transaction =
+            ReconcileTransaction::prepare_managed_with_related_paths_and_snapshot(
+                db,
+                std::slice::from_ref(&path.to_path_buf()),
+                std::slice::from_ref(&path.to_path_buf()),
+                &related_paths,
+                Some(&snapshot_request),
+            )?;
         let outcome = match sync_prepared_git_snapshot_skill(source, path, expected, validate) {
             Ok(outcome) => outcome,
             Err(error) => {
@@ -1013,13 +1025,127 @@ pub(crate) fn update_skill_from_prepared_snapshot(
                 Err(rollback_error) => Err(format!("{}；文件回滚失败: {}", error, rollback_error)),
             };
         }
-        match transaction.commit() {
-            Ok(None) => Ok("更新成功".to_string()),
-            Ok(Some(warning)) => Ok(format!("更新成功；{}", warning)),
+        // 台账在提交成功后幂等写入；若在提交与登记之间崩溃，
+        // 恢复流程按日志中的快照意图补登记，孤儿清理不会误删。
+        let commit_result = transaction.commit();
+        match commit_result {
+            Ok(commit_warning) => {
+                let mut message = match commit_warning {
+                    Some(warning) => format!("更新成功；{warning}"),
+                    None => "更新成功".to_string(),
+                };
+                let bookkeeping = crate::skill_snapshot::record_snapshot_idempotent(
+                    db,
+                    path,
+                    &snapshot_request.dir,
+                    &snapshot_request.snapshot_ref,
+                    &snapshot_request.content_hash,
+                )
+                .and_then(|_| crate::skill_snapshot::prune_snapshots(db, path));
+                if let Err(error) = bookkeeping {
+                    message = format!("{message}；更新快照登记失败: {error}");
+                }
+                Ok(message)
+            }
             Err(error) => Err(error),
         }
     } else {
         Err("当前 Git 来源缺少可重建的快照信息，已拒绝修改本地仓库".to_string())
+    }
+}
+
+/// 回滚到指定更新快照：走与更新相同的预览-计划令牌-事务路径，恢复主副本
+/// 内容并同步受管登记与启用位置。被替换下来的当前版本同样保留为快照，
+/// 因此回滚自身可逆（「回滚」与「前进」是同一操作的两个方向）。
+pub(crate) fn rollback_skill_to_snapshot(
+    db: &Connection,
+    path: &Path,
+    snapshot_dir: &Path,
+    snapshot_ref: &str,
+    displaced_hash: &str,
+) -> Result<String, String> {
+    if !is_explicitly_managed(db, path)? {
+        return Err("只允许回滚 SkillMate 管理的 Skill".into());
+    }
+    if !snapshot_dir.is_dir() {
+        return Err("快照内容已不存在，无法回滚".to_string());
+    }
+    let mut meta = load_origin_meta(db, &path.to_string_lossy())?.ok_or("缺少更新来源信息")?;
+    let displaced_ref = meta.installed_ref.clone();
+    let related_paths = crate::skill_library::deployment_targets_for_library(db, path)?
+        .into_iter()
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    let displaced_dir = crate::skill_snapshot::next_snapshot_dir(path)?;
+    // 被替换下来的「坏」版本同样保留为快照（回滚自身可逆），意图随日志落盘。
+    let displaced_request = crate::skill_reconcile::SnapshotRequest {
+        dir: displaced_dir.clone(),
+        snapshot_ref: displaced_ref.clone(),
+        content_hash: displaced_hash.to_string(),
+    };
+    let mut transaction = ReconcileTransaction::prepare_managed_with_related_paths_and_snapshot(
+        db,
+        std::slice::from_ref(&path.to_path_buf()),
+        std::slice::from_ref(&path.to_path_buf()),
+        &related_paths,
+        Some(&displaced_request),
+    )?;
+    let restore = (|| -> Result<(), String> {
+        crate::skill_install::copy_dir_recursive(snapshot_dir, path)?;
+        let structure = crate::skill_structure::inspect_skill_for_inventory(path).structure;
+        if structure.structure_status != "complete" {
+            return Err("快照内容不再符合 Agent Skills 规范，已拒绝回滚".to_string());
+        }
+        Ok(())
+    })();
+    if let Err(error) = restore {
+        return match transaction.rollback() {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(format!("{}；文件回滚失败: {}", error, rollback_error)),
+        };
+    }
+    let now = now_ms();
+    meta.installed_ref = snapshot_ref.to_string();
+    meta.sync_state = (if meta.latest_ref == snapshot_ref {
+        "current"
+    } else {
+        "behind"
+    })
+    .to_string();
+    meta.sync_message = "已回滚到上一版本".to_string();
+    meta.last_sync_at = Some(now);
+    if let Err(error) = persist_managed_update(db, path, &meta)
+        .and_then(|()| crate::skill_library::refresh_deployment_origins(db, path))
+    {
+        return match transaction.rollback() {
+            Ok(()) => Err(error),
+            Err(rollback_error) => Err(format!("{}；文件回滚失败: {}", error, rollback_error)),
+        };
+    }
+    match transaction.commit() {
+        Ok(commit_warning) => {
+            let mut message = match commit_warning {
+                Some(warning) => format!("已回滚到上一版本；{warning}"),
+                None => "已回滚到上一版本".to_string(),
+            };
+            // 台账在提交后更新：先登记被替换下来的版本（幂等，崩溃窗口内
+            // 两行并存由 prune 收敛），再删除已恢复的旧快照——顺序保证任何
+            // 时点中断都不会丢掉可回滚内容。
+            let bookkeeping = crate::skill_snapshot::record_snapshot_idempotent(
+                db,
+                path,
+                &displaced_request.dir,
+                &displaced_request.snapshot_ref,
+                &displaced_request.content_hash,
+            )
+            .and_then(|_| crate::skill_snapshot::delete_snapshot(db, snapshot_dir))
+            .and_then(|_| crate::skill_snapshot::prune_snapshots(db, path));
+            if let Err(error) = bookkeeping {
+                message = format!("{message}；快照台账更新失败: {error}");
+            }
+            Ok(message)
+        }
+        Err(error) => Err(error),
     }
 }
 

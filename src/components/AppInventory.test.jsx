@@ -205,4 +205,50 @@ describe("技能库与父页面协作", () => {
     await user.click(within(screen.getByRole("navigation")).getByRole("button", { name: /^启用位置/ }));
     expect(within(screen.getByRole("main")).getByText("选择项目")).toBeTruthy();
   });
+
+  it("更新快照在详情栏提供一键回滚并复用两阶段确认", async () => {
+    const user = userEvent.setup();
+    invoke.mockImplementation(async (command, args = {}) => {
+      if (command === "get_all_assistants") return [];
+      if (command === "get_library_skills") return [healthy];
+      if (command === "list_skill_snapshots") {
+        return [{ snapshotDir: "/tmp/snapshot", ref: "old-ref", contentHash: "hash", createdAt: 1 }];
+      }
+      if (command === "preview_skill_rollback") {
+        return {
+          libraryPath: healthy.path,
+          installedRef: "new-ref",
+          latestRef: "old-ref",
+          sourceDigest: "digest",
+          canApply: true,
+          blockedReason: null,
+          warnings: [],
+          suspiciousInstructions: [],
+          impacts: [],
+          files: [],
+          omittedFiles: 0,
+          planToken: "rollback-token",
+        };
+      }
+      if (command === "apply_skill_rollback") return "已回滚到上一版本";
+      if (command === "check_update") return { syncState: "current", hasUpdate: false, canCheck: true, canSync: true };
+      if (["get_all_tags", "get_scenarios", "list_trashed_skills", "list_ignored_skills"].includes(command)) return [];
+      if (command === "get_git_backup") return { enabled: false, repo_path: "", remote_url: "" };
+      if (command === "get_library_settings") return { path: "/tmp/skillmate", configurable: true };
+      if (command === "get_install_policy") return { mode: "warn" };
+      throw new Error(`测试未配置命令：${command}`);
+    });
+    render(<I18nProvider><App /></I18nProvider>);
+    const row = (await screen.findByText("healthy", { selector: ".skill-title" })).closest('[role="row"]');
+    await user.click(row);
+    const pane = screen.getByRole("complementary", { name: "healthy 详情" });
+    expect(within(pane).getByText("上一版本 old-ref")).toBeTruthy();
+
+    await user.click(within(pane).getByRole("button", { name: "回滚到上一版本" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/old-ref/)).toBeTruthy();
+    await user.click(within(dialog).getByRole("button", { name: "确认回滚" }));
+    const applied = invoke.mock.calls.find(([command]) => command === "apply_skill_rollback");
+    expect(applied?.[1]).toEqual({ path: healthy.path, planToken: "rollback-token" });
+  });
 });

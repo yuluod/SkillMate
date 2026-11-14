@@ -5,7 +5,7 @@ import { useUpdateFlow } from "./useUpdateFlow.js";
 import { adaptUpdateResult, getUpdateInfo } from "./updateState.js";
 import { I18nProvider } from "./i18n.jsx";
 
-const api = vi.hoisted(() => ({ checkAll: vi.fn(), checkOne: vi.fn(), applyOne: vi.fn() }));
+const api = vi.hoisted(() => ({ checkAll: vi.fn(), checkOne: vi.fn(), applyOne: vi.fn(), applyRollback: vi.fn(), previewRollback: vi.fn(), listSnapshots: vi.fn() }));
 vi.mock("./skillmateApi.js", () => ({ skillmateApi: { updates: api } }));
 
 const a = { path: "/a", name: "a", origin_kind: "git", can_check: true, can_sync: true, managed_by_app: true };
@@ -169,6 +169,25 @@ describe("useUpdateFlow apply and lifecycle", () => {
     await act(() => result.current.updateSkill(a.path));
     expect(result.current.getSyncInfo(a)).toMatchObject({ syncState: "failed", updating: false, checking: false });
     expect(loadData).toHaveBeenCalledTimes(1);
+  });
+
+  it("rollback releases its lock on failure and refreshes with probe on success", async () => {
+    const { result, loadData, showToast } = setup();
+    api.applyRollback.mockRejectedValueOnce(new Error("rollback failed"));
+    const failed = await act(() => result.current.rollbackSkill(a.path, "stale-token"));
+    expect(failed).toBe(false);
+    expect(showToast.mock.lastCall[1]).toBe("error");
+    expect(loadData).not.toHaveBeenCalled();
+    expect(result.current.getSyncInfo(a).updating).toBe(false);
+
+    api.applyRollback.mockResolvedValueOnce("已回滚到上一版本");
+    api.checkOne.mockResolvedValueOnce(current);
+    const done = await act(() => result.current.rollbackSkill(a.path, "fresh-token"));
+    expect(done).toBe(true);
+    expect(api.applyRollback).toHaveBeenCalledWith(a.path, "fresh-token");
+    expect(api.checkOne).toHaveBeenCalledWith(a.path);
+    expect(loadData).toHaveBeenCalledWith({ resetUpdates: false });
+    expect(showToast).toHaveBeenCalledWith("Rolled back to the previous version", "success");
   });
 
   it.each(["check", "batch", "apply"])("reset invalidates late %s results and side effects without unlocking running IPC", async kind => {
