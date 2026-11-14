@@ -28,7 +28,7 @@ function start(skills = [healthy, risky], checkedState = "behind", assistants = 
   invoke.mockImplementation(async (command, args) => {
     if (command === "get_all_assistants") return assistants;
     if (command === "get_library_skills") return skills;
-    if (["get_all_tags", "get_scenarios", "list_trashed_skills"].includes(command)) return [];
+    if (["get_all_tags", "get_scenarios", "list_trashed_skills", "list_ignored_skills"].includes(command)) return [];
     if (command === "get_git_backup") return { enabled: false, repo_path: "", remote_url: "" };
     if (command === "get_library_settings") return { path: "/tmp/skillmate", configurable: true };
     if (command === "get_install_policy") return { mode: "warn" };
@@ -152,6 +152,51 @@ describe("技能库与父页面协作", () => {
     await user.click(row);
     const pane = screen.getByRole("complementary", { name: "healthy 详情" });
     expect(within(pane).getByRole("button", { name: "停用 healthy" })).toBeTruthy();
+  });
+
+  it("外部条目可忽略并在已忽略视图撤销，文件与登记不受影响", async () => {
+    const user = userEvent.setup();
+    const external = {
+      ...healthy, name: "manual", path: "/tmp/manual/manual", managed_by_app: false,
+      source_type: "local", origin_kind: "local", sync_state: "unprobed", can_check: false,
+    };
+    let ignored = [];
+    invoke.mockImplementation(async (command, args) => {
+      if (command === "get_all_assistants") return [];
+      if (command === "get_library_skills") return [external, healthy];
+      if (command === "list_ignored_skills") return ignored;
+      if (command === "set_skill_ignore") {
+        if (args.ignored) ignored = [...ignored, args.skillPath];
+        else ignored = ignored.filter((path) => path !== args.skillPath);
+        return args.ignored ? "已忽略" : "已取消忽略";
+      }
+      if (["get_all_tags", "get_scenarios", "list_trashed_skills"].includes(command)) return [];
+      if (command === "get_git_backup") return { enabled: false, repo_path: "", remote_url: "" };
+      if (command === "get_library_settings") return { path: "/tmp/skillmate", configurable: true };
+      if (command === "get_install_policy") return { mode: "warn" };
+      throw new Error(`测试未配置命令：${command}`);
+    });
+    render(<I18nProvider><App /></I18nProvider>);
+    await screen.findByText("manual", { selector: ".skill-title" });
+
+    const row = screen.getByText("manual", { selector: ".skill-title" }).closest('[role="row"]');
+    await user.click(within(row).getByRole("button", { name: "manual 的更多操作" }));
+    await user.click(screen.getByRole("button", { name: "忽略此条目" }));
+
+    await screen.findByRole("button", { name: /^已忽略\s*1$/ });
+    expect(screen.queryByText("manual", { selector: ".skill-title" })).toBeNull();
+    const ignoreCalls = invoke.mock.calls.filter(([command]) => command === "set_skill_ignore");
+    expect(ignoreCalls).toHaveLength(1);
+    expect(ignoreCalls[0][1]).toEqual({ skillPath: "/tmp/manual/manual", ignored: true });
+    expect(invoke.mock.calls.some(([command]) => ["delete_skill", "trash_skill"].includes(command))).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: /^已忽略\s*1$/ }));
+    const ignoredRow = screen.getByText("manual", { selector: ".skill-title" }).closest('[role="row"]');
+    await user.click(within(ignoredRow).getByRole("button", { name: "manual 的更多操作" }));
+    await user.click(screen.getByRole("button", { name: "取消忽略" }));
+
+    await screen.findByText("manual", { selector: ".skill-title" });
+    expect(screen.queryByRole("button", { name: /^已忽略/ })).toBeNull();
   });
 
   it("未启用筛选只显示没有启用位置的库内 Skill", async () => {

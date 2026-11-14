@@ -27,6 +27,7 @@ import {
   buildUnifiedSkillInventory,
   skillMatchesQuery,
   buildDriftGroups,
+  filterGroupsByIgnored,
   buildDashboardStats,
   getMarketInstallRequest,
   getMarketInstallSource,
@@ -97,6 +98,55 @@ test("工作台区分外部管理与失联来源", () => {
   ]);
   assert.equal(stats.external, 1);
   assert.equal(stats.stale, 1);
+});
+
+test("全部忽略后漂移提醒消失，撤销后恢复且计数与概览共用同一结果", () => {
+  const assistants = [
+    { name: "Claude Code", exists: true, skills: [{ name: "writer", path: "/a/writer", content_hash: "one", structure_status: "complete", structure_warnings: [] }] },
+    { name: "Cursor", exists: true, skills: [{ name: "writer", path: "/b/writer", content_hash: "two", structure_status: "complete", structure_warnings: [] }] },
+  ];
+  const groups = buildDriftGroups(assistants);
+  assert.equal(groups.length, 1);
+
+  // 全部忽略：组整体消失，stats 不再计数
+  const allIgnored = filterGroupsByIgnored(groups, new Set(["/a/writer", "/b/writer"]));
+  assert.equal(allIgnored.length, 0);
+  const statsIgnored = buildDashboardStats(assistants, [], translateEnglish, new Set(["/a/writer", "/b/writer"]));
+  assert.equal(statsIgnored.driftGroups, 0);
+  assert.equal(statsIgnored.external, 0);
+
+  // 只忽略一份：剩余单份副本不再构成组，提醒同样消失
+  const partial = filterGroupsByIgnored(groups, new Set(["/a/writer"]));
+  assert.equal(partial.length, 0);
+
+  // 未忽略或撤销后恢复
+  assert.equal(filterGroupsByIgnored(groups, null).length, 1);
+  assert.equal(filterGroupsByIgnored(groups, new Set()).length, 1);
+  const statsRestored = buildDashboardStats(assistants, [], translateEnglish, null);
+  assert.equal(statsRestored.driftGroups, 1);
+});
+
+test("被忽略的外部条目不再计入外部噪音，受管条目不可忽略", () => {
+  const assistants = [
+    {
+      name: "Claude Code", exists: true, skills: [
+        { name: "vendor", path: "/claude/vendor", manager: "external", sync_state: "unprobed", structure_status: "complete", structure_warnings: [] },
+        { name: "kept", path: "/claude/kept", manager: "external", sync_state: "unprobed", structure_status: "complete", structure_warnings: [] },
+      ],
+    },
+  ];
+  const before = buildDashboardStats(assistants, [], translateEnglish);
+  assert.equal(before.external, 2);
+  const after = buildDashboardStats(assistants, [], translateEnglish, new Set(["/claude/vendor"]));
+  assert.equal(after.external, 1);
+  assert.equal(after.skills, 2);
+
+  const externalCard = buildSkillCardView({ name: "vendor", path: "/claude/vendor", manager: "external", structure_status: "complete", structure_warnings: [] }, translateEnglish);
+  assert.equal(externalCard.canIgnore, true);
+  const managedCard = buildSkillCardView({ name: "kept", path: "/claude/kept", managed_by_app: true, structure_status: "complete", structure_warnings: [] }, translateEnglish);
+  assert.equal(managedCard.canIgnore, false);
+  const deploymentCard = buildSkillCardView({ name: "dep", path: "/claude/dep", managed_by_app: true, source_type: "deployment", structure_status: "complete", structure_warnings: [] }, translateEnglish);
+  assert.equal(deploymentCard.canIgnore, false);
 });
 
 test("需处理口径只含错误级事件，结构不完整不算需处理", () => {
@@ -914,6 +964,7 @@ test("Skill 卡片视图应当优先使用 manifest 标题和说明", () => {
       canDelete: true,
       canUnlink: false,
       canAdopt: false,
+      canIgnore: false,
       canMaterialize: false,
       availableIn: [],
       availabilityLabel: "",

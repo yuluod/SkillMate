@@ -167,6 +167,25 @@ fn update_skill_tags_in_db(
 }
 
 #[tauri::command]
+pub fn set_skill_ignore(skill_path: String, ignored: bool) -> Result<String, String> {
+    run_exclusive_operation(move |db| {
+        crate::skill_ignore::set_skill_ignored(db, Path::new(&skill_path), ignored)?;
+        Ok(if ignored {
+            "已忽略"
+        } else {
+            "已取消忽略"
+        }
+        .to_string())
+    })
+}
+
+#[tauri::command]
+pub fn list_ignored_skills(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
+    let db = lock_app_db(&state)?;
+    crate::skill_ignore::list_ignored_skill_paths(&db)
+}
+
+#[tauri::command]
 pub fn get_scenarios(state: tauri::State<'_, AppState>) -> Result<Vec<Scenario>, String> {
     let db = lock_app_db(&state)?;
     get_scenarios_from_db(&db)
