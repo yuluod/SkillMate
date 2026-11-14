@@ -323,10 +323,11 @@ Natural-language or complex inputs that cannot be classified by local rules may 
 
 ## Local development
 
-You need Node.js 24.x, pnpm 12.14.0, Rust, and the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your operating system.
+You need Node.js 26.x LTS, pnpm 12.18.0, Rust, and the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your operating system.
+See the [development environment guide](CONTRIBUTING.md#开发环境) for Node.js, Corepack, and pnpm setup.
 
 ```bash
-pnpm install
+pnpm install --frozen-lockfile
 pnpm dev
 ```
 

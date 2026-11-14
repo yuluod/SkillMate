@@ -4,10 +4,23 @@
 
 ## 开发环境
 
-- Node.js 24.x LTS（见 `.nvmrc`）
-- pnpm 12.14.0（见 `package.json#packageManager`）
-- Rust 1.99.1（见 `rust-toolchain.toml`）
+- Node.js 26.x LTS（见 `.nvmrc`）
+- pnpm 12.18.0（见 `package.json#packageManager`）
+- Rust 1.100.0（见 `rust-toolchain.toml`）
 - 当前平台所需的 Tauri v2 系统依赖
+
+先切换到 `.nvmrc` 指定的 Node.js 版本，再安装 Corepack 并启用 pnpm：
+
+```bash
+npm install --global corepack@0.36.0
+corepack enable pnpm
+node --version
+corepack --version
+pnpm --version
+```
+
+使用 fnm 时可运行 `fnm install` 和 `fnm use` 完成项目 Node.js 版本的安装与切换。
+Corepack 会按 `package.json#packageManager` 选择 pnpm 版本。
 
 安装依赖：
 
