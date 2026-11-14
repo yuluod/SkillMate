@@ -27,6 +27,9 @@ import {
   buildUnifiedSkillInventory,
   skillMatchesQuery,
   buildDriftGroups,
+  filterGroupsByIgnored,
+  buildDuplicateGroups,
+  copyCanAdopt,
   buildDashboardStats,
   getMarketInstallRequest,
   getMarketInstallSource,
@@ -83,7 +86,73 @@ test("工作台统计汇总风险、更新、诊断和内容漂移", () => {
     ],
     [{ name: "reader", path: "/library/reader", manager: "skillmate", managed_by_app: true, structure_status: "complete", structure_warnings: [] }]
   );
-  assert.deepEqual(stats, { skills: 3, assistants: 2, updates: 1, structureIssues: 1, securityRisks: 1, localChanges: 1, external: 0, stale: 0, driftGroups: 1, diagnostics: 1 });
+  assert.deepEqual(stats, { skills: 3, assistants: 2, updates: 1, structureIssues: 1, securityRisks: 1, localChanges: 1, external: 0, stale: 0, driftGroups: 1, duplicateGroups: 0, diagnostics: 1 });
+});
+
+test("同名同内容副本形成重复组，内容不同的组仍走漂移口径", () => {
+  const assistants = [
+    { name: "Codex", icon: "codex", exists: true, skills: [{ name: "writer", path: "/a/writer", content_hash: "same", skill_type: "skill-folder", structure_status: "complete", structure_warnings: [] }] },
+    { name: "Cursor", icon: "cursor", exists: true, skills: [{ name: "writer", path: "/b/writer", content_hash: "same", skill_type: "skill-folder", structure_status: "complete", structure_warnings: [] }] },
+    { name: "Claude Code", icon: "claude", exists: true, skills: [{ name: "reader", path: "/c/reader", content_hash: "x", structure_status: "complete", structure_warnings: [] }, { name: "reader", path: "/d/reader", content_hash: "y", structure_status: "complete", structure_warnings: [] }] },
+  ];
+  const duplicates = buildDuplicateGroups(assistants);
+  assert.equal(duplicates.length, 1);
+  assert.equal(duplicates[0].name, "writer");
+  assert.equal(duplicates[0].copies.length, 2);
+  assert.equal(duplicates[0].versionCount, 1);
+  assert.deepEqual(duplicates[0].copies.map((copy) => copy.path), ["/a/writer", "/b/writer"]);
+  const drift = buildDriftGroups(assistants);
+  assert.equal(drift.length, 1);
+  assert.equal(drift[0].name, "reader");
+  assert.equal(drift[0].versionCount, 2);
+});
+
+test("同一主副本启用到多个平台不产生重复或漂移提醒", () => {
+  const masterCopy = {
+    name: "writer", content_hash: "same", managed_by_app: true,
+    source_type: "deployment", symlink_source: "/library/writer",
+    structure_status: "complete", structure_warnings: [],
+  };
+  const assistants = [
+    { name: "Codex", icon: "codex", exists: true, skills: [{ ...masterCopy, path: "/codex/writer", ai: "Codex" }] },
+    { name: "Cursor", icon: "cursor", exists: true, skills: [{ ...masterCopy, path: "/cursor/writer", ai: "Cursor" }] },
+  ];
+  assert.deepEqual(buildDuplicateGroups(assistants).map((group) => group.name), []);
+  assert.deepEqual(buildDriftGroups(assistants).map((group) => group.name), []);
+
+  // 主副本的部署 + 一份外部同内容副本：部署归一到主副本身份，组里只有一个可接管副本
+  const withExternal = [
+    assistants[0],
+    { name: "Claude Code", icon: "claude", exists: true, skills: [{ ...masterCopy, path: "/claude/writer", managed_by_app: false, source_type: "local", symlink_source: undefined, skill_type: "skill-folder" }] },
+  ];
+  const duplicates = buildDuplicateGroups(withExternal);
+  assert.equal(duplicates.length, 1);
+  assert.deepEqual(duplicates[0].copies.map((copy) => copy.managed), [false, true]);
+  assert.deepEqual(duplicates[0].copies.filter((copy) => copyCanAdopt(copy)).length, 1);
+
+  // 两个独立外部副本才构成重复组
+  const twoExternal = [
+    { name: "Claude Code", icon: "claude", exists: true, skills: [{ name: "writer", path: "/claude/writer", content_hash: "same", source_type: "local", skill_type: "skill-folder", structure_status: "complete", structure_warnings: [] }] },
+    { name: "Codex", icon: "codex", exists: true, skills: [{ name: "writer", path: "/codex/writer", content_hash: "same", source_type: "local", skill_type: "skill-folder", structure_status: "complete", structure_warnings: [] }] },
+  ];
+  assert.equal(buildDuplicateGroups(twoExternal).length, 1);
+});
+
+test("副本接管资格与详情栏 canAdopt 同一口径", () => {
+  assert.equal(copyCanAdopt({ managed: false, isSymlink: false, manager: "", skillType: "skill-folder" }), true);
+  assert.equal(copyCanAdopt({ managed: true, isSymlink: false, manager: "skillmate", skillType: "skill-folder" }), false);
+  assert.equal(copyCanAdopt({ managed: false, isSymlink: true, manager: "", skillType: "skill-folder" }), false);
+  assert.equal(copyCanAdopt({ managed: false, isSymlink: false, manager: "skills_cli", skillType: "skill-folder" }), false);
+  assert.equal(copyCanAdopt({ managed: false, isSymlink: false, manager: "", skillType: "skill-file" }), false);
+});
+
+test("工作台统计包含重复副本计数且不与漂移组混算", () => {
+  const stats = buildDashboardStats([
+    { name: "Codex", exists: true, skills: [{ name: "dup", path: "/a/dup", content_hash: "same", structure_status: "complete", structure_warnings: [] }] },
+    { name: "Cursor", exists: true, skills: [{ name: "dup", path: "/b/dup", content_hash: "same", structure_status: "complete", structure_warnings: [] }] },
+  ]);
+  assert.equal(stats.duplicateGroups, 1);
+  assert.equal(stats.driftGroups, 0);
 });
 
 test("工作台区分外部管理与失联来源", () => {
@@ -97,6 +166,90 @@ test("工作台区分外部管理与失联来源", () => {
   ]);
   assert.equal(stats.external, 1);
   assert.equal(stats.stale, 1);
+});
+
+test("全部忽略后漂移提醒消失，撤销后恢复且计数与概览共用同一结果", () => {
+  const assistants = [
+    { name: "Claude Code", exists: true, skills: [{ name: "writer", path: "/a/writer", content_hash: "one", structure_status: "complete", structure_warnings: [] }] },
+    { name: "Cursor", exists: true, skills: [{ name: "writer", path: "/b/writer", content_hash: "two", structure_status: "complete", structure_warnings: [] }] },
+  ];
+  const groups = buildDriftGroups(assistants);
+  assert.equal(groups.length, 1);
+
+  // 全部忽略：组整体消失，stats 不再计数
+  const allIgnored = filterGroupsByIgnored(groups, new Set(["/a/writer", "/b/writer"]));
+  assert.equal(allIgnored.length, 0);
+  const statsIgnored = buildDashboardStats(assistants, [], translateEnglish, new Set(["/a/writer", "/b/writer"]));
+  assert.equal(statsIgnored.driftGroups, 0);
+  assert.equal(statsIgnored.external, 0);
+
+  // 只忽略一份：剩余单份副本不再构成组，提醒同样消失
+  const partial = filterGroupsByIgnored(groups, new Set(["/a/writer"]));
+  assert.equal(partial.length, 0);
+
+  // 未忽略或撤销后恢复
+  assert.equal(filterGroupsByIgnored(groups, null).length, 1);
+  assert.equal(filterGroupsByIgnored(groups, new Set()).length, 1);
+  const statsRestored = buildDashboardStats(assistants, [], translateEnglish, null);
+  assert.equal(statsRestored.driftGroups, 1);
+});
+
+test("部分忽略使漂移组塌缩为同内容时提醒消失", () => {
+  // A、A、B 三份内容：构成一个漂移组（两个内容版本）
+  const skill = (path, hash) => ({
+    name: "writer", path, content_hash: hash,
+    structure_status: "complete", structure_warnings: [],
+  });
+  const assistants = [
+    { name: "Claude Code", exists: true, skills: [skill("/a/writer", "A")] },
+    { name: "Codex", exists: true, skills: [skill("/b/writer", "A")] },
+    { name: "Cursor", exists: true, skills: [skill("/c/writer", "B")] },
+  ];
+  const groups = buildDriftGroups(assistants);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].copies.length, 3);
+  assert.equal(groups[0].versionCount, 2);
+
+  // 忽略 B：剩余 A、A 同内容，版本数重算为 1，不再构成漂移提醒
+  const collapsed = filterGroupsByIgnored(groups, new Set(["/c/writer"]));
+  assert.equal(collapsed.length, 0);
+  const statsCollapsed = buildDashboardStats(assistants, [], translateEnglish, new Set(["/c/writer"]));
+  assert.equal(statsCollapsed.driftGroups, 0);
+  assert.equal(statsCollapsed.duplicateGroups, 1);
+  assert.equal(buildDuplicateGroups(assistants, translateEnglish, new Set(["/c/writer"])).length, 1);
+  assert.equal(buildDuplicateGroups(assistants, translateEnglish, new Set(["/a/writer"])).length, 0);
+  const allIgnored = new Set(["/a/writer", "/b/writer", "/c/writer"]);
+  assert.equal(buildDuplicateGroups(assistants, translateEnglish, allIgnored).length, 0);
+  assert.equal(buildDashboardStats(assistants, [], translateEnglish, allIgnored).duplicateGroups, 0);
+
+  // 忽略其中一份 A：剩余 A、B 仍是漂移组，版本数保持 2
+  const kept = filterGroupsByIgnored(groups, new Set(["/a/writer"]));
+  assert.equal(kept.length, 1);
+  assert.equal(kept[0].copies.length, 2);
+  assert.equal(kept[0].versionCount, 2);
+});
+
+test("被忽略的外部条目不再计入外部噪音，受管条目不可忽略", () => {
+  const assistants = [
+    {
+      name: "Claude Code", exists: true, skills: [
+        { name: "vendor", path: "/claude/vendor", manager: "external", sync_state: "unprobed", structure_status: "complete", structure_warnings: [] },
+        { name: "kept", path: "/claude/kept", manager: "external", sync_state: "unprobed", structure_status: "complete", structure_warnings: [] },
+      ],
+    },
+  ];
+  const before = buildDashboardStats(assistants, [], translateEnglish);
+  assert.equal(before.external, 2);
+  const after = buildDashboardStats(assistants, [], translateEnglish, new Set(["/claude/vendor"]));
+  assert.equal(after.external, 1);
+  assert.equal(after.skills, 2);
+
+  const externalCard = buildSkillCardView({ name: "vendor", path: "/claude/vendor", manager: "external", structure_status: "complete", structure_warnings: [] }, translateEnglish);
+  assert.equal(externalCard.canIgnore, true);
+  const managedCard = buildSkillCardView({ name: "kept", path: "/claude/kept", managed_by_app: true, structure_status: "complete", structure_warnings: [] }, translateEnglish);
+  assert.equal(managedCard.canIgnore, false);
+  const deploymentCard = buildSkillCardView({ name: "dep", path: "/claude/dep", managed_by_app: true, source_type: "deployment", structure_status: "complete", structure_warnings: [] }, translateEnglish);
+  assert.equal(deploymentCard.canIgnore, false);
 });
 
 test("需处理口径只含错误级事件，结构不完整不算需处理", () => {
@@ -914,6 +1067,7 @@ test("Skill 卡片视图应当优先使用 manifest 标题和说明", () => {
       canDelete: true,
       canUnlink: false,
       canAdopt: false,
+      canIgnore: false,
       canMaterialize: false,
       availableIn: [],
       availabilityLabel: "",

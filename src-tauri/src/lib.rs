@@ -20,6 +20,7 @@ mod scenario_manifest;
 mod skill_adoption;
 mod skill_doctor;
 mod skill_drift;
+mod skill_ignore;
 mod skill_install;
 mod skill_install_source;
 mod skill_inventory;
@@ -65,7 +66,8 @@ use operation_coordinator::{
 use operation_plan::verify_operation_plan;
 use organization_commands::{
     add_tag, create_scenario, delete_scenario, delete_tag, get_all_tags, get_all_tags_from_db,
-    get_scenarios, get_scenarios_from_db, update_skill_tags, update_tag, Scenario, Tag,
+    get_scenarios, get_scenarios_from_db, list_ignored_skills, set_skill_ignore, update_skill_tags,
+    update_tag, Scenario, Tag,
 };
 use project_inspection::{inspect_project_skills, ProjectInspection};
 use rusqlite::Connection;
@@ -2027,6 +2029,8 @@ pub fn run() {
             update_skill_tags,
             validate_skill_draft,
             create_library_skill,
+            set_skill_ignore,
+            list_ignored_skills,
             get_scenarios,
             create_scenario,
             delete_scenario,

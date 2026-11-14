@@ -10,6 +10,7 @@ import {
   buildSkillCardView,
   buildStructureWarningSummary,
   buildValidationSummary,
+  copyCanAdopt,
   getStructureStatusLabel,
   getStructureStatusTone,
 } from "../lib/skillmate.mjs";
@@ -175,6 +176,32 @@ export function CreateSkillModal({ onClose, onComplete }) {
         <button className="btn btn-primary" onClick={create} disabled={busy || validating || !validation?.ok}>
           <Icon name="plus" size={15} />{busy ? t("create.creating") : t("create.confirm")}
         </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+// 内容完全相同的同名副本：只列副本与接管引导，不提供合并；接管复用现有 AdoptionModal 全流程。
+export function DuplicateSkillModal({ group, onClose, onAdopt }) {
+  const { t } = useI18n();
+  return (
+    <ModalShell title={`${t("duplicates.title")} · ${group.name}`} icon="branch" className="large drift-modal" onClose={onClose}>
+      <p className="modal-intro">{t("duplicates.subtitle")}</p>
+      <div className="drift-copy-list">
+        {group.copies.map((copy) => (
+          <div key={copy.path} className="drift-copy">
+            <span />
+            <span><strong>{copy.availableIn.map((item) => item.name).join(" / ")}</strong><small>{copy.path}</small></span>
+            <span className="duplicate-copy-actions">
+              {copy.managed && <span className="stamp">{t("duplicates.managed")}</span>}
+              {copyCanAdopt(copy) && <button className="btn btn-secondary btn-sm" type="button" onClick={() => onAdopt(copy)}><Icon name="branch" size={14} />{t("duplicates.adopt")}</button>}
+            </span>
+          </div>
+        ))}
+      </div>
+      <p className="modal-intro">{t("duplicates.boundary")}</p>
+      <div className="modal-actions">
+        <button className="btn btn-secondary" type="button" onClick={onClose}>{t("common.close")}</button>
       </div>
     </ModalShell>
   );
